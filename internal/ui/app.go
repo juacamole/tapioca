@@ -58,6 +58,10 @@ type modelsLoadedMsg struct {
 type flashClearMsg struct{ seq int }
 type autosaveMsg struct{}
 type startPickerMsg struct{}
+type rewindDoneMsg struct {
+	id  string
+	err error
+}
 type compactDoneMsg struct {
 	agentID int
 	msgs    []provider.Message
@@ -336,6 +340,14 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case startPickerMsg:
 		return m, m.openSessionPicker()
+
+	case rewindDoneMsg:
+		if msg.err != nil {
+			m.setFlash("rewind failed: "+msg.err.Error(), true)
+		} else {
+			m.setFlash("rewound working tree to "+msg.id+" — /rewind undoes this too", false)
+		}
+		return m, tea.Batch(m.flashCmd(), fetchGitCmd(m.cwd()))
 
 	case autosaveMsg:
 		if m.cfg.Autosave && m.dirty {
@@ -1170,6 +1182,9 @@ func (m *App) applyPick(it pickerItem) tea.Cmd {
 
 	case pickSession:
 		return m.loadSessionByID(it.value)
+
+	case pickCheckpoint:
+		return m.restoreCheckpoint(it.value)
 
 	case pickPanels:
 		key := it.value

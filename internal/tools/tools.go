@@ -54,11 +54,19 @@ const maxOutput = 30_000
 
 // Executor runs built-in tools inside a working directory.
 type Executor struct {
-	mu        sync.Mutex
-	cwd       string
-	mode      string
-	allowed   map[string]bool
-	extraDirs []string
+	mu         sync.Mutex
+	cwd        string
+	mode       string
+	allowed    map[string]bool
+	extraDirs  []string
+	checkpoint func(label string)
+}
+
+// SetCheckpoint registers a hook run before every mutating tool call.
+func (e *Executor) SetCheckpoint(fn func(label string)) {
+	e.mu.Lock()
+	e.checkpoint = fn
+	e.mu.Unlock()
 }
 
 // SetExtraDirs records additional directories announced to the model.
@@ -213,6 +221,12 @@ func (e *Executor) Call(ctx context.Context, name string, raw json.RawMessage, a
 				}
 			}
 		}
+		e.mu.Lock()
+		cp := e.checkpoint
+		e.mu.Unlock()
+		if cp != nil {
+			cp(name + ": " + truncateLabel(e.summary(name, raw)))
+		}
 	}
 
 	switch name {
@@ -248,6 +262,14 @@ func (e *Executor) summary(name string, raw json.RawMessage) string {
 		_ = json.Unmarshal(raw, &a)
 		return a.Path
 	}
+}
+
+func truncateLabel(s string) string {
+	s = strings.ReplaceAll(s, "\n", " ")
+	if len(s) > 60 {
+		s = s[:60] + "…"
+	}
+	return s
 }
 
 func capOutput(s string) string {
