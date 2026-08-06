@@ -291,6 +291,38 @@ func (o *Ollama) post(ctx context.Context, body olReq) (*http.Response, error) {
 	return resp, nil
 }
 
+// ContextLength probes /api/show for the model's trained context window.
+func (o *Ollama) ContextLength(ctx context.Context, model string) (int, error) {
+	payload, _ := json.Marshal(map[string]string{"model": model})
+	req, err := http.NewRequestWithContext(ctx, "POST", o.baseURL+"/api/show", bytes.NewReader(payload))
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := o.client.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("ollama: HTTP %d", resp.StatusCode)
+	}
+	var body struct {
+		ModelInfo map[string]any `json:"model_info"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return 0, err
+	}
+	for k, v := range body.ModelInfo {
+		if strings.HasSuffix(k, ".context_length") {
+			if f, ok := v.(float64); ok {
+				return int(f), nil
+			}
+		}
+	}
+	return 0, fmt.Errorf("no context_length in model info")
+}
+
 // ListModels implements Provider.
 func (o *Ollama) ListModels(ctx context.Context) ([]string, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", o.baseURL+"/api/tags", nil)

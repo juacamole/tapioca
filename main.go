@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"tapioca/internal/agent"
+	"tapioca/internal/catalog"
 	"tapioca/internal/config"
 	"tapioca/internal/mcp"
 	"tapioca/internal/session"
@@ -187,6 +188,8 @@ func main() {
 	if err != nil {
 		fail(err)
 	}
+	catalog.Load()
+	go catalog.Refresh()
 	if args.model != "" {
 		provName, model := cfg.DefaultProvider, args.model
 		if p, rest, ok := strings.Cut(args.model, ":"); ok {
