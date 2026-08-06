@@ -1,8 +1,6 @@
 package ui
 
 import (
-	"context"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -382,45 +380,15 @@ func cmdCompact(m *App, _ string) tea.Cmd {
 	if a == nil || m.busyGuard(a) {
 		return m.flashCmd()
 	}
-	if len(a.Messages) < 2 {
+	cmd := m.compactCmd(a)
+	if cmd == nil {
 		m.setFlash("nothing to compact yet", true)
 		return m.flashCmd()
 	}
 	a.Status = agent.StatusWaiting
 	a.StatusDetail = "compacting conversation"
 	m.setFlash("compacting conversation…", false)
-	return tea.Batch(m.compactCmd(a), m.flashCmd())
-}
-
-func (m *App) compactCmd(a *agent.Agent) tea.Cmd {
-	p := a.Provider
-	model := a.Model
-	id := a.ID
-	history := make([]provider.Message, len(a.Messages))
-	copy(history, a.Messages)
-	return func() tea.Msg {
-		if p == nil {
-			return compactDoneMsg{agentID: id, err: errors.New("no provider configured")}
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-		defer cancel()
-		msgs := append(history, provider.TextMessage("user",
-			"Summarize the entire conversation above into a compact brief that preserves everything "+
-				"needed to continue working: decisions made, files and code touched, current state, and open tasks. "+
-				"Reply with only the summary."))
-		events := make(chan provider.Event, 64)
-		go func() {
-			for range events {
-			}
-		}()
-		msg, err := p.Stream(ctx, provider.Request{
-			Model:     model,
-			System:    "You compress conversations for context handoff.",
-			Messages:  msgs,
-			MaxTokens: 2048,
-		}, events)
-		return compactDoneMsg{agentID: id, summary: msg.Text(), err: err}
-	}
+	return tea.Batch(cmd, m.flashCmd())
 }
 
 // lastUserIdx finds the newest real user prompt (not tool results).

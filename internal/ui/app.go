@@ -60,7 +60,8 @@ type autosaveMsg struct{}
 type startPickerMsg struct{}
 type compactDoneMsg struct {
 	agentID int
-	summary string
+	msgs    []provider.Message
+	ctxEst  int
 	err     error
 }
 
@@ -307,16 +308,22 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		a.StatusDetail = ""
 		if msg.err != nil {
+			a.CompactFailed = true
 			m.setFlash("compact failed: "+msg.err.Error(), true)
 			return m, m.flashCmd()
 		}
-		a.Messages = []provider.Message{provider.TextMessage("user",
-			"[Summary of the conversation so far]\n\n"+msg.summary)}
-		a.CtxTokens = len(msg.summary) / 4
+		a.Messages = msg.msgs
+		a.CtxTokens = msg.ctxEst
 		m.dirty = true
 		m.refreshChat(true)
-		m.setFlash(fmt.Sprintf("compacted to %s", humanTokens(len(msg.summary))), false)
-		return m, m.flashCmd()
+		m.setFlash(fmt.Sprintf("compacted — kept the last %d turns verbatim", compactKeepTurns), false)
+		cmds := []tea.Cmd{m.flashCmd()}
+		if a.Status == agent.StatusIdle && len(a.Queue) > 0 {
+			next := a.Queue[0]
+			a.Queue = a.Queue[1:]
+			cmds = append(cmds, m.sendText(a, next))
+		}
+		return m, tea.Batch(cmds...)
 
 	case editorDoneMsg:
 		return m.handleEditorDone(msg)
@@ -409,6 +416,7 @@ func (m *App) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 			u := ev.Usage
 			a.Stats.AddRequest(ev.Model, u.InputTokens, u.OutputTokens, u.CacheReadTokens, u.CacheWriteTokens, ev.Dur)
 			a.CtxTokens = u.InputTokens + u.OutputTokens + u.CacheReadTokens + u.CacheWriteTokens
+			a.CompactFailed = false
 		}
 	case agent.EvPermission:
 		if ev.Perm != nil {
@@ -468,6 +476,18 @@ func (m *App) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		}
 		if m.gitPanelsVisible() {
 			cmds = append(cmds, fetchGitCmd(m.cwd()))
+		}
+		// Near the context limit: compact before anything else runs.
+		if m.cfg.AutoCompact && a.Status == agent.StatusIdle && !a.CompactFailed && len(a.Messages) >= 4 {
+			if win := m.contextWindowFor(a); win > 0 && a.CtxTokens >= compactThreshold(win) {
+				if cmd := m.compactCmd(a); cmd != nil {
+					a.Status = agent.StatusWaiting
+					a.StatusDetail = "compacting conversation"
+					m.setFlash("context nearly full — compacting older turns", false)
+					cmds = append(cmds, cmd, m.flashCmd(), waitAgent(a))
+					return m, tea.Batch(cmds...)
+				}
+			}
 		}
 		// Send the next queued prompt, if any.
 		if a.Status == agent.StatusIdle && len(a.Queue) > 0 {
