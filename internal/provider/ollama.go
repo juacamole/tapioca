@@ -16,9 +16,10 @@ import (
 
 // Ollama streams from a local Ollama server via /api/chat.
 type Ollama struct {
-	name    string
-	baseURL string
-	client  *http.Client
+	name      string
+	baseURL   string
+	ctxWindow int
+	client    *http.Client
 }
 
 // NewOllama builds the provider. The default base URL is localhost:11434.
@@ -27,7 +28,7 @@ func NewOllama(name string, cfg config.ProviderConfig) *Ollama {
 	if base == "" {
 		base = "http://localhost:11434"
 	}
-	return &Ollama{name: name, baseURL: base, client: &http.Client{}}
+	return &Ollama{name: name, baseURL: base, ctxWindow: cfg.ContextWindow, client: &http.Client{}}
 }
 
 func (o *Ollama) Name() string { return o.name }
@@ -127,6 +128,8 @@ func (o *Ollama) Stream(ctx context.Context, req Request, out chan<- Event) (Mes
 	if req.MaxTokens > 0 {
 		body.Options["num_predict"] = req.MaxTokens
 	}
+	// Ollama defaults num_ctx to ~4k and silently truncates the prompt.
+	body.Options["num_ctx"] = o.numCtx(body.Messages, req.Tools)
 	if req.Temperature >= 0 {
 		body.Options["temperature"] = req.Temperature
 	}
@@ -236,6 +239,25 @@ func (o *Ollama) Stream(ctx context.Context, req Request, out chan<- Event) (Mes
 	}
 	out <- Event{Type: EventDone, StopReason: stopReason}
 	return finish(), nil
+}
+
+func (o *Ollama) numCtx(msgs []olMsg, toolDefs []ToolDef) int {
+	chars := 0
+	for _, m := range msgs {
+		chars += len(m.Content) + len(m.Thinking)
+		for _, tc := range m.ToolCalls {
+			chars += len(tc.Function.Name) + len(tc.Function.Arguments)
+		}
+	}
+	for _, t := range toolDefs {
+		chars += len(t.Name) + len(t.Description) + len(t.InputSchema)
+	}
+	est := chars / 4
+	n := est + est/4 + 8192
+	if o.ctxWindow > 0 && n > o.ctxWindow {
+		n = o.ctxWindow
+	}
+	return n
 }
 
 func (o *Ollama) post(ctx context.Context, body olReq) (*http.Response, error) {
