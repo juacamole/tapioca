@@ -199,7 +199,7 @@ func (m *App) handleChatMouse(msg tea.MouseMsg) (bool, tea.Cmd) {
 		if err := copyToClipboard(text); err != nil {
 			m.setFlash("copy failed: "+err.Error(), true)
 		} else {
-			m.setFlash(fmt.Sprintf("copied (%s)", humanTokens(len(text))), false)
+			m.setFlash(fmt.Sprintf("copied (%s chars)", humanInt(len(text))), false)
 		}
 		return true, nil
 	}
