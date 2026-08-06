@@ -146,10 +146,24 @@ Without nix:
 ```sh
 go build -o tapioca .              # build (needs the repo dir for go.mod)
 cp tapioca ~/.npm-global/bin/      # or any directory on your PATH
-tapioca                            # then run from anywhere
-tapioca -r                         # resume the most recent session
-tapioca -list                      # list saved sessions
-tapioca -session ID
+```
+
+CLI (Claude-style flags):
+
+```sh
+tapioca                            # new session in the current directory
+tapioca -c                         # continue the most recent session
+tapioca -r                         # pick a session to resume
+tapioca -r 20260806-135204         # resume a specific session
+tapioca --fork-session -c          # continue, but into a new session id
+tapioca --model ollama:qwen3       # model for this run
+tapioca --permission-mode plan     # start in plan mode
+tapioca --dangerously-skip-permissions   # bypass all tool prompts
+tapioca -p "fix the failing test"  # headless: run one prompt, print, exit
+tapioca -p "summarize" --output-format json --max-turns 5
+tapioca --system-prompt "..." --append-system-prompt "..."
+tapioca --settings alt.toml --mcp-config mcp.toml --add-dir ../lib
+tapioca --list-sessions
 ```
 
 Requires Go 1.22+ to build. `go run .`/`go build` must run inside the repo

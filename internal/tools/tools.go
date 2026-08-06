@@ -54,10 +54,25 @@ const maxOutput = 30_000
 
 // Executor runs built-in tools inside a working directory.
 type Executor struct {
-	mu      sync.Mutex
-	cwd     string
-	mode    string
-	allowed map[string]bool
+	mu        sync.Mutex
+	cwd       string
+	mode      string
+	allowed   map[string]bool
+	extraDirs []string
+}
+
+// SetExtraDirs records additional directories announced to the model.
+func (e *Executor) SetExtraDirs(dirs []string) {
+	e.mu.Lock()
+	e.extraDirs = dirs
+	e.mu.Unlock()
+}
+
+// ExtraDirs returns the additional announced directories.
+func (e *Executor) ExtraDirs() []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.extraDirs
 }
 
 // NewExecutor creates an executor rooted at cwd.

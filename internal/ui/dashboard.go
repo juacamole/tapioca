@@ -313,7 +313,7 @@ func renderToolsPanel(m *App, a *agent.Agent, w, h int) []string {
 	}
 	lines := []string{
 		fmt.Sprintf("%s tools · agent: %s · %s", humanInt(m.toolCount()), enabled,
-			styDim.Render(m.cfg.PermissionMode)),
+			styDim.Render(m.permMode())),
 	}
 	tcs := a.Stats.ToolCalls
 	if len(tcs) == 0 {
@@ -453,7 +453,7 @@ func (m *App) settingValue(key string, a *agent.Agent) string {
 	case "verbose":
 		return onOff(m.cfg.Verbose)
 	case "mode":
-		return m.cfg.PermissionMode
+		return m.permMode()
 	case "dashpos":
 		return m.cfg.Dashboard.Position
 	}

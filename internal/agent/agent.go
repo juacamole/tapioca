@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"tapioca/internal/mcp"
@@ -129,13 +130,14 @@ type Agent struct {
 	ThinkingBudget int
 	ToolsEnabled   bool
 
-	Messages     []provider.Message
-	Queue        []string // prompts queued while the agent is busy
-	Stats        stats.Stats
-	Status       Status
-	StatusDetail string // fine-grained stage label ("reasoning", "running bash", …)
-	LastErr      string
-	CtxTokens    int // last known context size (input+output of last request)
+	Messages      []provider.Message
+	Queue         []string // prompts queued while the agent is busy
+	MaxToolRounds int      // 0 = default
+	Stats         stats.Stats
+	Status        Status
+	StatusDetail  string // fine-grained stage label ("reasoning", "running bash", …)
+	LastErr       string
+	CtxTokens     int // last known context size (input+output of last request)
 
 	// Live streaming buffers for the in-flight assistant message.
 	StreamText     string
@@ -170,6 +172,9 @@ func (a *Agent) System() string {
 	}
 	if a.Exec != nil {
 		sys += "\n\nWorking directory: " + a.Exec.Cwd()
+		if extra := a.Exec.ExtraDirs(); len(extra) > 0 {
+			sys += "\nAdditional working directories: " + strings.Join(extra, ", ")
+		}
 		if a.Exec.Mode() == tools.ModePlan {
 			sys += "\n\nPLAN MODE is active: you may inspect the codebase with read-only " +
 				"tools, but you must NOT modify files or run mutating commands. " +
@@ -215,7 +220,11 @@ func (a *Agent) run(ctx context.Context, history []provider.Message) {
 		}
 	}
 
-	for round := 0; round < maxToolRounds; round++ {
+	rounds := a.MaxToolRounds
+	if rounds <= 0 {
+		rounds = maxToolRounds
+	}
+	for round := 0; round < rounds; round++ {
 		stage := "processing prompt"
 		if round > 0 {
 			stage = "processing tool results"
@@ -382,7 +391,7 @@ func (a *Agent) run(ctx context.Context, history []provider.Message) {
 		}
 		history = append(history, toolMsg)
 	}
-	a.emit(Event{Kind: EvError, Err: fmt.Errorf("stopped after %d tool rounds", maxToolRounds)})
+	a.emit(Event{Kind: EvError, Err: fmt.Errorf("stopped after %d tool rounds", rounds)})
 }
 
 // Every tool_use must get a tool_result, even on cancellation — providers

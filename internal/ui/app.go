@@ -56,6 +56,7 @@ type modelsLoadedMsg struct {
 }
 type flashClearMsg struct{ seq int }
 type autosaveMsg struct{}
+type startPickerMsg struct{}
 type compactDoneMsg struct {
 	agentID int
 	summary string
@@ -111,7 +112,8 @@ type App struct {
 	sessSaved   time.Time
 	dirty       bool
 
-	quitArmed time.Time // last ctrl+c press while idle
+	quitArmed     time.Time // last ctrl+c press while idle
+	pickerOnStart bool
 
 	flash    string
 	flashErr bool
@@ -170,6 +172,9 @@ func statusLabel(a *agent.Agent) string {
 	return a.Status.String()
 }
 
+// StartWithSessionPicker opens the resume picker on launch (tapioca -r).
+func (m *App) StartWithSessionPicker() { m.pickerOnStart = true }
+
 // cwd returns the executor working directory.
 func (m *App) cwd() string {
 	if m.mgr.Exec != nil {
@@ -186,6 +191,9 @@ func (m *App) Init() tea.Cmd {
 	}
 	for _, sc := range m.cfg.MCP {
 		cmds = append(cmds, connectMCPCmd(m.mgr.MCP, sc))
+	}
+	if m.pickerOnStart {
+		cmds = append(cmds, func() tea.Msg { return startPickerMsg{} })
 	}
 	return tea.Batch(cmds...)
 }
@@ -315,6 +323,9 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.flash = ""
 		}
 		return m, nil
+
+	case startPickerMsg:
+		return m, m.openSessionPicker()
 
 	case autosaveMsg:
 		if m.cfg.Autosave && m.dirty {
@@ -868,12 +879,21 @@ var modeDescriptions = map[string]string{
 	"bypass": "bypass mode — all tools run without asking",
 }
 
+// permMode is the live permission mode (a launch flag may differ from cfg).
+func (m *App) permMode() string {
+	if m.mgr.Exec != nil {
+		return m.mgr.Exec.Mode()
+	}
+	return m.cfg.PermissionMode
+}
+
 // cycleMode advances plan -> manual -> auto -> bypass and persists it.
 func (m *App) cycleMode() tea.Cmd {
 	order := tools.Modes
+	cur := m.permMode()
 	idx := 0
 	for i, mode := range order {
-		if mode == m.cfg.PermissionMode {
+		if mode == cur {
 			idx = i
 			break
 		}
@@ -1599,7 +1619,7 @@ func (m *App) renderStatus() string {
 	}
 
 	var chipSty lipgloss.Style
-	switch m.cfg.PermissionMode {
+	switch m.permMode() {
 	case "plan":
 		chipSty = styAccent
 	case "auto":
@@ -1609,7 +1629,7 @@ func (m *App) renderStatus() string {
 	default:
 		chipSty = styDim
 	}
-	right := chipSty.Render("["+m.cfg.PermissionMode+"]") + " "
+	right := chipSty.Render("["+m.permMode()+"]") + " "
 	if a := m.mgr.ActiveAgent(); a != nil {
 		st := statusLabel(a)
 		if a.Status.Busy() {
