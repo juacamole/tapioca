@@ -20,6 +20,12 @@ import (
 
 var mu sync.Mutex
 
+// Available reports whether the git binary exists on PATH.
+func Available() bool {
+	_, err := exec.LookPath("git")
+	return err == nil
+}
+
 // Entry is one stored snapshot.
 type Entry struct {
 	ID    string
