@@ -345,6 +345,16 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.setFlash("rewind failed: "+msg.err.Error(), true)
 		} else {
+			// Every agent's picture of the files is now stale; tell them
+			// with their next prompt.
+			notice := provider.TextMessage("user",
+				"(side note, no reply needed) I rewound the working tree to checkpoint "+msg.id+
+					" — file contents may differ from your earlier reads and edits; re-read files before relying on them.")
+			for _, ag := range m.mgr.Agents {
+				ag.Messages = append(ag.Messages, notice)
+			}
+			m.dirty = true
+			m.refreshChat(true)
 			m.setFlash("rewound working tree to "+msg.id+" — /rewind undoes this too", false)
 		}
 		return m, tea.Batch(m.flashCmd(), fetchGitCmd(m.cwd()))
