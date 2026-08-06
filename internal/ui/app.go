@@ -350,6 +350,7 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			notice := provider.TextMessage("user",
 				"(side note, no reply needed) I rewound the working tree to checkpoint "+msg.id+
 					" — file contents may differ from your earlier reads and edits; re-read files before relying on them.")
+			notice.Hidden = true
 			for _, ag := range m.mgr.Agents {
 				ag.Messages = append(ag.Messages, notice)
 			}
@@ -825,7 +826,7 @@ func (m *App) handleInputKey(msg tea.KeyMsg, a *agent.Agent) (tea.Model, tea.Cmd
 			m.ta.Reset()
 			m.slashSel = 0
 			m.recalcLayout()
-			return m, ms[sel].run(m, "")
+			return m, m.runSlash("/" + ms[sel].name)
 		}
 		return m, m.submit()
 	case m.keys.Is(msg, "newline"):
@@ -882,7 +883,7 @@ func (m *App) handleInputKey(msg tea.KeyMsg, a *agent.Agent) (tea.Model, tea.Cmd
 func userPrompts(a *agent.Agent) []string {
 	var out []string
 	for _, msg := range a.Messages {
-		if msg.Role == "user" && !msg.IsToolResult() {
+		if msg.Role == "user" && !msg.IsToolResult() && !msg.Hidden {
 			if t := msg.Text(); strings.TrimSpace(t) != "" {
 				out = append(out, t)
 			}
