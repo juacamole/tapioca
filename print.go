@@ -25,13 +25,15 @@ type printOpts struct {
 }
 
 type printResult struct {
-	Result       string `json:"result"`
-	SessionID    string `json:"session_id"`
-	InputTokens  int    `json:"input_tokens"`
-	OutputTokens int    `json:"output_tokens"`
-	ToolCalls    int    `json:"tool_calls"`
-	DurationMS   int64  `json:"duration_ms"`
-	Error        string `json:"error,omitempty"`
+	Result           string `json:"result"`
+	SessionID        string `json:"session_id"`
+	InputTokens      int    `json:"input_tokens"`
+	OutputTokens     int    `json:"output_tokens"`
+	CacheReadTokens  int    `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens int    `json:"cache_write_tokens,omitempty"`
+	ToolCalls        int    `json:"tool_calls"`
+	DurationMS       int64  `json:"duration_ms"`
+	Error            string `json:"error,omitempty"`
 }
 
 // runPrint executes one prompt headlessly: stream to stdout (text) or emit a
@@ -100,6 +102,8 @@ loop:
 			if ev.Usage != nil {
 				res.InputTokens += ev.Usage.InputTokens
 				res.OutputTokens += ev.Usage.OutputTokens
+				res.CacheReadTokens += ev.Usage.CacheReadTokens
+				res.CacheWriteTokens += ev.Usage.CacheWriteTokens
 			}
 		case agent.EvToolStart:
 			res.ToolCalls++

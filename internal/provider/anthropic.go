@@ -47,17 +47,24 @@ func NewAnthropic(name string, cfg config.ProviderConfig) (*Anthropic, error) {
 
 func (a *Anthropic) Name() string { return a.name }
 
+type cacheControl struct {
+	Type string `json:"type"`
+}
+
+var ephemeral = &cacheControl{Type: "ephemeral"}
+
 type anthBlock struct {
-	Type      string          `json:"type"`
-	Text      string          `json:"text,omitempty"`
-	Thinking  string          `json:"thinking,omitempty"`
-	Signature string          `json:"signature,omitempty"`
-	ID        string          `json:"id,omitempty"`
-	Name      string          `json:"name,omitempty"`
-	Input     json.RawMessage `json:"input,omitempty"`
-	ToolUseID string          `json:"tool_use_id,omitempty"`
-	Content   string          `json:"content,omitempty"`
-	IsError   bool            `json:"is_error,omitempty"`
+	Type         string          `json:"type"`
+	Text         string          `json:"text,omitempty"`
+	Thinking     string          `json:"thinking,omitempty"`
+	Signature    string          `json:"signature,omitempty"`
+	ID           string          `json:"id,omitempty"`
+	Name         string          `json:"name,omitempty"`
+	Input        json.RawMessage `json:"input,omitempty"`
+	ToolUseID    string          `json:"tool_use_id,omitempty"`
+	Content      string          `json:"content,omitempty"`
+	IsError      bool            `json:"is_error,omitempty"`
+	CacheControl *cacheControl   `json:"cache_control,omitempty"`
 }
 
 type anthMsg struct {
@@ -79,7 +86,7 @@ type anthThinking struct {
 type anthReq struct {
 	Model       string        `json:"model"`
 	MaxTokens   int           `json:"max_tokens"`
-	System      string        `json:"system,omitempty"`
+	System      []anthBlock   `json:"system,omitempty"`
 	Messages    []anthMsg     `json:"messages"`
 	Stream      bool          `json:"stream"`
 	Temperature *float64      `json:"temperature,omitempty"`
@@ -88,8 +95,10 @@ type anthReq struct {
 }
 
 type anthUsage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
+	InputTokens         int `json:"input_tokens"`
+	OutputTokens        int `json:"output_tokens"`
+	CacheReadTokens     int `json:"cache_read_input_tokens"`
+	CacheCreationTokens int `json:"cache_creation_input_tokens"`
 }
 
 type sseEvent struct {
@@ -168,9 +177,12 @@ func (a *Anthropic) Stream(ctx context.Context, req Request, out chan<- Event) (
 	body := anthReq{
 		Model:     req.Model,
 		MaxTokens: req.MaxTokens,
-		System:    req.System,
 		Messages:  a.convertMessages(req.Model, req.Messages),
 		Stream:    true,
+	}
+	if req.System != "" {
+		// Marking the system prompt caches the whole prefix including tools.
+		body.System = []anthBlock{{Type: "text", Text: req.System, CacheControl: ephemeral}}
 	}
 	for _, t := range req.Tools {
 		schema := t.InputSchema
@@ -178,6 +190,18 @@ func (a *Anthropic) Stream(ctx context.Context, req Request, out chan<- Event) (
 			schema = json.RawMessage(`{"type":"object"}`)
 		}
 		body.Tools = append(body.Tools, anthTool{Name: t.Name, Description: t.Description, InputSchema: schema})
+	}
+	sort.Slice(body.Tools, func(i, j int) bool { return body.Tools[i].Name < body.Tools[j].Name })
+	// Breakpoints on the last two messages make the growing conversation
+	// prefix cacheable turn over turn.
+	marked := 0
+	for i := len(body.Messages) - 1; i >= 0 && marked < 2; i-- {
+		blocks := body.Messages[i].Content
+		if len(blocks) == 0 {
+			continue
+		}
+		blocks[len(blocks)-1].CacheControl = ephemeral
+		marked++
 	}
 	if req.Thinking {
 		budget := req.ThinkingBudget
@@ -249,7 +273,7 @@ func (a *Anthropic) Stream(ctx context.Context, req Request, out chan<- Event) (
 				msg.Blocks = append(msg.Blocks, Block{Type: "tool_use", ID: b.id, Name: b.name, Input: json.RawMessage(input)})
 			}
 		}
-		if usage.InputTokens > 0 || usage.OutputTokens > 0 {
+		if usage.InputTokens > 0 || usage.OutputTokens > 0 || usage.CacheReadTokens > 0 || usage.CacheWriteTokens > 0 {
 			u := usage
 			msg.Usage = &u
 		}
@@ -276,6 +300,8 @@ func (a *Anthropic) Stream(ctx context.Context, req Request, out chan<- Event) (
 			if ev.Message != nil {
 				usage.InputTokens = ev.Message.Usage.InputTokens
 				usage.OutputTokens = ev.Message.Usage.OutputTokens
+				usage.CacheReadTokens = ev.Message.Usage.CacheReadTokens
+				usage.CacheWriteTokens = ev.Message.Usage.CacheCreationTokens
 			}
 		case "content_block_start":
 			if ev.ContentBlock != nil {

@@ -8,11 +8,13 @@ const keepLast = 100
 
 // RequestStat records one completed model request.
 type RequestStat struct {
-	Time  time.Time     `json:"time"`
-	Model string        `json:"model"`
-	In    int           `json:"in"`
-	Out   int           `json:"out"`
-	Dur   time.Duration `json:"dur"`
+	Time   time.Time     `json:"time"`
+	Model  string        `json:"model"`
+	In     int           `json:"in"`
+	Out    int           `json:"out"`
+	CacheR int           `json:"cache_r,omitempty"`
+	CacheW int           `json:"cache_w,omitempty"`
+	Dur    time.Duration `json:"dur"`
 }
 
 // ToolCallStat records one tool invocation.
@@ -28,18 +30,25 @@ type ToolCallStat struct {
 
 // Stats aggregates everything the dashboards show for one agent.
 type Stats struct {
-	InputTokens  int            `json:"input_tokens"`
-	OutputTokens int            `json:"output_tokens"`
-	Turns        int            `json:"turns"`
-	Requests     []RequestStat  `json:"requests"`
-	ToolCalls    []ToolCallStat `json:"tool_calls"`
+	InputTokens      int            `json:"input_tokens"`
+	OutputTokens     int            `json:"output_tokens"`
+	CacheReadTokens  int            `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens int            `json:"cache_write_tokens,omitempty"`
+	Turns            int            `json:"turns"`
+	Requests         []RequestStat  `json:"requests"`
+	ToolCalls        []ToolCallStat `json:"tool_calls"`
 }
 
 // AddRequest records a completed request and updates totals.
-func (s *Stats) AddRequest(model string, in, out int, dur time.Duration) {
+func (s *Stats) AddRequest(model string, in, out, cacheR, cacheW int, dur time.Duration) {
 	s.InputTokens += in
 	s.OutputTokens += out
-	s.Requests = append(s.Requests, RequestStat{Time: time.Now(), Model: model, In: in, Out: out, Dur: dur})
+	s.CacheReadTokens += cacheR
+	s.CacheWriteTokens += cacheW
+	s.Requests = append(s.Requests, RequestStat{
+		Time: time.Now(), Model: model, In: in, Out: out,
+		CacheR: cacheR, CacheW: cacheW, Dur: dur,
+	})
 	if len(s.Requests) > keepLast {
 		s.Requests = s.Requests[len(s.Requests)-keepLast:]
 	}

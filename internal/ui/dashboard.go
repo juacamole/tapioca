@@ -211,31 +211,44 @@ var defaultCosts = []struct {
 	{"gpt-4.1", 2, 8},
 }
 
-// costFor resolves the price for a model by longest prefix match.
-func (m *App) costFor(model string) (in, out float64, ok bool) {
+type costRates struct{ In, Out, CacheR, CacheW float64 }
+
+// costFor resolves $/Mtok rates by longest prefix match; cache rates derive
+// from the input rate (read x0.10, write x1.25) unless a catalog knows better.
+func (m *App) costFor(model string) (costRates, bool) {
 	best := -1
+	var r costRates
+	ok := false
 	for prefix, c := range m.cfg.Costs {
 		if strings.HasPrefix(model, prefix) && len(prefix) > best {
-			best, in, out, ok = len(prefix), c.In, c.Out, true
+			best, r, ok = len(prefix), costRates{In: c.In, Out: c.Out}, true
+		}
+	}
+	if !ok {
+		for _, c := range defaultCosts {
+			if strings.HasPrefix(model, c.prefix) && len(c.prefix) > best {
+				best, r, ok = len(c.prefix), costRates{In: c.in, Out: c.out}, true
+			}
 		}
 	}
 	if ok {
-		return
-	}
-	for _, c := range defaultCosts {
-		if strings.HasPrefix(model, c.prefix) && len(c.prefix) > best {
-			best, in, out, ok = len(c.prefix), c.in, c.out, true
+		if r.CacheR == 0 {
+			r.CacheR = r.In * 0.10
+		}
+		if r.CacheW == 0 {
+			r.CacheW = r.In * 1.25
 		}
 	}
-	return
+	return r, ok
 }
 
 // sessionCost estimates an agent's spend from its request history.
 func (m *App) sessionCost(a *agent.Agent) float64 {
 	var total float64
-	for _, r := range a.Stats.Requests {
-		if in, out, ok := m.costFor(r.Model); ok {
-			total += float64(r.In)*in/1e6 + float64(r.Out)*out/1e6
+	for _, req := range a.Stats.Requests {
+		if r, ok := m.costFor(req.Model); ok {
+			total += float64(req.In)*r.In/1e6 + float64(req.Out)*r.Out/1e6 +
+				float64(req.CacheR)*r.CacheR/1e6 + float64(req.CacheW)*r.CacheW/1e6
 		}
 	}
 	return total
@@ -265,6 +278,10 @@ func renderTokensPanel(m *App, a *agent.Agent, w, h int) []string {
 			styDim.Render("out"), humanInt(s.OutputTokens)),
 		fmt.Sprintf("%s %s · %d reqs",
 			styDim.Render("total"), humanInt(s.InputTokens+s.OutputTokens), len(s.Requests)),
+	}
+	if s.CacheReadTokens > 0 || s.CacheWriteTokens > 0 {
+		lines = append(lines, fmt.Sprintf("%s %s read · %s write",
+			styDim.Render("cache"), humanInt(s.CacheReadTokens), humanInt(s.CacheWriteTokens)))
 	}
 	if lr := s.LastRequest(); lr != nil {
 		lines = append(lines, fmt.Sprintf("%s %s->%s · %.1fs",
