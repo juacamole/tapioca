@@ -484,13 +484,15 @@ func renderSettingsPanel(m *App, a *agent.Agent, w, h int) []string {
 		lines = append(lines, fmt.Sprintf("  %s %s",
 			styDim.Render(fmt.Sprintf("%-13s", r.label)), val))
 	}
-	switch {
-	case editing:
-		lines = append(lines, styDim.Render("arrows adjust · enter pick · esc done"))
-	case m.focus == focusDash:
-		lines = append(lines, styDim.Render("enter to edit · shift+arrows move panel"))
-	default:
-		lines = append(lines, styDim.Render("tab or click to edit · saved to config"))
+	if !zenMode {
+		switch {
+		case editing:
+			lines = append(lines, styDim.Render("arrows adjust · enter pick · esc done"))
+		case m.focus == focusDash:
+			lines = append(lines, styDim.Render("enter to edit · shift+arrows move panel"))
+		default:
+			lines = append(lines, styDim.Render("tab or click to edit · saved to config"))
+		}
 	}
 	return lines
 }

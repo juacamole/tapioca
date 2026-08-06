@@ -93,7 +93,7 @@ Type `/` for the completion popup:
 | `/regen` · `/edit` | redo / rewrite the last exchange |
 | `/fork` · `/agent [name]` | branch conversation / new agent |
 | `/resume [id]` · `/new` · `/save` | session management |
-| `/verbose` · `/thinking` · `/tools` | toggles |
+| `/verbose` · `/thinking` · `/tools` · `/zen` | toggles |
 | `/help` · `/quit` | the obvious |
 
 ## Keybinds (defaults, no alt — mac friendly)

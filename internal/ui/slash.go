@@ -75,6 +75,19 @@ func buildSlashCmds() []slashCmd {
 			m.saveSession(true)
 			return m.flashCmd()
 		}},
+		{"zen", "", "toggle zen mode (hide keybind hints)", func(m *App, _ string) tea.Cmd {
+			m.cfg.Zen = !m.cfg.Zen
+			zenMode = m.cfg.Zen
+			m.ta.Placeholder = inputPlaceholder()
+			m.saveCfg()
+			m.refreshChat(false)
+			if zenMode {
+				m.setFlash("zen — /zen to exit", false)
+			} else {
+				m.setFlash("zen mode off", false)
+			}
+			return m.flashCmd()
+		}},
 		{"verbose", "", "toggle verbose chat", func(m *App, _ string) tea.Cmd {
 			m.cfg.Verbose = !m.cfg.Verbose
 			m.saveCfg()
