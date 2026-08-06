@@ -25,6 +25,9 @@ func renderConversation(a *agent.Agent, w int, spin string, verbose bool) string
 	}
 
 	for _, m := range a.Messages {
+		if m.Hidden {
+			continue
+		}
 		parts = append(parts, renderMessage(&m, a, w, verbose))
 	}
 

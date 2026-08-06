@@ -447,10 +447,11 @@ func cmdCompact(m *App, _ string) tea.Cmd {
 	return tea.Batch(cmd, m.flashCmd())
 }
 
-// lastUserIdx finds the newest real user prompt (not tool results).
+// lastUserIdx finds the newest real user prompt (not tool results or hidden
+// notices).
 func lastUserIdx(a *agent.Agent) int {
 	for i := len(a.Messages) - 1; i >= 0; i-- {
-		if a.Messages[i].Role == "user" && !a.Messages[i].IsToolResult() {
+		if a.Messages[i].Role == "user" && !a.Messages[i].IsToolResult() && !a.Messages[i].Hidden {
 			return i
 		}
 	}

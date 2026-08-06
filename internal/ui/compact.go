@@ -35,7 +35,7 @@ func splitForCompact(msgs []provider.Message, keepTurns int) (head, tail []provi
 	idx := len(msgs)
 	turns := 0
 	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Role == "user" && !msgs[i].IsToolResult() {
+		if msgs[i].Role == "user" && !msgs[i].IsToolResult() && !msgs[i].Hidden {
 			turns++
 			idx = i
 			if turns == keepTurns {

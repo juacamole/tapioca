@@ -27,12 +27,14 @@ type Block struct {
 	IsError   bool            `json:"is_error,omitempty"`
 }
 
-// Message is one conversation turn.
+// Message is one conversation turn. Hidden messages reach the model but are
+// not rendered in the transcript (e.g. rewind notices).
 type Message struct {
 	Role   string    `json:"role"` // "user" | "assistant"
 	Blocks []Block   `json:"blocks"`
 	Model  string    `json:"model,omitempty"`
 	Usage  *Usage    `json:"usage,omitempty"`
+	Hidden bool      `json:"hidden,omitempty"`
 	Time   time.Time `json:"time"`
 }
 
