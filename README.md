@@ -132,6 +132,17 @@ Otherwise `ctrl+j` always works.
 
 ## Build & run
 
+With nix (flake):
+
+```sh
+nix run .                          # run straight from the repo
+nix build .                        # binary at ./result/bin/tapioca
+nix develop                        # dev shell: go, gopls, gh, tmux, python3
+nix profile install .              # install onto your PATH
+```
+
+Without nix:
+
 ```sh
 go build -o tapioca .              # build (needs the repo dir for go.mod)
 cp tapioca ~/.npm-global/bin/      # or any directory on your PATH
