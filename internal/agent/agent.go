@@ -281,17 +281,25 @@ func (a *Agent) run(ctx context.Context, history []provider.Message) {
 			a.emit(Event{Kind: EvMessage, Message: &m})
 			history = append(history, m)
 		}
+		toolUses := msg.ToolUses()
 		if cancelled {
+			if len(toolUses) > 0 {
+				a.emitToolResults(interruptedResults(toolUses))
+			}
 			return
 		}
-
-		toolUses := msg.ToolUses()
 		if len(toolUses) == 0 {
 			return
 		}
 
 		var results []provider.Block
+		interrupted := false
 		for _, tu := range toolUses {
+			if ctx.Err() != nil {
+				results = append(results, interruptedResult(tu))
+				interrupted = true
+				continue
+			}
 			argsPreview := compactJSON(tu.Input)
 			a.emit(Event{Kind: EvStatus, Status: StatusTool})
 			a.emit(Event{Kind: EvToolStart, Tool: &ToolInfo{Name: tu.Name, Args: argsPreview}})
@@ -328,15 +336,40 @@ func (a *Agent) run(ctx context.Context, history []provider.Message) {
 				Content:   text,
 				IsError:   isErr,
 			})
-			if ctx.Err() != nil {
-				return
-			}
 		}
-		toolMsg := provider.Message{Role: "user", Blocks: results, Time: time.Now()}
-		a.emit(Event{Kind: EvMessage, Message: &toolMsg})
+		toolMsg := a.emitToolResults(results)
+		if interrupted {
+			return
+		}
 		history = append(history, toolMsg)
 	}
 	a.emit(Event{Kind: EvError, Err: fmt.Errorf("stopped after %d tool rounds", maxToolRounds)})
+}
+
+// Every tool_use must get a tool_result, even on cancellation — providers
+// reject histories with dangling tool calls.
+func interruptedResult(tu provider.Block) provider.Block {
+	return provider.Block{
+		Type:      "tool_result",
+		ToolUseID: tu.ID,
+		Name:      tu.Name,
+		Content:   "[tool execution was interrupted]",
+		IsError:   true,
+	}
+}
+
+func interruptedResults(toolUses []provider.Block) []provider.Block {
+	out := make([]provider.Block, 0, len(toolUses))
+	for _, tu := range toolUses {
+		out = append(out, interruptedResult(tu))
+	}
+	return out
+}
+
+func (a *Agent) emitToolResults(results []provider.Block) provider.Message {
+	toolMsg := provider.Message{Role: "user", Blocks: results, Time: time.Now()}
+	a.emit(Event{Kind: EvMessage, Message: &toolMsg})
+	return toolMsg
 }
 
 func compactJSON(raw json.RawMessage) string {
