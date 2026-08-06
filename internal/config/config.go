@@ -55,6 +55,7 @@ type Config struct {
 	Zen             bool    `toml:"zen"`     // hide keybind hints (/zen)
 	Editor          string  `toml:"editor"`  // falls back to $VISUAL, $EDITOR, nvim, vim
 	Autosave        bool    `toml:"autosave"`
+	AutoCompact     bool    `toml:"auto_compact"`    // summarize when context nears the limit
 	PermissionMode  string  `toml:"permission_mode"` // plan | manual | auto | bypass
 
 	Providers map[string]ProviderConfig `toml:"providers"`
@@ -80,6 +81,7 @@ func Default() *Config {
 		ThinkingBudget: 2048,
 		Verbose:        false,
 		Autosave:       true,
+		AutoCompact:    true,
 		PermissionMode: "ask",
 		Providers: map[string]ProviderConfig{
 			"ollama":    {Type: "ollama", BaseURL: "http://localhost:11434"},
@@ -232,6 +234,7 @@ thinking_budget = 2048          # thinking token budget (anthropic)
 verbose = false                 # show full thoughts and tool output in chat
 zen = false                     # hide keybind hints; toggle with /zen
 autosave = true                 # save the session after every completed turn
+auto_compact = true             # summarize old turns when context nears the limit
 permission_mode = "manual"      # plan | manual | auto | bypass (cycle with shift+tab)
 editor = ""                     # prompt editor; falls back to $VISUAL, $EDITOR, nvim, vim
 
