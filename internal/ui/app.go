@@ -403,8 +403,9 @@ func (m *App) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		}
 	case agent.EvUsage:
 		if ev.Usage != nil {
-			a.Stats.AddRequest(ev.Model, ev.Usage.InputTokens, ev.Usage.OutputTokens, ev.Dur)
-			a.CtxTokens = ev.Usage.InputTokens + ev.Usage.OutputTokens
+			u := ev.Usage
+			a.Stats.AddRequest(ev.Model, u.InputTokens, u.OutputTokens, u.CacheReadTokens, u.CacheWriteTokens, ev.Dur)
+			a.CtxTokens = u.InputTokens + u.OutputTokens + u.CacheReadTokens + u.CacheWriteTokens
 		}
 	case agent.EvPermission:
 		if ev.Perm != nil {
