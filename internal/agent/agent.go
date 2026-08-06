@@ -63,6 +63,7 @@ const (
 	EvToolEnd
 	EvUsage
 	EvPermission // a built-in tool wants permission; answer via Perm.Reply
+	EvRetry      // transient provider failure; retrying after Delay
 	EvError
 	EvDone // turn finished (after any tool rounds)
 )
@@ -97,6 +98,9 @@ type Event struct {
 	Message *provider.Message
 	Perm    *PermissionReq
 	Err     error
+	Attempt int
+	Max     int
+	Delay   time.Duration
 }
 
 const (
@@ -136,6 +140,8 @@ type Agent struct {
 	StreamText     string
 	StreamThinking string
 	StreamStart    time.Time
+	RetryAt        time.Time // when the next retry attempt fires
+	RetryNote      string
 
 	Events chan Event
 	MCP    *mcp.Registry
@@ -233,43 +239,65 @@ func (a *Agent) run(ctx context.Context, history []provider.Message) {
 			}
 		}
 
-		events := make(chan provider.Event, 64)
 		var msg provider.Message
 		var streamErr error
-		done := make(chan struct{})
 		start := time.Now()
-		go func() {
-			msg, streamErr = a.Provider.Stream(ctx, req, events)
-			close(done)
-		}()
-		sawThinking, sawText := false, false
-		for ev := range events {
-			switch ev.Type {
-			case provider.EventTextDelta:
-				if !sawText {
-					sawText = true
-					a.emit(Event{Kind: EvStatus, Status: StatusStreaming, Text: "writing"})
+		for attempt := 1; ; attempt++ {
+			events := make(chan provider.Event, 64)
+			done := make(chan struct{})
+			go func() {
+				msg, streamErr = a.Provider.Stream(ctx, req, events)
+				close(done)
+			}()
+			sawThinking, sawText := false, false
+			for ev := range events {
+				switch ev.Type {
+				case provider.EventTextDelta:
+					if !sawText {
+						sawText = true
+						a.emit(Event{Kind: EvStatus, Status: StatusStreaming, Text: "writing"})
+					}
+					a.emit(Event{Kind: EvTextDelta, Text: ev.Text})
+				case provider.EventThinkingDelta:
+					if !sawThinking {
+						sawThinking = true
+						a.emit(Event{Kind: EvStatus, Status: StatusThinking, Text: "reasoning"})
+					}
+					a.emit(Event{Kind: EvThinkingDelta, Text: ev.Text})
+				case provider.EventThinkingDone:
+					if !sawText {
+						a.emit(Event{Kind: EvStatus, Status: StatusThinking, Text: "preparing answer"})
+					}
+				case provider.EventToolUseStart:
+					a.emit(Event{Kind: EvStatus, Status: StatusStreaming, Text: "planning tool call: " + ev.ToolName})
 				}
-				a.emit(Event{Kind: EvTextDelta, Text: ev.Text})
-			case provider.EventThinkingDelta:
-				if !sawThinking {
-					sawThinking = true
-					a.emit(Event{Kind: EvStatus, Status: StatusThinking, Text: "reasoning"})
-				}
-				a.emit(Event{Kind: EvThinkingDelta, Text: ev.Text})
-			case provider.EventThinkingDone:
-				if !sawText {
-					a.emit(Event{Kind: EvStatus, Status: StatusThinking, Text: "preparing answer"})
-				}
-			case provider.EventToolUseStart:
-				a.emit(Event{Kind: EvStatus, Status: StatusStreaming, Text: "planning tool call: " + ev.ToolName})
+			}
+			<-done
+			if streamErr == nil || ctx.Err() != nil || errors.Is(streamErr, context.Canceled) {
+				break
+			}
+			if attempt >= provider.RetryMaxAttempts || !provider.Retryable(streamErr) {
+				break
+			}
+			delay, ok := provider.RetryDelay(attempt, streamErr)
+			if !ok {
+				break
+			}
+			a.emit(Event{Kind: EvRetry, Err: streamErr, Attempt: attempt, Max: provider.RetryMaxAttempts, Delay: delay})
+			select {
+			case <-time.After(delay):
+			case <-ctx.Done():
 			}
 		}
-		<-done
 		dur := time.Since(start)
 
-		cancelled := errors.Is(streamErr, context.Canceled)
+		cancelled := errors.Is(streamErr, context.Canceled) || (streamErr != nil && ctx.Err() != nil)
 		if streamErr != nil && !cancelled {
+			// Keep whatever partial content survived under the error.
+			if len(msg.Blocks) > 0 {
+				m := msg
+				a.emit(Event{Kind: EvMessage, Message: &m})
+			}
 			a.emit(Event{Kind: EvError, Err: streamErr})
 			return
 		}
