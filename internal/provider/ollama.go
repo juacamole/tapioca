@@ -28,7 +28,7 @@ func NewOllama(name string, cfg config.ProviderConfig) *Ollama {
 	if base == "" {
 		base = "http://localhost:11434"
 	}
-	return &Ollama{name: name, baseURL: base, ctxWindow: cfg.ContextWindow, client: &http.Client{}}
+	return &Ollama{name: name, baseURL: base, ctxWindow: cfg.ContextWindow, client: httpClient}
 }
 
 func (o *Ollama) Name() string { return o.name }
@@ -284,7 +284,9 @@ func (o *Ollama) post(ctx context.Context, body olReq) (*http.Response, error) {
 		if json.Unmarshal(data, &e) == nil && e.Error != "" {
 			m = e.Error
 		}
-		return nil, fmt.Errorf("ollama: HTTP %d: %s", resp.StatusCode, m)
+		ae := newAPIError(o.name, resp, data)
+		ae.Message = m
+		return nil, ae
 	}
 	return resp, nil
 }

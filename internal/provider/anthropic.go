@@ -42,7 +42,7 @@ func NewAnthropic(name string, cfg config.ProviderConfig) (*Anthropic, error) {
 	if base == "" {
 		base = "https://api.anthropic.com"
 	}
-	return &Anthropic{name: name, baseURL: base, apiKey: key, client: &http.Client{}}, nil
+	return &Anthropic{name: name, baseURL: base, apiKey: key, client: httpClient}, nil
 }
 
 func (a *Anthropic) Name() string { return a.name }
@@ -212,7 +212,7 @@ func (a *Anthropic) Stream(ctx context.Context, req Request, out chan<- Event) (
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return Message{}, fmt.Errorf("anthropic: HTTP %d: %s", resp.StatusCode, apiErrorText(data))
+		return Message{}, newAPIError(a.name, resp, data)
 	}
 
 	type blockBuilder struct {
@@ -313,11 +313,15 @@ func (a *Anthropic) Stream(ctx context.Context, req Request, out chan<- Event) (
 				usage.OutputTokens = ev.Usage.OutputTokens
 			}
 		case "error":
-			m := "stream error"
+			m, typ := "stream error", ""
 			if ev.Error != nil {
-				m = ev.Error.Message
+				m, typ = ev.Error.Message, ev.Error.Type
 			}
-			return finish(), fmt.Errorf("anthropic: %s", m)
+			status := 400
+			if typ == "overloaded_error" || typ == "api_error" {
+				status = 529 // in-band server trouble is retryable
+			}
+			return finish(), &APIError{Provider: a.name, Status: status, Message: m}
 		case "message_stop":
 			out <- Event{Type: EventUsage, Usage: usage}
 			out <- Event{Type: EventDone, StopReason: stopReason}

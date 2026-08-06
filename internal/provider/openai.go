@@ -38,7 +38,7 @@ func NewOpenAI(name string, cfg config.ProviderConfig) *OpenAI {
 	if base == "" {
 		base = "https://api.openai.com"
 	}
-	return &OpenAI{name: name, baseURL: base, apiKey: key, client: &http.Client{}}
+	return &OpenAI{name: name, baseURL: base, apiKey: key, client: httpClient}
 }
 
 func (o *OpenAI) Name() string { return o.name }
@@ -183,7 +183,7 @@ func (o *OpenAI) Stream(ctx context.Context, req Request, out chan<- Event) (Mes
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return Message{}, fmt.Errorf("%s: HTTP %d: %s", o.name, resp.StatusCode, apiErrorText(data))
+		return Message{}, newAPIError(o.name, resp, data)
 	}
 
 	msg := Message{Role: "assistant", Model: req.Model, Time: time.Now()}

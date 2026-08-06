@@ -148,8 +148,13 @@ func NewApp(cfg *config.Config, mgr *agent.Manager, sessID, sessName string, cre
 
 // statusLabel returns the fine-grained stage label when one is active.
 func statusLabel(a *agent.Agent) string {
-	if a.StatusDetail != "" && a.Status.Busy() {
-		return a.StatusDetail
+	if a.Status.Busy() {
+		if left := time.Until(a.RetryAt); left > 0 {
+			return fmt.Sprintf("retry in %ds (%s)", int(left.Seconds())+1, a.RetryNote)
+		}
+		if a.StatusDetail != "" {
+			return a.StatusDetail
+		}
 	}
 	return a.Status.String()
 }
@@ -386,6 +391,16 @@ func (m *App) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 				m.overlay = overlayPerm
 			}
 		}
+	case agent.EvRetry:
+		a.StreamText = ""
+		a.StreamThinking = ""
+		a.Status = agent.StatusWaiting
+		a.RetryAt = time.Now().Add(ev.Delay)
+		reason := ""
+		if ev.Err != nil {
+			reason = truncate(ev.Err.Error(), 24)
+		}
+		a.RetryNote = fmt.Sprintf("%d/%d · %s", ev.Attempt+1, ev.Max, reason)
 	case agent.EvError:
 		if ev.Err != nil {
 			a.LastErr = ev.Err.Error()
@@ -1581,7 +1596,7 @@ func (m *App) renderStatus() string {
 			}
 			el := time.Since(a.StreamStart).Seconds()
 			rate := ""
-			if el > 0.5 {
+			if el > 0.5 && len(a.StreamText)+len(a.StreamThinking) > 0 {
 				rate = fmt.Sprintf(" · %.0f tok/s", float64(len(a.StreamText)+len(a.StreamThinking))/4.0/el)
 			}
 			right += styWarn.Render(m.spin.View()+" "+st+rate) + " "
