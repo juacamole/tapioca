@@ -52,9 +52,10 @@ type Config struct {
 	Thinking        bool    `toml:"thinking"`
 	ThinkingBudget  int     `toml:"thinking_budget"`
 	Verbose         bool    `toml:"verbose"` // full thoughts/tool output in chat
+	Zen             bool    `toml:"zen"`     // hide keybind hints (/zen)
 	Editor          string  `toml:"editor"`  // falls back to $VISUAL, $EDITOR, nvim, vim
 	Autosave        bool    `toml:"autosave"`
-	PermissionMode  string  `toml:"permission_mode"` // ask | auto | readonly
+	PermissionMode  string  `toml:"permission_mode"` // plan | manual | auto | bypass
 
 	Providers map[string]ProviderConfig `toml:"providers"`
 	MCP       []MCPServerConfig         `toml:"mcp"`
@@ -229,6 +230,7 @@ temperature = 1.0
 thinking = false                # ask models to emit reasoning (or use /effort)
 thinking_budget = 2048          # thinking token budget (anthropic)
 verbose = false                 # show full thoughts and tool output in chat
+zen = false                     # hide keybind hints; toggle with /zen
 autosave = true                 # save the session after every completed turn
 permission_mode = "manual"      # plan | manual | auto | bypass (cycle with shift+tab)
 editor = ""                     # prompt editor; falls back to $VISUAL, $EDITOR, nvim, vim

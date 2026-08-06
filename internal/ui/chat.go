@@ -41,12 +41,15 @@ func renderConversation(a *agent.Agent, w int, spin string, verbose bool) string
 }
 
 func welcomeText(w int) string {
+	if zenMode {
+		return styAppTitle.Render("tapioca")
+	}
 	lines := []string{
 		styAppTitle.Render("tapioca"),
 		"",
 		styDim.Render("type a prompt and press enter to chat"),
-		styDim.Render("f1 shows every keybind · ctrl+p picks a model"),
-		styDim.Render("ctrl+e writes the prompt in vim · ctrl+o toggles verbose chat"),
+		styDim.Render("f1 shows every keybind · /help lists commands"),
+		styDim.Render("ctrl+g writes the prompt in vim · ctrl+o toggles verbose chat"),
 		styDim.Render("tab focuses the dashboard to change settings"),
 	}
 	return strings.Join(lines, "\n")

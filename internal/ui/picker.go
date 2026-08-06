@@ -153,11 +153,13 @@ func (p *picker) view(w, h int, checked func(string) bool) string {
 		}
 		b.WriteString(lipgloss.NewStyle().MaxWidth(contentW).Render(line) + "\n")
 	}
-	hint := "up/down move · enter select · esc close"
-	if p.kind == pickPanels {
-		hint = "enter toggle · left/right reorder · esc close"
+	if !zenMode {
+		hint := "up/down move · enter select · esc close"
+		if p.kind == pickPanels {
+			hint = "enter toggle · left/right reorder · esc close"
+		}
+		b.WriteString("\n" + styDim.Render(hint))
 	}
-	b.WriteString("\n" + styDim.Render(hint))
 
 	box := borderStyle(true).Width(innerW).Padding(0, 1).Render(b.String())
 	return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, box)

@@ -118,11 +118,22 @@ type App struct {
 	flashSeq int
 }
 
+// zenMode hides every keybind hint; UI-thread only, mirrored from cfg.Zen.
+var zenMode bool
+
+func inputPlaceholder() string {
+	if zenMode {
+		return "write a prompt…"
+	}
+	return "write a prompt… (enter sends, / for commands)"
+}
+
 // NewApp builds the root model. The manager must already hold at least one
 // agent (fresh or restored from a session).
 func NewApp(cfg *config.Config, mgr *agent.Manager, sessID, sessName string, created time.Time) *App {
+	zenMode = cfg.Zen
 	ta := textarea.New()
-	ta.Placeholder = "write a prompt… (enter sends, / for commands)"
+	ta.Placeholder = inputPlaceholder()
 	ta.Prompt = "| "
 	ta.CharLimit = 0
 	ta.ShowLineNumbers = false
@@ -1450,7 +1461,9 @@ func (m *App) renderSlashMenu(ms []*slashCmd, w int) string {
 			lines = append(lines, "  "+styAccent.Render(label)+" "+styDim.Render(truncate(c.help, max(4, w-lipgloss.Width(label)-4))))
 		}
 	}
-	lines = append(lines, styDim.Render("up/down choose · tab complete · enter run"))
+	if !zenMode {
+		lines = append(lines, styDim.Render("up/down choose · tab complete · enter run"))
+	}
 	return strings.Join(lines, "\n")
 }
 
@@ -1485,9 +1498,10 @@ func (m *App) renderPerm(w, h int) string {
 }
 
 func (m *App) renderTextOverlay(w, h int) string {
-	content := styPanelTitle.Render(truncate(m.textTitle, m.textVP.Width)) + "\n" +
-		m.textVP.View() + "\n" +
-		styDim.Render("j/k scroll · u/d page · g/G top/bottom · esc close")
+	content := styPanelTitle.Render(truncate(m.textTitle, m.textVP.Width)) + "\n" + m.textVP.View()
+	if !zenMode {
+		content += "\n" + styDim.Render("j/k scroll · u/d page · g/G top/bottom · esc close")
+	}
 	box := borderStyle(true).Padding(0, 1).Render(content)
 	return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, box)
 }
@@ -1549,7 +1563,10 @@ func (m *App) renderTabs() string {
 		}
 	}
 	line := " " + strings.Join(tabs, "   ")
-	hint := styDim.Render(m.keys.FirstKey("prev_agent") + "/" + m.keys.FirstKey("next_agent") + " switch · " + m.keys.FirstKey("new_agent") + " new · /fork ")
+	hint := ""
+	if !zenMode {
+		hint = styDim.Render(m.keys.FirstKey("prev_agent") + "/" + m.keys.FirstKey("next_agent") + " switch · " + m.keys.FirstKey("new_agent") + " new · /fork ")
+	}
 	gap := m.w - lipgloss.Width(line) - lipgloss.Width(hint)
 	if gap < 1 {
 		return truncate(line, m.w)
@@ -1565,6 +1582,8 @@ func (m *App) renderStatus() string {
 		} else {
 			left = " " + styFlash.Render(m.flash)
 		}
+	} else if zenMode {
+		left = " " + styDim.Render("/zen to exit zen")
 	} else {
 		k := m.keys
 		switch m.focus {
