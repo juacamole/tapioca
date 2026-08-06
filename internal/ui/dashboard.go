@@ -302,7 +302,8 @@ func renderTokensPanel(m *App, a *agent.Agent, w, h int) []string {
 		if pct > 100 {
 			pct = 100
 		}
-		barW := max(4, w-14)
+		label := fmt.Sprintf(" %d%% of %s", pct, compactTok(win))
+		barW := max(4, w-6-len(label))
 		filled := barW * pct / 100
 		sty := styOK
 		if pct >= 85 {
@@ -311,7 +312,7 @@ func renderTokensPanel(m *App, a *agent.Agent, w, h int) []string {
 			sty = styWarn
 		}
 		bar := sty.Render(strings.Repeat("█", filled)) + styDim.Render(strings.Repeat("░", barW-filled))
-		lines = append(lines, fmt.Sprintf("%s %s %d%%", styDim.Render("ctx"), bar, pct))
+		lines = append(lines, fmt.Sprintf("%s %s%s", styDim.Render("ctx"), bar, styDim.Render(label)))
 	}
 	if cost := m.sessionCost(a); cost > 0 {
 		lines = append(lines, fmt.Sprintf("%s $%.4f", styDim.Render("cost"), cost))
@@ -522,6 +523,17 @@ func renderSettingsPanel(m *App, a *agent.Agent, w, h int) []string {
 		}
 	}
 	return lines
+}
+
+func compactTok(n int) string {
+	switch {
+	case n >= 1_000_000:
+		return fmt.Sprintf("%.1fM", float64(n)/1e6)
+	case n >= 1000:
+		return fmt.Sprintf("%dk", n/1000)
+	default:
+		return fmt.Sprintf("%d", n)
+	}
 }
 
 func sparkline(vals []int, w int) string {
