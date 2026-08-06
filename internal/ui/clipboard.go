@@ -61,7 +61,7 @@ func (m *App) copyLast() tea.Cmd {
 	if err := copyToClipboard(text); err != nil {
 		m.setFlash("copy failed: "+err.Error(), true)
 	} else {
-		m.setFlash(fmt.Sprintf("copied last response (%s)", humanTokens(len(text))), false)
+		m.setFlash(fmt.Sprintf("copied last response (%s chars)", humanInt(len(text))), false)
 	}
 	return m.flashCmd()
 }
@@ -80,7 +80,7 @@ func (m *App) copyAll() tea.Cmd {
 	if err := copyToClipboard(text); err != nil {
 		m.setFlash("copy failed: "+err.Error(), true)
 	} else {
-		m.setFlash(fmt.Sprintf("copied transcript (%s)", humanTokens(len(text))), false)
+		m.setFlash(fmt.Sprintf("copied transcript (%s chars)", humanInt(len(text))), false)
 	}
 	return m.flashCmd()
 }
