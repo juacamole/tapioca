@@ -64,6 +64,7 @@ const (
 	EvUsage
 	EvPermission // a built-in tool wants permission; answer via Perm.Reply
 	EvRetry      // transient provider failure; retrying after Delay
+	EvNotice     // non-fatal warning for the user
 	EvError
 	EvDone // turn finished (after any tool rounds)
 )
@@ -241,6 +242,7 @@ func (a *Agent) run(ctx context.Context, history []provider.Message) {
 
 		var msg provider.Message
 		var streamErr error
+		var stopReason string
 		start := time.Now()
 		for attempt := 1; ; attempt++ {
 			events := make(chan provider.Event, 64)
@@ -270,6 +272,8 @@ func (a *Agent) run(ctx context.Context, history []provider.Message) {
 					}
 				case provider.EventToolUseStart:
 					a.emit(Event{Kind: EvStatus, Status: StatusStreaming, Text: "planning tool call: " + ev.ToolName})
+				case provider.EventDone:
+					stopReason = ev.StopReason
 				}
 			}
 			<-done
@@ -315,6 +319,13 @@ func (a *Agent) run(ctx context.Context, history []provider.Message) {
 				a.emitToolResults(interruptedResults(toolUses))
 			}
 			return
+		}
+		if len(msg.Blocks) == 0 {
+			a.emit(Event{Kind: EvError, Err: errors.New("provider returned an empty response — is the model loaded and working?")})
+			return
+		}
+		if stopReason == "length" || stopReason == "max_tokens" {
+			a.emit(Event{Kind: EvNotice, Text: "output was cut off at the max tokens limit — raise it in settings, or /regen"})
 		}
 		if len(toolUses) == 0 {
 			return

@@ -391,6 +391,9 @@ func (m *App) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 				m.overlay = overlayPerm
 			}
 		}
+	case agent.EvNotice:
+		m.setFlash(ev.Text, true)
+		cmds = append(cmds, m.flashCmd())
 	case agent.EvRetry:
 		a.StreamText = ""
 		a.StreamThinking = ""
