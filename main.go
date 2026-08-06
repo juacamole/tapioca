@@ -14,6 +14,7 @@ import (
 
 	"tapioca/internal/agent"
 	"tapioca/internal/catalog"
+	"tapioca/internal/checkpoint"
 	"tapioca/internal/config"
 	"tapioca/internal/mcp"
 	"tapioca/internal/session"
@@ -225,6 +226,9 @@ func main() {
 	}
 	exec := tools.NewExecutor(cwd, mode)
 	exec.SetExtraDirs(args.addDirs)
+	exec.SetCheckpoint(func(label string) {
+		_, _ = checkpoint.Snapshot(exec.Cwd(), label)
+	})
 
 	reg := mcp.NewRegistry()
 	defer reg.CloseAll()

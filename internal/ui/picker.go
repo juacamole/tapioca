@@ -15,6 +15,7 @@ const (
 	pickModel
 	pickSession
 	pickPanels
+	pickCheckpoint
 )
 
 type pickerItem struct {

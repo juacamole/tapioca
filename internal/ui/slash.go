@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"tapioca/internal/agent"
+	"tapioca/internal/checkpoint"
 	"tapioca/internal/provider"
 	"tapioca/internal/session"
 )
@@ -58,6 +60,8 @@ func buildSlashCmds() []slashCmd {
 		{"btw", "note", "add context without asking for a reply", cmdBtw},
 		{"cd", "dir", "change the working directory", cmdCd},
 		{"diff", "", "show git diff of the working directory", cmdDiff},
+		{"checkpoints", "", "pick a checkpoint to rewind the working tree to", cmdCheckpoints},
+		{"rewind", "[n|id]", "rewind file changes (default: latest checkpoint)", cmdRewind},
 		{"clear", "", "clear this agent's conversation", cmdClear},
 		{"compact", "", "summarize the conversation to free context", cmdCompact},
 		{"regen", "", "regenerate the last response", cmdRegen},
@@ -356,6 +360,58 @@ func colorizeDiff(s string) string {
 		}
 	}
 	return strings.Join(lines, "\n")
+}
+
+func cmdCheckpoints(m *App, _ string) tea.Cmd {
+	if m.busyGuard(m.mgr.ActiveAgent()) {
+		return m.flashCmd()
+	}
+	entries, err := checkpoint.List(m.cwd(), 30)
+	if err != nil || len(entries) == 0 {
+		m.setFlash("no checkpoints yet — they appear once the agent modifies files", true)
+		return m.flashCmd()
+	}
+	var items []pickerItem
+	for _, e := range entries {
+		items = append(items, pickerItem{
+			label: e.Label,
+			desc:  e.ID + " · " + ago(e.Time),
+			value: e.ID,
+		})
+	}
+	m.pick = newPicker(pickCheckpoint, "rewind working tree to…", items)
+	m.overlay = overlayPicker
+	return nil
+}
+
+func cmdRewind(m *App, arg string) tea.Cmd {
+	if m.busyGuard(m.mgr.ActiveAgent()) {
+		return m.flashCmd()
+	}
+	entries, err := checkpoint.List(m.cwd(), 30)
+	if err != nil || len(entries) == 0 {
+		m.setFlash("no checkpoints to rewind to", true)
+		return m.flashCmd()
+	}
+	id := entries[0].ID
+	if arg != "" {
+		if n, err := strconv.Atoi(arg); err == nil && n >= 1 && n <= len(entries) {
+			id = entries[n-1].ID
+		} else {
+			id = arg
+		}
+	}
+	return m.restoreCheckpoint(id)
+}
+
+// restoreCheckpoint rewinds asynchronously; the current state is snapshotted
+// first so the rewind itself can be undone.
+func (m *App) restoreCheckpoint(id string) tea.Cmd {
+	cwd := m.cwd()
+	m.setFlash("rewinding to "+id+"…", false)
+	return tea.Batch(m.flashCmd(), func() tea.Msg {
+		return rewindDoneMsg{id: id, err: checkpoint.Restore(cwd, id)}
+	})
 }
 
 func cmdClear(m *App, _ string) tea.Cmd {
