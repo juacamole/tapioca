@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"tapioca/internal/agent"
+	"tapioca/internal/catalog"
 )
 
 // panelDef describes one dashboard panel type.
@@ -225,6 +226,11 @@ func (m *App) costFor(model string) (costRates, bool) {
 		}
 	}
 	if !ok {
+		if cm, found := catalog.Lookup(model); found && (cm.In > 0 || cm.Out > 0) {
+			r, ok = costRates{In: cm.In, Out: cm.Out, CacheR: cm.CacheR, CacheW: cm.CacheW}, true
+		}
+	}
+	if !ok {
 		for _, c := range defaultCosts {
 			if strings.HasPrefix(model, c.prefix) && len(c.prefix) > best {
 				best, r, ok = len(c.prefix), costRates{In: c.in, Out: c.out}, true
@@ -254,11 +260,15 @@ func (m *App) sessionCost(a *agent.Agent) float64 {
 	return total
 }
 
-// contextWindowFor returns the assumed context window for the agent's model.
+// contextWindowFor returns the context window: config override, then
+// catalog/probe data, then a per-provider-type guess.
 func (m *App) contextWindowFor(a *agent.Agent) int {
 	pc := m.cfg.Providers[a.ProviderName]
 	if pc.ContextWindow > 0 {
 		return pc.ContextWindow
+	}
+	if cm, ok := catalog.Lookup(a.Model); ok && cm.Context > 0 {
+		return cm.Context
 	}
 	switch pc.Type {
 	case "anthropic":

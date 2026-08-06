@@ -16,6 +16,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"tapioca/internal/agent"
+	"tapioca/internal/catalog"
 	"tapioca/internal/config"
 	"tapioca/internal/mcp"
 	"tapioca/internal/provider"
@@ -96,8 +97,9 @@ type App struct {
 	recalling bool
 	recallIdx int
 
-	mouseOn bool
-	git     gitInfo
+	mouseOn   bool
+	git       gitInfo
+	probedCtx map[string]bool
 
 	// Chat transcript caches for mouse selection.
 	chatStyled []string
@@ -153,6 +155,7 @@ func NewApp(cfg *config.Config, mgr *agent.Manager, sessID, sessName string, cre
 		vp:          viewport.New(0, 0),
 		spin:        sp,
 		mouseOn:     true,
+		probedCtx:   map[string]bool{},
 		sessID:      sessID,
 		sessName:    sessName,
 		sessCreated: created,
@@ -1261,7 +1264,32 @@ func (m *App) sendText(a *agent.Agent, text string) tea.Cmd {
 
 	m.dirty = true
 	m.refreshChat(true)
-	return nil
+	return m.maybeProbeCtx(a)
+}
+
+// maybeProbeCtx asks Ollama for the model's true context window once per
+// model, feeding the context gauge for models the catalog doesn't know.
+func (m *App) maybeProbeCtx(a *agent.Agent) tea.Cmd {
+	if a.Model == "" || m.probedCtx[a.Model] {
+		return nil
+	}
+	if _, ok := catalog.Lookup(a.Model); ok {
+		return nil
+	}
+	ol, isOllama := a.Provider.(*provider.Ollama)
+	if !isOllama {
+		return nil
+	}
+	m.probedCtx[a.Model] = true
+	model := a.Model
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if n, err := ol.ContextLength(ctx, model); err == nil && n > 0 {
+			catalog.Store(model, catalog.Model{Context: n})
+		}
+		return nil
+	}
 }
 
 func (m *App) newSession() {
