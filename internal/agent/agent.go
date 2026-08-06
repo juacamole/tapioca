@@ -225,6 +225,7 @@ func (a *Agent) run(ctx context.Context, history []provider.Message) {
 	if rounds <= 0 {
 		rounds = maxToolRounds
 	}
+	doomKey, doomCount, doomOff := "", 0, false
 	for round := 0; round < rounds; round++ {
 		stage := "processing prompt"
 		if round > 0 {
@@ -350,6 +351,33 @@ func (a *Agent) run(ctx context.Context, history []provider.Message) {
 				continue
 			}
 			argsPreview := compactJSON(tu.Input)
+
+			// Doom loop: three identical calls in a row means the model is
+			// stuck; make the user decide instead of burning tokens.
+			key := tu.Name + "\x00" + string(tu.Input)
+			if key == doomKey {
+				doomCount++
+			} else {
+				doomKey, doomCount = key, 1
+			}
+			if !doomOff && doomCount >= 3 {
+				d := ask("loop: "+tu.Name,
+					"the model repeated the exact same call 3 times:\n"+argsPreview+"\nallow it to keep going?")
+				switch {
+				case d.Always:
+					doomOff = true
+				case !d.Allow:
+					results = append(results, provider.Block{
+						Type: "tool_result", ToolUseID: tu.ID, Name: tu.Name, IsError: true,
+						Content: "stopped: you repeated the exact same tool call 3 times. Change your approach or ask the user for guidance.",
+					})
+					doomCount = 0
+					continue
+				default:
+					doomCount = 0
+				}
+			}
+
 			a.emit(Event{Kind: EvStatus, Status: StatusTool})
 			a.emit(Event{Kind: EvToolStart, Tool: &ToolInfo{Name: tu.Name, Args: argsPreview}})
 
