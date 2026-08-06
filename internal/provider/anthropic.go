@@ -119,7 +119,7 @@ type sseEvent struct {
 	} `json:"error"`
 }
 
-func (a *Anthropic) convertMessages(msgs []Message) []anthMsg {
+func (a *Anthropic) convertMessages(model string, msgs []Message) []anthMsg {
 	var out []anthMsg
 	for _, m := range msgs {
 		if m.Role != "user" && m.Role != "assistant" {
@@ -133,8 +133,9 @@ func (a *Anthropic) convertMessages(msgs []Message) []anthMsg {
 					blocks = append(blocks, anthBlock{Type: "text", Text: b.Text})
 				}
 			case "thinking":
-				// Thinking blocks can only be replayed with their signature.
-				if b.Signature != "" {
+				// Signatures are model-specific; replay only for the model
+				// that produced them.
+				if b.Signature != "" && (m.Model == "" || m.Model == model) {
 					blocks = append(blocks, anthBlock{Type: "thinking", Thinking: b.Text, Signature: b.Signature})
 				}
 			case "tool_use":
@@ -168,7 +169,7 @@ func (a *Anthropic) Stream(ctx context.Context, req Request, out chan<- Event) (
 		Model:     req.Model,
 		MaxTokens: req.MaxTokens,
 		System:    req.System,
-		Messages:  a.convertMessages(req.Messages),
+		Messages:  a.convertMessages(req.Model, req.Messages),
 		Stream:    true,
 	}
 	for _, t := range req.Tools {
