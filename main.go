@@ -226,9 +226,13 @@ func main() {
 	}
 	exec := tools.NewExecutor(cwd, mode)
 	exec.SetExtraDirs(args.addDirs)
-	exec.SetCheckpoint(func(label string) {
-		_, _ = checkpoint.Snapshot(exec.Cwd(), label)
-	})
+	if checkpoint.Available() {
+		exec.SetCheckpoint(func(label string) {
+			_, _ = checkpoint.Snapshot(exec.Cwd(), label)
+		})
+	} else {
+		fmt.Fprintln(os.Stderr, "warning: git not found — file checkpoints and /rewind are disabled")
+	}
 
 	reg := mcp.NewRegistry()
 	defer reg.CloseAll()
