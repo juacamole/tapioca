@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"tapioca/internal/provider"
+	"tapioca/internal/textenc"
 )
 
 const (
@@ -155,7 +156,11 @@ func (m *App) expandMentions(text string, atts *[]attachment) string {
 			continue
 		}
 		if data, err := os.ReadFile(path); err == nil {
-			content := string(data)
+			content, isText := textenc.Decode(data)
+			if !isText {
+				inlined = append(inlined, fmt.Sprintf("[file: %s — binary, not inlined]", rel))
+				continue
+			}
 			if len(content) > maxInlineFile {
 				content = content[:maxInlineFile] + "\n[truncated]"
 			}
