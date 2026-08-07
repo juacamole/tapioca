@@ -103,6 +103,9 @@ type App struct {
 	recalling bool
 	recallIdx int
 
+	pending    []attachment
+	mentionSel int
+
 	mouseOn   bool
 	git       gitInfo
 	probedCtx map[string]bool
@@ -679,8 +682,16 @@ func (m *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case m.keys.Is(msg, "focus_next"):
-		// With the slash popup open, tab completes instead of moving focus.
+		// With a completion popup open, tab completes instead of moving focus.
 		if m.focus == focusInput {
+			if fs := m.mentionMatches(); len(fs) > 0 {
+				sel := ((m.mentionSel % len(fs)) + len(fs)) % len(fs)
+				v := m.ta.Value()
+				cut := strings.LastIndex(v, "@")
+				m.ta.SetValue(v[:cut] + "@" + fs[sel] + " ")
+				m.mentionSel = 0
+				return m, nil
+			}
 			if ms := m.slashMatches(); len(ms) > 0 {
 				sel := ((m.slashSel % len(ms)) + len(ms)) % len(ms)
 				m.ta.SetValue("/" + ms[sel].name + " ")
@@ -727,6 +738,17 @@ func (m *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.saveCfg()
 			m.setFlash(fmt.Sprintf("thinking %s", onOff(a.Thinking)), false)
 		}
+		return m, m.flashCmd()
+
+	case m.keys.Is(msg, "paste_image"):
+		att, err := clipboardImage()
+		if err != nil {
+			m.setFlash(err.Error(), true)
+			return m, m.flashCmd()
+		}
+		m.pending = append(m.pending, att)
+		m.recalcLayout()
+		m.setFlash(fmt.Sprintf("attached %s image (%dkB) — sends with your next prompt", att.mediaType, len(att.data)/1024), false)
 		return m, m.flashCmd()
 
 	case m.keys.Is(msg, "verbose"):
@@ -814,8 +836,29 @@ func (m *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 // handleInputKey processes keys while the prompt input is focused: slash
-// command completion, prompt history recall, sending, and typing.
+// command completion, @-mention completion, prompt history recall, sending,
+// and typing.
 func (m *App) handleInputKey(msg tea.KeyMsg, a *agent.Agent) (tea.Model, tea.Cmd) {
+	if fs := m.mentionMatches(); len(fs) > 0 {
+		switch msg.String() {
+		case "up":
+			m.mentionSel--
+			if m.mentionSel < 0 {
+				m.mentionSel = len(fs) - 1
+			}
+			return m, nil
+		case "down":
+			m.mentionSel = (m.mentionSel + 1) % len(fs)
+			return m, nil
+		case "tab":
+			sel := ((m.mentionSel % len(fs)) + len(fs)) % len(fs)
+			v := m.ta.Value()
+			cut := strings.LastIndex(v, "@")
+			m.ta.SetValue(v[:cut] + "@" + fs[sel] + " ")
+			m.mentionSel = 0
+			return m, nil
+		}
+	}
 	if ms := m.slashMatches(); len(ms) > 0 {
 		switch msg.String() {
 		case "up":
@@ -1277,6 +1320,7 @@ func (m *App) submit() tea.Cmd {
 	if strings.HasPrefix(text, "/") {
 		return m.runSlash(text)
 	}
+	text = m.expandMentions(text, &m.pending)
 	if a.Status.Busy() {
 		a.Queue = append(a.Queue, text)
 		m.dirty = true
@@ -1305,7 +1349,9 @@ func (m *App) sendText(a *agent.Agent, text string) tea.Cmd {
 		}
 	}
 
-	userMsg := provider.TextMessage("user", text)
+	userMsg := buildUserMessage(text, m.pending)
+	m.pending = nil
+	m.recalcLayout()
 	a.Messages = append(a.Messages, userMsg)
 	if m.sessName == "" {
 		m.sessName = truncate(text, 48)
@@ -1449,10 +1495,14 @@ func (m *App) recalcLayout() {
 	chatH := bodyH - dashH
 	innerW := chatW - 2
 	taH := m.taHeight()
+	attach := 0
+	if len(m.pending) > 0 {
+		attach = 1
+	}
 	m.ta.SetWidth(innerW)
 	m.ta.SetHeight(taH)
 	m.vp.Width = innerW
-	m.vp.Height = max(1, chatH-2-taH-1)
+	m.vp.Height = max(1, chatH-2-taH-1-attach)
 }
 
 func (m *App) refreshChat(force bool) {
@@ -1519,9 +1569,16 @@ func (m *App) renderBody(bodyH int) string {
 	innerW := chatW - 2
 
 	vpView := m.vp.View()
-	// Slash command completion popup replaces the bottom of the transcript.
-	if ms := m.slashMatches(); len(ms) > 0 && m.focus == focusInput {
-		menu := m.renderSlashMenu(ms, innerW)
+	// Completion popups replace the bottom of the transcript.
+	var menu string
+	if m.focus == focusInput {
+		if fs := m.mentionMatches(); len(fs) > 0 {
+			menu = m.renderMentionMenu(fs, innerW)
+		} else if ms := m.slashMatches(); len(ms) > 0 {
+			menu = m.renderSlashMenu(ms, innerW)
+		}
+	}
+	if menu != "" {
 		vpLines := strings.Split(vpView, "\n")
 		menuLines := strings.Split(menu, "\n")
 		if len(menuLines) < len(vpLines) {
@@ -1531,7 +1588,15 @@ func (m *App) renderBody(bodyH int) string {
 	}
 
 	sep := styDim.Render(strings.Repeat("─", max(1, innerW)))
-	content := vpView + "\n" + sep + "\n" + m.ta.View()
+	content := vpView + "\n" + sep + "\n"
+	if len(m.pending) > 0 {
+		var labels []string
+		for _, a := range m.pending {
+			labels = append(labels, fmt.Sprintf("%s (%dkB)", a.label, len(a.data)/1024))
+		}
+		content += styTool.Render("attached: "+strings.Join(labels, ", ")) + "\n"
+	}
+	content += m.ta.View()
 	chat := borderStyle(m.focus == focusInput || m.focus == focusChat).Width(innerW).Height(chatH - 2).Render(content)
 
 	switch {
@@ -1546,6 +1611,28 @@ func (m *App) renderBody(bodyH int) string {
 	default:
 		return lipgloss.JoinHorizontal(lipgloss.Top, chat, m.renderDashboard(dashW, bodyH))
 	}
+}
+
+func (m *App) renderMentionMenu(fs []string, w int) string {
+	const maxRows = 6
+	sel := ((m.mentionSel % len(fs)) + len(fs)) % len(fs)
+	start := 0
+	if sel >= maxRows {
+		start = sel - maxRows + 1
+	}
+	end := min(len(fs), start+maxRows)
+	var lines []string
+	for i := start; i < end; i++ {
+		if i == sel {
+			lines = append(lines, stySelected.Render(padRight(truncate("> @"+fs[i], w), w)))
+		} else {
+			lines = append(lines, "  "+styAccent.Render(truncate("@"+fs[i], w-2)))
+		}
+	}
+	if !zenMode {
+		lines = append(lines, styDim.Render("up/down choose · tab complete"))
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (m *App) renderSlashMenu(ms []*slashCmd, w int) string {

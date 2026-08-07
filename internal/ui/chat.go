@@ -125,6 +125,11 @@ func renderMessage(m *provider.Message, a *agent.Agent, w int, verbose bool) str
 		}
 		b.WriteString(styUser.Render("| you ") + ts + "\n")
 		b.WriteString(renderText(m.Text(), w))
+		for _, bl := range m.Blocks {
+			if bl.Type == "image" {
+				b.WriteString("\n" + styTool.Render(fmt.Sprintf("[image %s, %dkB]", bl.MediaType, len(bl.Data)*3/4/1024)))
+			}
+		}
 		return b.String()
 	}
 

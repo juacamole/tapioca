@@ -47,6 +47,7 @@ type olMsg struct {
 	Content   string       `json:"content"`
 	Thinking  string       `json:"thinking,omitempty"`
 	ToolName  string       `json:"tool_name,omitempty"`
+	Images    []string     `json:"images,omitempty"`
 	ToolCalls []olToolCall `json:"tool_calls,omitempty"`
 }
 
@@ -98,6 +99,11 @@ func (o *Ollama) convertMessages(system string, msgs []Message) []olMsg {
 			continue
 		}
 		om := olMsg{Role: m.Role, Content: m.Text()}
+		for _, b := range m.Blocks {
+			if b.Type == "image" && b.Data != "" {
+				om.Images = append(om.Images, b.Data)
+			}
+		}
 		if m.Role == "assistant" {
 			for _, b := range m.ToolUses() {
 				args := b.Input

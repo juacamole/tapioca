@@ -26,6 +26,7 @@ var actions = []Action{
 	{"cancel", "stop generation / close overlay", "esc", "chat"},
 	{"quit", "stop chat · clear input · twice = exit", "ctrl+c", "chat"},
 	{"verbose", "toggle verbose chat (full thoughts/tools)", "ctrl+o", "chat"},
+	{"paste_image", "attach an image from the clipboard", "ctrl+v", "chat"},
 
 	{"models", "pick provider & model (also /model)", "", "model"},
 	{"toggle_thinking", "toggle thinking mode", "ctrl+t", "model"},
