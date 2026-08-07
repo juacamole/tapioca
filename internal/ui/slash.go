@@ -60,6 +60,7 @@ func buildSlashCmds() []slashCmd {
 		{"btw", "note", "add context without asking for a reply", cmdBtw},
 		{"cd", "dir", "change the working directory", cmdCd},
 		{"diff", "", "show git diff of the working directory", cmdDiff},
+		{"permissions", "", "show what runs without approval", cmdPermissions},
 		{"checkpoints", "", "pick a checkpoint to rewind the working tree to", cmdCheckpoints},
 		{"rewind", "[n|id]", "rewind file changes (default: latest checkpoint)", cmdRewind},
 		{"clear", "", "clear this agent's conversation", cmdClear},
@@ -360,6 +361,45 @@ func colorizeDiff(s string) string {
 		}
 	}
 	return strings.Join(lines, "\n")
+}
+
+func cmdPermissions(m *App, _ string) tea.Cmd {
+	var b strings.Builder
+	mode := m.permMode()
+	b.WriteString(styPanelTitle.Render("mode") + "  " + styAccent.Render(mode) + styDim.Render("  ("+modeDescriptions[mode]+")") + "\n\n")
+
+	b.WriteString(styPanelTitle.Render("never prompts") + "\n")
+	b.WriteString("  read_file, web_search, web_fetch " + styDim.Render("(read-only builtins)") + "\n")
+	if n := len(m.mgr.MCP.AllTools()); n > 0 {
+		b.WriteString(fmt.Sprintf("  %d MCP tools %s\n", n, styDim.Render("(no permission gate yet)")))
+	}
+	switch mode {
+	case "auto":
+		b.WriteString("  write_file, edit_file " + styDim.Render("(auto mode)") + "\n")
+	case "bypass":
+		b.WriteString("  every tool " + styDim.Render("(bypass mode)") + "\n")
+	}
+
+	if m.mgr.Exec != nil {
+		grantedTools, bashWords := m.mgr.Exec.Grants()
+		b.WriteString("\n" + styPanelTitle.Render("session grants") + styDim.Render("  (reset on restart, [a] adds)") + "\n")
+		if len(grantedTools) == 0 {
+			b.WriteString(styDim.Render("  none") + "\n")
+		}
+		for _, t := range grantedTools {
+			b.WriteString("  " + t + "\n")
+		}
+		b.WriteString("\n" + styPanelTitle.Render("bash words") + styDim.Render("  (bash_allow in config, [p] adds)") + "\n")
+		if len(bashWords) == 0 {
+			b.WriteString(styDim.Render("  none") + "\n")
+		}
+		for _, w := range bashWords {
+			b.WriteString("  " + w + " *\n")
+		}
+	}
+	b.WriteString("\n" + styDim.Render("revoke: /settings edits bash_allow; session grants clear on restart"))
+	m.openTextOverlay("permissions", b.String())
+	return nil
 }
 
 func cmdCheckpoints(m *App, _ string) tea.Cmd {

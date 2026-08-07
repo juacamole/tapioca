@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 
@@ -95,6 +96,19 @@ func (e *Executor) wordAllowed(word string) bool {
 		}
 	}
 	return false
+}
+
+// Grants reports the session's always-allowed tools and bash words.
+func (e *Executor) Grants() (tools []string, bashWords []string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for t, ok := range e.allowed {
+		if ok {
+			tools = append(tools, t)
+		}
+	}
+	sort.Strings(tools)
+	return tools, append([]string(nil), e.bashPrefixes...)
 }
 
 // PrefixSuggestion returns the word an always-allow-prefix grant would use.
