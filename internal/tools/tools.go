@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 
@@ -19,7 +20,8 @@ import (
 // Decision is the user's answer to a permission request.
 type Decision struct {
 	Allow  bool
-	Always bool // remember for this tool for the rest of the session
+	Always bool   // remember for this tool for the rest of the session
+	Prefix string // bash only: always allow commands starting with this word
 }
 
 // AskFunc asks the user for permission; it blocks until answered.
@@ -54,12 +56,70 @@ const maxOutput = 30_000
 
 // Executor runs built-in tools inside a working directory.
 type Executor struct {
-	mu         sync.Mutex
-	cwd        string
-	mode       string
-	allowed    map[string]bool
-	extraDirs  []string
-	checkpoint func(label string)
+	mu           sync.Mutex
+	cwd          string
+	mode         string
+	allowed      map[string]bool
+	bashPrefixes []string
+	extraDirs    []string
+	checkpoint   func(label string)
+}
+
+// SetBashPrefixes replaces the always-allowed bash command prefixes.
+func (e *Executor) SetBashPrefixes(ps []string) {
+	e.mu.Lock()
+	e.bashPrefixes = append([]string(nil), ps...)
+	e.mu.Unlock()
+}
+
+// segmentWords returns the first word of every shell segment, so a compound
+// like "git add && rm -rf /" is only allowed if every part is.
+func segmentWords(command string) []string {
+	seps := regexp.MustCompile(`&&|\|\||[;|\n]`)
+	var words []string
+	for _, seg := range seps.Split(command, -1) {
+		f := strings.Fields(seg)
+		if len(f) == 0 {
+			continue
+		}
+		words = append(words, f[0])
+	}
+	return words
+}
+
+func (e *Executor) bashAllowed(command string) bool {
+	e.mu.Lock()
+	prefixes := e.bashPrefixes
+	e.mu.Unlock()
+	if len(prefixes) == 0 {
+		return false
+	}
+	words := segmentWords(command)
+	if len(words) == 0 {
+		return false
+	}
+	for _, w := range words {
+		ok := false
+		for _, p := range prefixes {
+			if w == p {
+				ok = true
+				break
+			}
+		}
+		if !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// PrefixSuggestion returns the word an always-allow-prefix grant would use.
+func PrefixSuggestion(command string) string {
+	words := segmentWords(command)
+	if len(words) == 0 {
+		return ""
+	}
+	return words[0]
 }
 
 // SetCheckpoint registers a hook run before every mutating tool call.
@@ -205,6 +265,14 @@ func (e *Executor) Call(ctx context.Context, name string, raw json.RawMessage, a
 		case ModeBypass:
 			needAsk = false
 		}
+		if needAsk && name == "bash" {
+			var a struct {
+				Command string `json:"command"`
+			}
+			if json.Unmarshal(raw, &a) == nil && e.bashAllowed(a.Command) {
+				needAsk = false
+			}
+		}
 		if needAsk {
 			e.mu.Lock()
 			ok := e.allowed[name]
@@ -217,6 +285,11 @@ func (e *Executor) Call(ctx context.Context, name string, raw json.RawMessage, a
 				if d.Always {
 					e.mu.Lock()
 					e.allowed[name] = true
+					e.mu.Unlock()
+				}
+				if d.Prefix != "" {
+					e.mu.Lock()
+					e.bashPrefixes = append(e.bashPrefixes, d.Prefix)
 					e.mu.Unlock()
 				}
 			}
