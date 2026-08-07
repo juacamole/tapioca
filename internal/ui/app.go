@@ -1451,11 +1451,9 @@ func (m *App) refreshChat(force bool) {
 		return
 	}
 	atBottom := m.vp.AtBottom()
-	content := renderConversation(a, max(10, m.vp.Width-1), m.spin.View(), m.cfg.Verbose)
-	// Renderers wrap their own output, but glamour code blocks and wide
-	// runes can still overflow; anything wider than the viewport shears the
-	// whole layout apart. Hard-wrap as the last line of defense.
-	content = wrap.String(content, max(10, m.vp.Width))
+	// Finalized messages arrive pre-wrapped from the message cache; only the
+	// streaming tail needs the overflow hard-wrap here.
+	content := wrap.String(renderConversation(a, max(10, m.vp.Width-1), m.spin.View(), m.cfg.Verbose), max(10, m.vp.Width))
 	m.chatStyled = strings.Split(content, "\n")
 	m.chatPlain = make([]string, len(m.chatStyled))
 	for i, l := range m.chatStyled {
