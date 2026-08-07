@@ -72,54 +72,38 @@ func (e *Executor) SetBashPrefixes(ps []string) {
 	e.mu.Unlock()
 }
 
-// segmentWords returns the first word of every shell segment, so a compound
-// like "git add && rm -rf /" is only allowed if every part is.
-func segmentWords(command string) []string {
-	seps := regexp.MustCompile(`&&|\|\||[;|\n]`)
-	var words []string
-	for _, seg := range seps.Split(command, -1) {
-		f := strings.Fields(seg)
-		if len(f) == 0 {
-			continue
+var segSeps = regexp.MustCompile(`&&|\|\||[;|\n]`)
+
+// segments splits a compound command so each part can be approved on its
+// own: "ls || pwd" prompts for "ls", then for "pwd".
+func segments(command string) []string {
+	var out []string
+	for _, seg := range segSeps.Split(command, -1) {
+		if seg = strings.TrimSpace(seg); seg != "" {
+			out = append(out, seg)
 		}
-		words = append(words, f[0])
 	}
-	return words
+	return out
 }
 
-func (e *Executor) bashAllowed(command string) bool {
+func (e *Executor) wordAllowed(word string) bool {
 	e.mu.Lock()
-	prefixes := e.bashPrefixes
-	e.mu.Unlock()
-	if len(prefixes) == 0 {
-		return false
-	}
-	words := segmentWords(command)
-	if len(words) == 0 {
-		return false
-	}
-	for _, w := range words {
-		ok := false
-		for _, p := range prefixes {
-			if w == p {
-				ok = true
-				break
-			}
-		}
-		if !ok {
-			return false
+	defer e.mu.Unlock()
+	for _, p := range e.bashPrefixes {
+		if word == p {
+			return true
 		}
 	}
-	return true
+	return false
 }
 
 // PrefixSuggestion returns the word an always-allow-prefix grant would use.
 func PrefixSuggestion(command string) string {
-	words := segmentWords(command)
-	if len(words) == 0 {
+	f := strings.Fields(command)
+	if len(f) == 0 {
 		return ""
 	}
-	return words[0]
+	return f[0]
 }
 
 // SetCheckpoint registers a hook run before every mutating tool call.
@@ -265,33 +249,48 @@ func (e *Executor) Call(ctx context.Context, name string, raw json.RawMessage, a
 		case ModeBypass:
 			needAsk = false
 		}
-		if needAsk && name == "bash" {
+		e.mu.Lock()
+		blanket := e.allowed[name]
+		e.mu.Unlock()
+		if needAsk && !blanket && name == "bash" {
+			// Compound commands are approved segment by segment; a denied
+			// segment blocks the whole command.
 			var a struct {
 				Command string `json:"command"`
 			}
-			if json.Unmarshal(raw, &a) == nil && e.bashAllowed(a.Command) {
+			if json.Unmarshal(raw, &a) == nil && strings.TrimSpace(a.Command) != "" {
+				for _, seg := range segments(a.Command) {
+					if e.wordAllowed(PrefixSuggestion(seg)) {
+						continue
+					}
+					d := ask(name, seg)
+					if !d.Allow {
+						return "the user denied permission for: " + seg, true, nil
+					}
+					if d.Prefix != "" {
+						e.mu.Lock()
+						e.bashPrefixes = append(e.bashPrefixes, d.Prefix)
+						e.mu.Unlock()
+					}
+					if d.Always {
+						e.mu.Lock()
+						e.allowed[name] = true
+						e.mu.Unlock()
+						break
+					}
+				}
 				needAsk = false
 			}
 		}
-		if needAsk {
-			e.mu.Lock()
-			ok := e.allowed[name]
-			e.mu.Unlock()
-			if !ok {
-				d := ask(name, e.summary(name, raw))
-				if !d.Allow {
-					return "the user denied permission for this call", true, nil
-				}
-				if d.Always {
-					e.mu.Lock()
-					e.allowed[name] = true
-					e.mu.Unlock()
-				}
-				if d.Prefix != "" {
-					e.mu.Lock()
-					e.bashPrefixes = append(e.bashPrefixes, d.Prefix)
-					e.mu.Unlock()
-				}
+		if needAsk && !blanket {
+			d := ask(name, e.summary(name, raw))
+			if !d.Allow {
+				return "the user denied permission for this call", true, nil
+			}
+			if d.Always {
+				e.mu.Lock()
+				e.allowed[name] = true
+				e.mu.Unlock()
 			}
 		}
 		e.mu.Lock()
