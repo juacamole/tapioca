@@ -80,6 +80,7 @@ func mdRenderer(w int) *glamour.TermRenderer {
 // renderMarkdown renders markdown at the given width, falling back to the
 // plain renderer on any failure.
 func renderMarkdown(text string, w int) string {
+	text = sanitizeText(text)
 	if w < 10 {
 		return renderText(text, w)
 	}

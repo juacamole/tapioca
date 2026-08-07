@@ -13,7 +13,7 @@ import (
 // mark text; on release the marked region is copied to the clipboard.
 // While a region is marked its lines render as plain reversed text.
 
-var ansiRe = regexp.MustCompile("\x1b\\[[0-9;]*m")
+var ansiRe = regexp.MustCompile("\x1b\\[[0-9;?]*[ -/]*[@-~]")
 
 func stripAnsi(s string) string { return ansiRe.ReplaceAllString(s, "") }
 

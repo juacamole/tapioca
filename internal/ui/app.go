@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/reflow/wrap"
 
 	"tapioca/internal/agent"
 	"tapioca/internal/catalog"
@@ -1451,6 +1452,10 @@ func (m *App) refreshChat(force bool) {
 	}
 	atBottom := m.vp.AtBottom()
 	content := renderConversation(a, max(10, m.vp.Width-1), m.spin.View(), m.cfg.Verbose)
+	// Renderers wrap their own output, but glamour code blocks and wide
+	// runes can still overflow; anything wider than the viewport shears the
+	// whole layout apart. Hard-wrap as the last line of defense.
+	content = wrap.String(content, max(10, m.vp.Width))
 	m.chatStyled = strings.Split(content, "\n")
 	m.chatPlain = make([]string, len(m.chatStyled))
 	for i, l := range m.chatStyled {
@@ -1574,7 +1579,7 @@ func (m *App) renderPerm(w, h int) string {
 	var b strings.Builder
 	b.WriteString(styPanelTitle.Render("permission required") + styDim.Render("  ("+name+")") + "\n\n")
 	b.WriteString(styTool.Render("tool: "+e.req.Tool) + "\n")
-	summary := e.req.Summary
+	summary := sanitizeText(e.req.Summary)
 	lines := strings.Split(wrapPlain(summary, min(80, w-16)), "\n")
 	if len(lines) > 10 {
 		lines = append(lines[:10], styDim.Render("…"))

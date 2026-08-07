@@ -366,7 +366,7 @@ func renderToolsPanel(m *App, a *agent.Agent, w, h int) []string {
 		head := fmt.Sprintf("%s %s%s", icon, tc.Name, styDim.Render(dur))
 		lines = append(lines, head)
 		if len(lines) < h && tc.Args != "" && tc.Args != "{}" {
-			lines = append(lines, styDim.Render("  "+truncate(tc.Args, w-3)))
+			lines = append(lines, styDim.Render("  "+truncate(sanitizeText(tc.Args), w-3)))
 		}
 	}
 	return lines
