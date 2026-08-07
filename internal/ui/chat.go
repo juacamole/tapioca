@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -9,6 +10,26 @@ import (
 	"tapioca/internal/agent"
 	"tapioca/internal/provider"
 )
+
+// Model output and tool results can carry raw terminal control sequences
+// (colors, \r progress bars, cursor movement) that would corrupt the TUI if
+// rendered verbatim.
+var (
+	csiRe  = regexp.MustCompile("\x1b\\[[0-9;?]*[ -/]*[@-~]")
+	oscRe  = regexp.MustCompile("\x1b\\][^\x07\x1b]*(\x07|\x1b\\\\)?")
+	ctrlRe = regexp.MustCompile("[\x00-\x09\x0b-\x1f\x7f]")
+)
+
+func sanitizeText(s string) string {
+	if strings.IndexFunc(s, func(r rune) bool { return (r < 0x20 && r != '\n') || r == 0x7f }) < 0 {
+		return s
+	}
+	s = strings.ReplaceAll(s, "\t", "    ")
+	s = csiRe.ReplaceAllString(s, "")
+	s = oscRe.ReplaceAllString(s, "")
+	s = ctrlRe.ReplaceAllString(s, "")
+	return s
+}
 
 // renderConversation renders an agent's full transcript at the given width,
 // including any in-flight streaming output. In verbose mode thoughts, tool
@@ -107,6 +128,7 @@ func renderMessage(m *provider.Message, a *agent.Agent, w int, verbose bool) str
 
 // renderThinking renders a finished thinking block.
 func renderThinking(text string, w int, verbose bool) string {
+	text = sanitizeText(text)
 	if !verbose {
 		return styThink.Render(fmt.Sprintf("thought (%s)", humanTokens(len(text))))
 	}
@@ -121,7 +143,7 @@ func renderThinking(text string, w int, verbose bool) string {
 // renderToolUse renders a tool invocation by the model.
 func renderToolUse(bl *provider.Block, w int, verbose bool) string {
 	head := styTool.Render("tool: " + bl.Name)
-	args := strings.TrimSpace(string(bl.Input))
+	args := sanitizeText(strings.TrimSpace(string(bl.Input)))
 	if args == "" || args == "{}" {
 		return head
 	}
@@ -142,7 +164,7 @@ func renderToolResult(bl *provider.Block, w int, verbose bool) string {
 		icon = styErr.Render("err")
 	}
 	head := styTool.Render(bl.Name) + styDim.Render(" -> ") + icon
-	body := strings.TrimRight(bl.Content, "\n")
+	body := sanitizeText(strings.TrimRight(bl.Content, "\n"))
 	if strings.TrimSpace(body) == "" {
 		return head
 	}
@@ -177,11 +199,11 @@ func renderStreaming(a *agent.Agent, w int, spin string, verbose bool) string {
 	if a.StreamThinking != "" {
 		if verbose {
 			b.WriteString("\n" + styThink.Render(fmt.Sprintf("thinking (%s)", humanTokens(len(a.StreamThinking)))))
-			for _, l := range strings.Split(wrapPlain(a.StreamThinking, w-2), "\n") {
+			for _, l := range strings.Split(wrapPlain(sanitizeText(a.StreamThinking), w-2), "\n") {
 				b.WriteString("\n" + styThink.Render("  "+l))
 			}
 		} else if a.Status == agent.StatusThinking {
-			wrapped := wrapPlain(a.StreamThinking, w-2)
+			wrapped := wrapPlain(sanitizeText(a.StreamThinking), w-2)
 			lines := strings.Split(wrapped, "\n")
 			if len(lines) > 4 {
 				lines = lines[len(lines)-4:]
@@ -203,6 +225,7 @@ func renderStreaming(a *agent.Agent, w int, spin string, verbose bool) string {
 // renderText renders message text with light markdown styling: fenced code
 // blocks get a tinted background, everything else is wrapped.
 func renderText(text string, w int) string {
+	text = sanitizeText(text)
 	text = strings.ReplaceAll(text, "\t", "    ")
 	lines := strings.Split(text, "\n")
 	var out []string
