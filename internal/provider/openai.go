@@ -55,7 +55,7 @@ type oaToolCall struct {
 
 type oaMsg struct {
 	Role       string       `json:"role"`
-	Content    string       `json:"content"`
+	Content    any          `json:"content"`
 	ToolCalls  []oaToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string       `json:"tool_call_id,omitempty"`
 }
@@ -114,6 +114,19 @@ func (o *OpenAI) convertMessages(system string, msgs []Message) []oaMsg {
 			continue
 		}
 		om := oaMsg{Role: m.Role, Content: m.Text()}
+		var imgs []map[string]any
+		for _, b := range m.Blocks {
+			if b.Type == "image" && b.Data != "" {
+				imgs = append(imgs, map[string]any{
+					"type":      "image_url",
+					"image_url": map[string]string{"url": "data:" + b.MediaType + ";base64," + b.Data},
+				})
+			}
+		}
+		if len(imgs) > 0 {
+			parts := []map[string]any{{"type": "text", "text": m.Text()}}
+			om.Content = append(parts, imgs...)
+		}
 		if m.Role == "assistant" {
 			for _, b := range m.ToolUses() {
 				var tc oaToolCall
@@ -128,7 +141,7 @@ func (o *OpenAI) convertMessages(system string, msgs []Message) []oaMsg {
 				om.ToolCalls = append(om.ToolCalls, tc)
 			}
 		}
-		if om.Content == "" && len(om.ToolCalls) == 0 {
+		if s, isStr := om.Content.(string); isStr && s == "" && len(om.ToolCalls) == 0 {
 			continue
 		}
 		out = append(out, om)

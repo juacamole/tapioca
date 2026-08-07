@@ -53,6 +53,12 @@ type cacheControl struct {
 
 var ephemeral = &cacheControl{Type: "ephemeral"}
 
+type anthSource struct {
+	Type      string `json:"type"`
+	MediaType string `json:"media_type"`
+	Data      string `json:"data"`
+}
+
 type anthBlock struct {
 	Type         string          `json:"type"`
 	Text         string          `json:"text,omitempty"`
@@ -64,6 +70,7 @@ type anthBlock struct {
 	ToolUseID    string          `json:"tool_use_id,omitempty"`
 	Content      string          `json:"content,omitempty"`
 	IsError      bool            `json:"is_error,omitempty"`
+	Source       *anthSource     `json:"source,omitempty"`
 	CacheControl *cacheControl   `json:"cache_control,omitempty"`
 }
 
@@ -155,6 +162,10 @@ func (a *Anthropic) convertMessages(model string, msgs []Message) []anthMsg {
 				blocks = append(blocks, anthBlock{Type: "tool_use", ID: b.ID, Name: b.Name, Input: input})
 			case "tool_result":
 				blocks = append(blocks, anthBlock{Type: "tool_result", ToolUseID: b.ToolUseID, Content: b.Content, IsError: b.IsError})
+			case "image":
+				if b.Data != "" {
+					blocks = append(blocks, anthBlock{Type: "image", Source: &anthSource{Type: "base64", MediaType: b.MediaType, Data: b.Data}})
+				}
 			}
 		}
 		if len(blocks) == 0 {

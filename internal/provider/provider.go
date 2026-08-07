@@ -16,7 +16,7 @@ import (
 // thinking, tool_use and tool_result blocks so providers can replay history
 // with full fidelity.
 type Block struct {
-	Type      string          `json:"type"` // "text" | "thinking" | "tool_use" | "tool_result"
+	Type      string          `json:"type"` // "text" | "thinking" | "tool_use" | "tool_result" | "image"
 	Text      string          `json:"text,omitempty"`
 	Signature string          `json:"signature,omitempty"`   // thinking signature (anthropic)
 	ID        string          `json:"id,omitempty"`          // tool_use id
@@ -25,6 +25,8 @@ type Block struct {
 	ToolUseID string          `json:"tool_use_id,omitempty"` // tool_result linkage
 	Content   string          `json:"content,omitempty"`     // tool_result payload
 	IsError   bool            `json:"is_error,omitempty"`
+	MediaType string          `json:"media_type,omitempty"` // image mime
+	Data      string          `json:"data,omitempty"`       // image base64
 }
 
 // Message is one conversation turn. Hidden messages reach the model but are
