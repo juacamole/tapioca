@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/reflow/wrap"
 
 	"tapioca/internal/agent"
 	"tapioca/internal/provider"
@@ -49,7 +50,7 @@ func renderConversation(a *agent.Agent, w int, spin string, verbose bool) string
 		if m.Hidden {
 			continue
 		}
-		parts = append(parts, renderMessage(&m, a, w, verbose))
+		parts = append(parts, renderMessageCached(&m, a, w, verbose))
 	}
 
 	if a.Status.Busy() || a.StreamText != "" || a.StreamThinking != "" {
@@ -77,6 +78,29 @@ func welcomeText(w int) string {
 		styDim.Render("tab focuses the dashboard to change settings"),
 	}
 	return strings.Join(lines, "\n")
+}
+
+// Messages are immutable once appended, so their rendered+wrapped form is
+// cached; on long chats each streaming delta then costs only the tail.
+var msgCache = map[string]string{}
+
+const msgCacheMax = 2000
+
+func renderMessageCached(m *provider.Message, a *agent.Agent, w int, verbose bool) string {
+	size := 0
+	for _, b := range m.Blocks {
+		size += len(b.Text) + len(b.Content) + len(b.Input)
+	}
+	key := fmt.Sprintf("%d|%d|%t|%s|%d|%d|%d", a.ID, w, verbose, m.Role, m.Time.UnixNano(), len(m.Blocks), size)
+	if s, ok := msgCache[key]; ok {
+		return s
+	}
+	s := wrap.String(renderMessage(m, a, w, verbose), w)
+	if len(msgCache) >= msgCacheMax {
+		msgCache = map[string]string{}
+	}
+	msgCache[key] = s
+	return s
 }
 
 func renderMessage(m *provider.Message, a *agent.Agent, w int, verbose bool) string {
