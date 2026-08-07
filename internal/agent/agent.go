@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"tapioca/internal/mcp"
+	"tapioca/internal/project"
 	"tapioca/internal/provider"
 	"tapioca/internal/stats"
 	"tapioca/internal/tools"
@@ -172,9 +173,16 @@ func (a *Agent) System() string {
 		sys += "\n\nCurrent goal: " + a.Goal
 	}
 	if a.Exec != nil {
-		sys += "\n\nWorking directory: " + a.Exec.Cwd()
+		cwd := a.Exec.Cwd()
+		sys += "\n\nWorking directory: " + cwd
 		if extra := a.Exec.ExtraDirs(); len(extra) > 0 {
 			sys += "\nAdditional working directories: " + strings.Join(extra, ", ")
+		}
+		if ins := project.Instructions(cwd); ins != "" {
+			sys += "\n\nProject instructions:\n" + ins
+		}
+		if mem := project.Memory(cwd); mem != "" {
+			sys += "\n\nProject memory (remembered facts):\n" + mem
 		}
 		if a.Exec.Mode() == tools.ModePlan {
 			sys += "\n\nPLAN MODE is active: you may inspect the codebase with read-only " +

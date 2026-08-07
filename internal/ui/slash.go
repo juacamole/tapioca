@@ -14,6 +14,7 @@ import (
 
 	"tapioca/internal/agent"
 	"tapioca/internal/checkpoint"
+	"tapioca/internal/project"
 	"tapioca/internal/provider"
 	"tapioca/internal/session"
 )
@@ -57,6 +58,7 @@ func buildSlashCmds() []slashCmd {
 		{"model", "[provider:]name", "switch model (no arg: picker)", cmdModel},
 		{"effort", "off|low|medium|high", "set thinking effort", cmdEffort},
 		{"goal", "text | clear", "set a session goal for the agent", cmdGoal},
+		{"remember", "fact | clear", "persist a project fact for the model", cmdRemember},
 		{"btw", "note", "add context without asking for a reply", cmdBtw},
 		{"cd", "dir", "change the working directory", cmdCd},
 		{"diff", "", "show git diff of the working directory", cmdDiff},
@@ -281,6 +283,34 @@ func cmdGoal(m *App, arg string) tea.Cmd {
 	return m.flashCmd()
 }
 
+func cmdRemember(m *App, arg string) tea.Cmd {
+	cwd := m.cwd()
+	switch arg {
+	case "":
+		mem := project.Memory(cwd)
+		if mem == "" {
+			m.setFlash("nothing remembered for this project — /remember <fact> adds", false)
+			return m.flashCmd()
+		}
+		m.openTextOverlay("project memory — "+shortPath(cwd), mem+"\n\n"+
+			styDim.Render("loaded into every system prompt here · /remember clear wipes"))
+		return nil
+	case "clear":
+		if err := project.ClearMemory(cwd); err != nil {
+			m.setFlash(err.Error(), true)
+		} else {
+			m.setFlash("project memory cleared", false)
+		}
+	default:
+		if err := project.Remember(cwd, arg); err != nil {
+			m.setFlash(err.Error(), true)
+		} else {
+			m.setFlash("remembered — the model sees it from the next prompt on", false)
+		}
+	}
+	return m.flashCmd()
+}
+
 func cmdBtw(m *App, arg string) tea.Cmd {
 	a := m.mgr.ActiveAgent()
 	if a == nil {
@@ -320,7 +350,11 @@ func cmdCd(m *App, arg string) tea.Cmd {
 		m.setFlash(err.Error(), true)
 		return m.flashCmd()
 	}
-	m.setFlash("cwd: "+e.Cwd(), false)
+	note := "cwd: " + e.Cwd()
+	if project.Instructions(e.Cwd()) != "" {
+		note += " · loaded project instructions"
+	}
+	m.setFlash(note, false)
 	return tea.Batch(m.flashCmd(), fetchGitCmd(e.Cwd()))
 }
 
