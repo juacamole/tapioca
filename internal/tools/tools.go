@@ -16,6 +16,7 @@ import (
 	"sync"
 
 	"tapioca/internal/provider"
+	"tapioca/internal/textenc"
 )
 
 // Decision is the user's answer to a permission request.
@@ -402,7 +403,11 @@ func (e *Executor) readFile(raw json.RawMessage) (string, bool, error) {
 	if err != nil {
 		return err.Error(), true, nil
 	}
-	lines := strings.Split(string(data), "\n")
+	content, isText := textenc.Decode(data)
+	if !isText {
+		return fmt.Sprintf("%s is a binary file (%d bytes); not showing raw contents", a.Path, len(data)), true, nil
+	}
+	lines := strings.Split(content, "\n")
 	start := 0
 	if a.Offset > 1 {
 		start = a.Offset - 1
