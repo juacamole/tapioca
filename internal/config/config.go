@@ -58,6 +58,7 @@ type Config struct {
 	AutoCompact     bool    `toml:"auto_compact"`    // summarize when context nears the limit
 	PermissionMode  string  `toml:"permission_mode"` // plan | manual | auto | bypass
 
+	BashAllow []string                  `toml:"bash_allow"` // always-allowed bash command words
 	Providers map[string]ProviderConfig `toml:"providers"`
 	MCP       []MCPServerConfig         `toml:"mcp"`
 	Dashboard DashboardConfig           `toml:"dashboard"`
@@ -236,6 +237,7 @@ zen = false                     # hide keybind hints; toggle with /zen
 autosave = true                 # save the session after every completed turn
 auto_compact = true             # summarize old turns when context nears the limit
 permission_mode = "manual"      # plan | manual | auto | bypass (cycle with shift+tab)
+# bash_allow = ["git", "go"]    # bash commands that never prompt ([p] in the prompt adds here)
 editor = ""                     # prompt editor; falls back to $VISUAL, $EDITOR, nvim, vim
 
 system_prompt = """

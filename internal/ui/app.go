@@ -555,6 +555,7 @@ func (m *App) handleEditorDone(msg editorDoneMsg) (tea.Model, tea.Cmd) {
 		m.keys = NewKeyMap(m.cfg.Keys)
 		if m.mgr.Exec != nil {
 			m.mgr.Exec.SetMode(m.cfg.PermissionMode)
+			m.mgr.Exec.SetBashPrefixes(m.cfg.BashAllow)
 		}
 		m.mgr.ReloadProviders()
 		// Push the edited defaults onto existing agents too, so the file is
@@ -596,6 +597,15 @@ func (m *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.decidePerm(tools.Decision{Allow: true})
 		case "a", "A":
 			m.decidePerm(tools.Decision{Allow: true, Always: true})
+		case "p", "P":
+			e := m.perms[0]
+			if e.req.Tool == "bash" {
+				if prefix := tools.PrefixSuggestion(e.req.Summary); prefix != "" {
+					m.cfg.BashAllow = append(m.cfg.BashAllow, prefix)
+					m.saveCfg()
+					m.decidePerm(tools.Decision{Allow: true, Prefix: prefix})
+				}
+			}
 		case "n", "N", "esc", "ctrl+c":
 			m.decidePerm(tools.Decision{})
 		}
@@ -1589,8 +1599,13 @@ func (m *App) renderPerm(w, h int) string {
 		b.WriteString(styDim.Render(fmt.Sprintf("\n(+%d more requests waiting)", len(m.perms)-1)) + "\n")
 	}
 	b.WriteString("\n" + styOK.Render("[y]") + " allow once   " +
-		styWarn.Render("[a]") + " always allow " + e.req.Tool + "   " +
-		styErr.Render("[n]") + " deny")
+		styWarn.Render("[a]") + " always allow " + e.req.Tool)
+	if e.req.Tool == "bash" {
+		if prefix := tools.PrefixSuggestion(e.req.Summary); prefix != "" {
+			b.WriteString("   " + styAccent.Render("[p]") + " always allow " + prefix + " *")
+		}
+	}
+	b.WriteString("   " + styErr.Render("[n]") + " deny")
 	box := borderStyle(true).Padding(1, 2).Render(b.String())
 	return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, box)
 }

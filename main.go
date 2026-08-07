@@ -226,6 +226,7 @@ func main() {
 	}
 	exec := tools.NewExecutor(cwd, mode)
 	exec.SetExtraDirs(args.addDirs)
+	exec.SetBashPrefixes(cfg.BashAllow)
 	if checkpoint.Available() {
 		exec.SetCheckpoint(func(label string) {
 			_, _ = checkpoint.Snapshot(exec.Cwd(), label)
