@@ -57,7 +57,11 @@ func renderConversation(a *agent.Agent, w int, spin string, verbose bool) string
 		parts = append(parts, renderStreaming(a, w, spin, verbose))
 	}
 	for _, q := range a.Queue {
-		parts = append(parts, styDim.Render("queued | "+truncate(q, max(10, w-10))))
+		label := q.Typed
+		if label == "" {
+			label = q.Text()
+		}
+		parts = append(parts, styDim.Render("queued | "+truncate(label, max(10, w-10))))
 	}
 	if a.LastErr != "" {
 		parts = append(parts, styErr.Render("x "+wrapPlain(a.LastErr, w-2)))

@@ -173,9 +173,11 @@ func (m *App) expandMentions(text string, atts *[]attachment) string {
 	return text
 }
 
-// buildUserMessage assembles the outgoing message from text + attachments.
-func buildUserMessage(text string, atts []attachment) provider.Message {
+// buildUserMessage assembles the outgoing message from expanded text,
+// attachments, and the raw typed input (kept for /edit).
+func buildUserMessage(text string, atts []attachment, typed string) provider.Message {
 	msg := provider.TextMessage("user", text)
+	msg.Typed = typed
 	for _, a := range atts {
 		msg.Blocks = append(msg.Blocks, provider.Block{
 			Type:      "image",

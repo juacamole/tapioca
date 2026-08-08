@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"encoding/base64"
 	"fmt"
 	"os"
 	"os/exec"
@@ -565,7 +566,20 @@ func cmdEdit(m *App, _ string) tea.Cmd {
 		m.setFlash("no prompt to edit", true)
 		return m.flashCmd()
 	}
-	text := a.Messages[i].Text()
+	// Restore the raw typed prompt (not the mention-expanded text, which
+	// would re-inline files on resend) and re-pend any image attachments.
+	edited := a.Messages[i]
+	text := edited.Typed
+	if text == "" {
+		text = edited.Text()
+	}
+	for _, bl := range edited.Blocks {
+		if bl.Type == "image" {
+			if data, err := base64.StdEncoding.DecodeString(bl.Data); err == nil {
+				m.pending = append(m.pending, attachment{label: "(from edit)", mediaType: bl.MediaType, data: data})
+			}
+		}
+	}
 	a.Messages = a.Messages[:i]
 	m.ta.SetValue(text)
 	m.focus = focusInput

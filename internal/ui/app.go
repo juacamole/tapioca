@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -65,6 +66,7 @@ type rewindDoneMsg struct {
 }
 type compactDoneMsg struct {
 	agentID int
+	baseLen int
 	msgs    []provider.Message
 	ctxEst  int
 	err     error
@@ -106,9 +108,10 @@ type App struct {
 	pending    []attachment
 	mentionSel int
 
-	mouseOn   bool
-	git       gitInfo
-	probedCtx map[string]bool
+	mouseOn    bool
+	git        gitInfo
+	probedCtx  map[string]bool
+	compacting map[int]context.CancelFunc
 
 	// Chat transcript caches for mouse selection.
 	chatStyled []string
@@ -165,6 +168,7 @@ func NewApp(cfg *config.Config, mgr *agent.Manager, sessID, sessName string, cre
 		spin:        sp,
 		mouseOn:     true,
 		probedCtx:   map[string]bool{},
+		compacting:  map[int]context.CancelFunc{},
 		sessID:      sessID,
 		sessName:    sessName,
 		sessCreated: created,
@@ -311,25 +315,34 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if a == nil {
 			return m, nil
 		}
+		if c := m.compacting[msg.agentID]; c != nil {
+			c()
+			delete(m.compacting, msg.agentID)
+		}
 		if a.Status == agent.StatusWaiting {
 			a.Status = agent.StatusIdle
 		}
 		a.StatusDetail = ""
-		if msg.err != nil {
-			a.CompactFailed = true
-			m.setFlash("compact failed: "+msg.err.Error(), true)
-			return m, m.flashCmd()
-		}
-		a.Messages = msg.msgs
-		a.CtxTokens = msg.ctxEst
-		m.dirty = true
-		m.refreshChat(true)
-		m.setFlash(fmt.Sprintf("compacted — kept the last %d turns verbatim", compactKeepTurns), false)
 		cmds := []tea.Cmd{m.flashCmd()}
-		if a.Status == agent.StatusIdle && len(a.Queue) > 0 {
+		if msg.err != nil {
+			if errors.Is(msg.err, context.Canceled) {
+				m.setFlash("compaction cancelled", false)
+			} else {
+				a.CompactFailed = true
+				m.setFlash("compact failed: "+msg.err.Error(), true)
+			}
+		} else {
+			// Rebase: keep anything appended while the summarizer ran.
+			a.Messages = append(msg.msgs, a.Messages[msg.baseLen:]...)
+			a.CtxTokens = msg.ctxEst
+			m.dirty = true
+			m.refreshChat(true)
+			m.setFlash(fmt.Sprintf("compacted — kept the last %d turns verbatim", compactKeepTurns), false)
+		}
+		if !a.Status.Busy() && len(a.Queue) > 0 {
 			next := a.Queue[0]
 			a.Queue = a.Queue[1:]
-			cmds = append(cmds, m.sendText(a, next))
+			cmds = append(cmds, m.sendPrepared(a, next))
 		}
 		return m, tea.Batch(cmds...)
 
@@ -356,7 +369,13 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					" — file contents may differ from your earlier reads and edits; re-read files before relying on them.")
 			notice.Hidden = true
 			for _, ag := range m.mgr.Agents {
-				ag.Messages = append(ag.Messages, notice)
+				// Appending mid-turn would wedge the notice between a
+				// tool_use and its result; busy agents get it on EvDone.
+				if ag.Status.Busy() {
+					ag.PendingNotes = append(ag.PendingNotes, notice)
+				} else {
+					ag.Messages = append(ag.Messages, notice)
+				}
 			}
 			m.dirty = true
 			m.refreshChat(true)
@@ -482,6 +501,11 @@ func (m *App) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		if a.Status != agent.StatusError {
 			a.Status = agent.StatusIdle
 		}
+		if len(a.PendingNotes) > 0 {
+			a.Messages = append(a.Messages, a.PendingNotes...)
+			a.PendingNotes = nil
+			m.dirty = true
+		}
 		// Unblock and drop any unanswered permission prompts of this agent.
 		kept := m.perms[:0]
 		for _, e := range m.perms {
@@ -516,11 +540,11 @@ func (m *App) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
-		// Send the next queued prompt, if any.
-		if a.Status == agent.StatusIdle && len(a.Queue) > 0 {
+		// Send the next queued prompt, even after an errored turn.
+		if !a.Status.Busy() && len(a.Queue) > 0 {
 			next := a.Queue[0]
 			a.Queue = a.Queue[1:]
-			cmds = append(cmds, m.sendText(a, next))
+			cmds = append(cmds, m.sendPrepared(a, next))
 		}
 	}
 	if a == m.mgr.ActiveAgent() {
@@ -674,10 +698,17 @@ func (m *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case m.keys.Is(msg, "cancel"):
-		if a != nil && a.Status.Busy() {
-			a.Cancel()
-			m.setFlash("generation stopped", false)
-			return m, m.flashCmd()
+		if a != nil {
+			if c := m.compacting[a.ID]; c != nil {
+				c()
+				m.setFlash("cancelling compaction…", false)
+				return m, m.flashCmd()
+			}
+			if a.Status.Busy() {
+				a.Cancel()
+				m.setFlash("generation stopped", false)
+				return m, m.flashCmd()
+			}
 		}
 		return m, nil
 
@@ -960,10 +991,17 @@ func userPrompts(a *agent.Agent) []string {
 // chat is active; otherwise clear the input, and require a second press
 // within quitWindow to exit.
 func (m *App) handleCtrlC(a *agent.Agent) (tea.Model, tea.Cmd) {
-	if a != nil && a.Status.Busy() {
-		a.Cancel()
-		m.setFlash("generation stopped", false)
-		return m, m.flashCmd()
+	if a != nil {
+		if c := m.compacting[a.ID]; c != nil {
+			c()
+			m.setFlash("cancelling compaction…", false)
+			return m, m.flashCmd()
+		}
+		if a.Status.Busy() {
+			a.Cancel()
+			m.setFlash("generation stopped", false)
+			return m, m.flashCmd()
+		}
 	}
 	if time.Since(m.quitArmed) < quitWindow {
 		if m.cfg.Autosave && m.dirty {
@@ -1312,8 +1350,9 @@ func (m *App) loadModelsCmd() tea.Cmd {
 	}
 }
 
-// submit handles enter on the input: slash commands run, prompts send, and
-// prompts typed while the agent is busy are queued.
+// submit handles enter on the input: slash commands run, prompts send.
+// Attachments bind to their prompt at submit time, so a queued prompt keeps
+// its own images regardless of what is attached later.
 func (m *App) submit() tea.Cmd {
 	a := m.mgr.ActiveAgent()
 	if a == nil {
@@ -1330,19 +1369,22 @@ func (m *App) submit() tea.Cmd {
 	if strings.HasPrefix(text, "/") {
 		return m.runSlash(text)
 	}
-	text = m.expandMentions(text, &m.pending)
+	expanded := m.expandMentions(text, &m.pending)
+	msg := buildUserMessage(expanded, m.pending, text)
+	m.pending = nil
+	m.recalcLayout()
 	if a.Status.Busy() {
-		a.Queue = append(a.Queue, text)
+		a.Queue = append(a.Queue, msg)
 		m.dirty = true
 		m.refreshChat(true)
 		m.setFlash(fmt.Sprintf("queued — will send when the agent is done (%d waiting)", len(a.Queue)), false)
 		return m.flashCmd()
 	}
-	return m.sendText(a, text)
+	return m.sendPrepared(a, msg)
 }
 
-// sendText appends a user prompt and starts the agent turn.
-func (m *App) sendText(a *agent.Agent, text string) tea.Cmd {
+// sendPrepared appends a ready user message and starts the agent turn.
+func (m *App) sendPrepared(a *agent.Agent, userMsg provider.Message) tea.Cmd {
 	if a.Model == "" {
 		// Try to auto-pick the provider's first model.
 		if a.Provider != nil {
@@ -1354,17 +1396,16 @@ func (m *App) sendText(a *agent.Agent, text string) tea.Cmd {
 			}
 		}
 		if a.Model == "" {
+			m.ta.SetValue(userMsg.Typed)
+			m.recalcLayout()
 			m.setFlash("no model selected — /model picks one", true)
 			return m.flashCmd()
 		}
 	}
 
-	userMsg := buildUserMessage(text, m.pending)
-	m.pending = nil
-	m.recalcLayout()
 	a.Messages = append(a.Messages, userMsg)
 	if m.sessName == "" {
-		m.sessName = truncate(text, 48)
+		m.sessName = truncate(userMsg.Text(), 48)
 	}
 	history := make([]provider.Message, len(a.Messages))
 	copy(history, a.Messages)

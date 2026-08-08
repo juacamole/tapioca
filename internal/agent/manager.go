@@ -181,6 +181,10 @@ func (m *Manager) Close(i int) {
 func (m *Manager) ToSession(id, name string, createdAt time.Time) *session.Session {
 	s := &session.Session{ID: id, Name: name, CreatedAt: createdAt, Active: m.Active}
 	for _, a := range m.Agents {
+		msgs := a.Messages
+		if len(a.PendingNotes) > 0 {
+			msgs = append(append([]provider.Message{}, a.Messages...), a.PendingNotes...)
+		}
 		s.Agents = append(s.Agents, session.AgentState{
 			Name:           a.Name,
 			Provider:       a.ProviderName,
@@ -193,7 +197,8 @@ func (m *Manager) ToSession(id, name string, createdAt time.Time) *session.Sessi
 			ThinkingBudget: a.ThinkingBudget,
 			ToolsEnabled:   a.ToolsEnabled,
 			CtxTokens:      a.CtxTokens,
-			Messages:       a.Messages,
+			Messages:       msgs,
+			Queue:          a.Queue,
 			Stats:          a.Stats,
 		})
 	}
@@ -222,6 +227,7 @@ func (m *Manager) LoadSession(s *session.Session) {
 			ToolsEnabled:   st.ToolsEnabled,
 			CtxTokens:      st.CtxTokens,
 			Messages:       RepairHistory(st.Messages),
+			Queue:          st.Queue,
 			Stats:          st.Stats,
 			Events:         make(chan Event, 512),
 			MCP:            m.MCP,
