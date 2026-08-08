@@ -4,10 +4,10 @@ An agentic coding TUI in the spirit of Claude Code, Crush and OpenCode, built
 with [Bubble Tea](https://github.com/charmbracelet/bubbletea).
 
 Chat fills two thirds of the screen; the right third is a stack of
-**configurable dashboards** (agents, tokens/context/cost, tool calls, MCP
-servers, session, editable settings). Agents can read, write and edit files
-and run shell commands — every mutating call goes through a permission
-prompt.
+**configurable dashboards** (agents, tokens/context/cost, the agent's plan,
+tool calls, MCP servers, session, editable settings). Agents can read, write
+and edit files and run shell commands — every mutating call goes through a
+permission prompt.
 
 ```
 ┌ title: session · cwd · provider:model · effort · max tokens ──────────┐
@@ -33,7 +33,9 @@ prompt.
   search, ripgrep when installed) and **`glob`** (`**/*.go`, newest first)
   for navigation, plus keyless **`web_search`** (DuckDuckGo) and
   **`web_fetch`** (readable page text) for research; the read-only tools
-  need no permission and work in plan mode.
+  need no permission and work in plan mode. On multi-step work the agent
+  keeps a **todo list** (`todo_write`), shown live in the `plan` panel and
+  saved with the session.
 - **Permission modes** — cycle with `shift+tab`, shown in the status bar
   (see [SECURITY.md](SECURITY.md) for what each one actually enforces):
   - `plan` — no file modifications; bash asks; the agent is instructed to

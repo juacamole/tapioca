@@ -96,7 +96,7 @@ func Default() *Config {
 		},
 		Dashboard: DashboardConfig{
 			Visible:  true,
-			Panels:   []string{"agents", "tokens", "git", "tools", "settings"},
+			Panels:   []string{"agents", "tokens", "todos", "git", "tools", "settings"},
 			Width:    0.33,
 			Position: "right",
 		},

@@ -199,6 +199,7 @@ func (m *Manager) ToSession(id, name string, createdAt time.Time) *session.Sessi
 			CtxTokens:      a.CtxTokens,
 			Messages:       msgs,
 			Queue:          a.Queue,
+			Todos:          a.Todos,
 			Stats:          a.Stats,
 		})
 	}
@@ -228,6 +229,7 @@ func (m *Manager) LoadSession(s *session.Session) {
 			CtxTokens:      st.CtxTokens,
 			Messages:       RepairHistory(st.Messages),
 			Queue:          st.Queue,
+			Todos:          st.Todos,
 			Stats:          st.Stats,
 			Events:         make(chan Event, 512),
 			MCP:            m.MCP,
