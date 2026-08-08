@@ -2,6 +2,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -245,10 +246,14 @@ func main() {
 		if strings.ContainsAny(args.sessionID, "/\\") {
 			fail(fmt.Errorf("invalid session id %q", args.sessionID))
 		}
-		if _, err := session.Load(args.sessionID); err == nil {
+		switch _, err := session.Load(args.sessionID); {
+		case err == nil:
 			resumeID = args.sessionID
-		} else {
+		case errors.Is(err, os.ErrNotExist):
 			sessID = args.sessionID
+		default:
+			// Corrupt-but-existing: refuse to silently overwrite it.
+			fail(err)
 		}
 	}
 	if resumeID != "" {
