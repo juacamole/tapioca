@@ -29,10 +29,11 @@ prompt.
 ## What it does
 
 - **Built-in coding tools** — `bash`, `read_file`, `write_file`, `edit_file`
-  run in the working directory (`/cd` to move it), plus keyless
-  **`web_search`** (DuckDuckGo) and **`web_fetch`** (readable page text) for
-  research; the web tools are read-only, need no permission, and work in
-  plan mode.
+  run in the working directory (`/cd` to move it), with **`grep`** (regex
+  search, ripgrep when installed) and **`glob`** (`**/*.go`, newest first)
+  for navigation, plus keyless **`web_search`** (DuckDuckGo) and
+  **`web_fetch`** (readable page text) for research; the read-only tools
+  need no permission and work in plan mode.
 - **Permission modes** — cycle with `shift+tab`, shown in the status bar
   (see [SECURITY.md](SECURITY.md) for what each one actually enforces):
   - `plan` — no file modifications; bash asks; the agent is instructed to

@@ -404,7 +404,7 @@ func cmdPermissions(m *App, _ string) tea.Cmd {
 	b.WriteString(styPanelTitle.Render("mode") + "  " + styAccent.Render(mode) + styDim.Render("  ("+modeDescriptions[mode]+")") + "\n\n")
 
 	b.WriteString(styPanelTitle.Render("never prompts") + "\n")
-	b.WriteString("  read_file, web_search, web_fetch " + styDim.Render("(read-only builtins)") + "\n")
+	b.WriteString("  read_file, grep, glob, web_search, web_fetch " + styDim.Render("(read-only builtins)") + "\n")
 	if n := len(m.mgr.MCP.AllTools()); n > 0 {
 		b.WriteString(fmt.Sprintf("  %d MCP tools prompt like builtins %s\n", n, styDim.Render("(grants show as mcp:name)")))
 	}
