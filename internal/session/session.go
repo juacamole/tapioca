@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"tapioca/internal/config"
@@ -60,12 +61,30 @@ type Meta struct {
 // Dir returns the session storage directory.
 func Dir() string { return filepath.Join(config.DataDir(), "sessions") }
 
-// NewID returns a timestamp-based session id with a random suffix, so two
-// same-second launches can never claim the same file.
+var (
+	idMu     sync.Mutex
+	idIssued = map[string]bool{}
+)
+
+// NewID returns a timestamp-based session id with a random suffix. A repeat
+// would overwrite the older session, so ids already issued in this process or
+// already on disk are rejected rather than merely made unlikely.
 func NewID() string {
-	var b [2]byte
-	_, _ = rand.Read(b[:])
-	return time.Now().Format("20060102-150405") + "-" + hex.EncodeToString(b[:])
+	idMu.Lock()
+	defer idMu.Unlock()
+	for {
+		var b [3]byte
+		_, _ = rand.Read(b[:])
+		id := time.Now().Format("20060102-150405") + "-" + hex.EncodeToString(b[:])
+		if idIssued[id] {
+			continue
+		}
+		if _, err := os.Stat(pathFor(id)); err == nil {
+			continue
+		}
+		idIssued[id] = true
+		return id
+	}
 }
 
 func pathFor(id string) string { return filepath.Join(Dir(), id+".json") }
