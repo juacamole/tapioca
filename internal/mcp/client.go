@@ -86,8 +86,18 @@ func Start(ctx context.Context, cfg config.MCPServerConfig) (*Client, error) {
 		pending: map[int64]chan *rpcMsg{},
 		closed:  make(chan struct{}),
 	}
-	go c.readLoop(stdout)
-	go func() { _ = cmd.Wait(); c.Close() }()
+	// Wait must not run until the read loop has drained the pipe, or a
+	// server that replies and immediately exits loses its final response.
+	readDone := make(chan struct{})
+	go func() {
+		c.readLoop(stdout)
+		close(readDone)
+	}()
+	go func() {
+		<-readDone
+		_ = cmd.Wait()
+		c.Close()
+	}()
 
 	initCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()

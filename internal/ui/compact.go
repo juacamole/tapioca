@@ -10,6 +10,7 @@ import (
 
 	"tapioca/internal/agent"
 	"tapioca/internal/provider"
+	"tapioca/internal/textenc"
 )
 
 const (
@@ -88,7 +89,7 @@ func (m *App) compactCmd(a *agent.Agent) tea.Cmd {
 				continue
 			case "tool_result":
 				if len(b.Content) > compactToolTrunc {
-					b.Content = b.Content[:compactToolTrunc] + "\n[truncated]"
+					b.Content = textenc.Cut(b.Content, compactToolTrunc) + "\n[truncated]"
 				}
 			}
 			blocks = append(blocks, b)

@@ -11,6 +11,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"tapioca/internal/textenc"
 )
 
 // Web tools: keyless search via DuckDuckGo's HTML endpoint and a readable
@@ -58,18 +60,24 @@ func (e *Executor) webSearch(ctx context.Context, raw json.RawMessage) (string, 
 	}
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 
-	links := ddgResultRe.FindAllStringSubmatch(string(body), a.MaxResults)
-	snippets := ddgSnippetRe.FindAllStringSubmatch(string(body), a.MaxResults)
-	if len(links) == 0 {
+	page := string(body)
+	locs := ddgResultRe.FindAllStringSubmatchIndex(page, a.MaxResults)
+	if len(locs) == 0 {
 		return "no results for: " + a.Query, false, nil
 	}
 	var b strings.Builder
-	for i, l := range links {
-		title := cleanHTML(l[2])
-		target := decodeDDGHref(l[1])
+	for i, loc := range locs {
+		title := cleanHTML(page[loc[4]:loc[5]])
+		target := decodeDDGHref(page[loc[2]:loc[3]])
 		fmt.Fprintf(&b, "%d. %s\n   %s\n", i+1, title, target)
-		if i < len(snippets) {
-			if s := cleanHTML(snippets[i][1]); s != "" {
+		// Snippets pair by position: search only between this result and
+		// the next, so a snippetless hit can't shift later attributions.
+		end := len(page)
+		if i+1 < len(locs) {
+			end = locs[i+1][0]
+		}
+		if sm := ddgSnippetRe.FindStringSubmatch(page[loc[1]:end]); sm != nil {
+			if s := cleanHTML(sm[1]); s != "" {
 				fmt.Fprintf(&b, "   %s\n", s)
 			}
 		}
@@ -115,7 +123,11 @@ func (e *Executor) webFetch(ctx context.Context, raw json.RawMessage) (string, b
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	text := string(body)
+	text, isText := textenc.Decode(body)
+	if !isText {
+		return fmt.Sprintf("binary response (%d bytes, %s) — not showing raw contents",
+			len(body), resp.Header.Get("Content-Type")), true, nil
+	}
 	if strings.Contains(resp.Header.Get("Content-Type"), "html") ||
 		strings.Contains(strings.ToLower(text[:min(len(text), 512)]), "<html") {
 		text = cleanHTML(text)

@@ -15,6 +15,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	rtrunc "github.com/muesli/reflow/truncate"
 	"github.com/muesli/reflow/wrap"
 
 	"tapioca/internal/agent"
@@ -719,7 +720,7 @@ func (m *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				sel := ((m.mentionSel % len(fs)) + len(fs)) % len(fs)
 				v := m.ta.Value()
 				cut := strings.LastIndex(v, "@")
-				m.ta.SetValue(v[:cut] + "@" + fs[sel] + " ")
+				m.ta.SetValue(v[:cut] + mentionInsert(fs[sel]))
 				m.mentionSel = 0
 				return m, nil
 			}
@@ -887,7 +888,7 @@ func (m *App) handleInputKey(msg tea.KeyMsg, a *agent.Agent) (tea.Model, tea.Cmd
 			sel := ((m.mentionSel % len(fs)) + len(fs)) % len(fs)
 			v := m.ta.Value()
 			cut := strings.LastIndex(v, "@")
-			m.ta.SetValue(v[:cut] + "@" + fs[sel] + " ")
+			m.ta.SetValue(v[:cut] + mentionInsert(fs[sel]))
 			m.mentionSel = 0
 			return m, nil
 		}
@@ -1109,10 +1110,26 @@ func (m *App) openPanelsPicker() {
 	m.overlay = overlayPicker
 }
 
+// fittedPanels returns the panels that actually render at the current size,
+// so keyboard navigation can never select an invisible panel.
+func (m *App) fittedPanels() []*panelDef {
+	dashW, dashH := m.dashDims()
+	bodyH := m.h - 3
+	if dashW > 0 {
+		defs, _, _ := m.dashLayout(dashW, bodyH)
+		return defs
+	}
+	if dashH > 0 {
+		defs, _, _ := m.dashLayout(m.w, dashH)
+		return defs
+	}
+	return nil
+}
+
 // handleDashKey drives the dashboard: panel-level focus (move/reorder), and
 // row editing inside the settings panel.
 func (m *App) handleDashKey(msg tea.KeyMsg, a *agent.Agent) (tea.Model, tea.Cmd) {
-	defs := m.activePanelDefs()
+	defs := m.fittedPanels()
 	if len(defs) == 0 {
 		return m, nil
 	}
@@ -1571,8 +1588,20 @@ func (m *App) refreshChat(force bool) {
 	for i, l := range m.chatStyled {
 		m.chatPlain[i] = stripAnsi(l)
 	}
-	m.selActive = false
-	m.vp.SetContent(content)
+	// A drag or persistent mark survives streaming refreshes: existing line
+	// indices are stable because content only appends.
+	if m.selActive || m.selStart != m.selEnd {
+		last := len(m.chatPlain) - 1
+		if m.selStart.line > last {
+			m.selStart.line = last
+		}
+		if m.selEnd.line > last {
+			m.selEnd.line = last
+		}
+		m.applySelection()
+	} else {
+		m.vp.SetContent(content)
+	}
 	if force || atBottom {
 		m.vp.GotoBottom()
 	}
@@ -1780,9 +1809,17 @@ func (m *App) renderTitle() string {
 	}
 	gap := m.w - lipgloss.Width(left) - lipgloss.Width(right)
 	if gap < 1 {
-		gap = 1
+		// Overflow would wrap the row and shift the whole frame down.
+		return clipANSI(left+" "+right, m.w)
 	}
 	return left + strings.Repeat(" ", gap) + right
+}
+
+func clipANSI(s string, w int) string {
+	if w < 0 {
+		w = 0
+	}
+	return rtrunc.String(s, uint(w))
 }
 
 func shortPath(p string) string {
@@ -1821,7 +1858,7 @@ func (m *App) renderTabs() string {
 	}
 	gap := m.w - lipgloss.Width(line) - lipgloss.Width(hint)
 	if gap < 1 {
-		return truncate(line, m.w)
+		return clipANSI(line, m.w)
 	}
 	return line + strings.Repeat(" ", gap) + hint
 }
@@ -1882,7 +1919,7 @@ func (m *App) renderStatus() string {
 	}
 	gap := m.w - lipgloss.Width(left) - lipgloss.Width(right)
 	if gap < 1 {
-		return truncate(left, m.w)
+		return clipANSI(left, m.w)
 	}
 	return left + strings.Repeat(" ", gap) + right
 }
