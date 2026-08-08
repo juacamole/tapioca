@@ -104,16 +104,18 @@ func (m *App) compactCmd(a *agent.Agent) tea.Cmd {
 	p := a.Provider
 	model := a.Model
 	id := a.ID
+	baseLen := len(a.Messages)
 	headSize := textSize(head)
 	tailCopy := make([]provider.Message, len(tail))
 	copy(tailCopy, tail)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	m.compacting[id] = cancel
 
 	return func() tea.Msg {
 		if p == nil {
 			return compactDoneMsg{agentID: id, err: errors.New("no provider configured")}
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-		defer cancel()
 		events := make(chan provider.Event, 64)
 		go func() {
 			for range events {
@@ -140,6 +142,7 @@ func (m *App) compactCmd(a *agent.Agent) tea.Cmd {
 		}, tailCopy...)
 		return compactDoneMsg{
 			agentID: id,
+			baseLen: baseLen,
 			msgs:    newMsgs,
 			ctxEst:  (len(summary) + textSize(tailCopy)) / 4,
 		}

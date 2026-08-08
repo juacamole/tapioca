@@ -132,9 +132,10 @@ type Agent struct {
 	ToolsEnabled   bool
 
 	Messages      []provider.Message
-	Queue         []string // prompts queued while the agent is busy
-	MaxToolRounds int      // 0 = default
-	CompactFailed bool     // suppress auto-compact until the next good turn
+	Queue         []provider.Message // prompts queued while the agent is busy
+	PendingNotes  []provider.Message // notices deferred until the turn ends
+	MaxToolRounds int                // 0 = default
+	CompactFailed bool               // suppress auto-compact until the next good turn
 	Stats         stats.Stats
 	Status        Status
 	StatusDetail  string // fine-grained stage label ("reasoning", "running bash", …)

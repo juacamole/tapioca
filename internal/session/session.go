@@ -32,6 +32,7 @@ type AgentState struct {
 	ToolsEnabled   bool               `json:"tools_enabled"`
 	CtxTokens      int                `json:"ctx_tokens,omitempty"`
 	Messages       []provider.Message `json:"messages"`
+	Queue          []provider.Message `json:"queue,omitempty"`
 	Stats          stats.Stats        `json:"stats"`
 }
 

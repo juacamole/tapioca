@@ -30,13 +30,15 @@ type Block struct {
 }
 
 // Message is one conversation turn. Hidden messages reach the model but are
-// not rendered in the transcript (e.g. rewind notices).
+// not rendered in the transcript (e.g. rewind notices). Typed preserves the
+// user's raw input before mention expansion, for /edit.
 type Message struct {
 	Role   string    `json:"role"` // "user" | "assistant"
 	Blocks []Block   `json:"blocks"`
 	Model  string    `json:"model,omitempty"`
 	Usage  *Usage    `json:"usage,omitempty"`
 	Hidden bool      `json:"hidden,omitempty"`
+	Typed  string    `json:"typed,omitempty"`
 	Time   time.Time `json:"time"`
 }
 
