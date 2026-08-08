@@ -166,16 +166,52 @@ func (a *Agent) TotalTokens() int {
 	return a.Stats.InputTokens + a.Stats.OutputTokens
 }
 
-// System composes the effective system prompt (base + goal + cwd + mode).
-func (a *Agent) System() string {
-	sys := a.SystemPrompt
-	if a.Goal != "" {
-		sys += "\n\nCurrent goal: " + a.Goal
+// runSettings is a snapshot of everything the run goroutine needs. The UI
+// goroutine owns the Agent fields and may rewrite them mid-turn (/model,
+// settings panel, /settings reload); reading them from run would race, and a
+// reload can even nil the provider. Snapshotting at Send makes each turn see
+// one consistent configuration.
+type runSettings struct {
+	prov           provider.Provider
+	providerName   string
+	providerErr    string
+	model          string
+	systemBase     string
+	goal           string
+	maxTokens      int
+	temperature    float64
+	thinking       bool
+	thinkingBudget int
+	toolsEnabled   bool
+	rounds         int
+}
+
+func (a *Agent) snapshot() runSettings {
+	rounds := a.MaxToolRounds
+	if rounds <= 0 {
+		rounds = maxToolRounds
 	}
-	if a.Exec != nil {
-		cwd := a.Exec.Cwd()
+	return runSettings{
+		prov: a.Provider, providerName: a.ProviderName, providerErr: a.ProviderErr,
+		model: a.Model, systemBase: a.SystemPrompt, goal: a.Goal,
+		maxTokens: a.MaxTokens, temperature: a.Temperature,
+		thinking: a.Thinking, thinkingBudget: a.ThinkingBudget,
+		toolsEnabled: a.ToolsEnabled, rounds: rounds,
+	}
+}
+
+// System composes the effective system prompt (base + goal + cwd + mode).
+func (a *Agent) System() string { return composeSystem(a.SystemPrompt, a.Goal, a.Exec) }
+
+func composeSystem(base, goal string, exec *tools.Executor) string {
+	sys := base
+	if goal != "" {
+		sys += "\n\nCurrent goal: " + goal
+	}
+	if exec != nil {
+		cwd := exec.Cwd()
 		sys += "\n\nWorking directory: " + cwd
-		if extra := a.Exec.ExtraDirs(); len(extra) > 0 {
+		if extra := exec.ExtraDirs(); len(extra) > 0 {
 			sys += "\nAdditional working directories: " + strings.Join(extra, ", ")
 		}
 		if ins := project.Instructions(cwd); ins != "" {
@@ -184,7 +220,7 @@ func (a *Agent) System() string {
 		if mem := project.Memory(cwd); mem != "" {
 			sys += "\n\nProject memory (remembered facts):\n" + mem
 		}
-		if a.Exec.Mode() == tools.ModePlan {
+		if exec.Mode() == tools.ModePlan {
 			sys += "\n\nPLAN MODE is active: you may inspect the codebase with read-only " +
 				"tools, but you must NOT modify files or run mutating commands. " +
 				"Investigate, then present a concise implementation plan and wait for approval."
@@ -197,9 +233,10 @@ func (a *Agent) System() string {
 // message). It returns immediately; progress arrives on a.Events.
 func (a *Agent) Send(history []provider.Message) {
 	history = RepairHistory(history)
+	rs := a.snapshot()
 	ctx, cancel := context.WithCancel(context.Background())
 	a.cancel = cancel
-	go a.run(ctx, history)
+	go a.run(ctx, rs, history)
 }
 
 func (a *Agent) emit(ev Event) {
@@ -207,11 +244,11 @@ func (a *Agent) emit(ev Event) {
 	a.Events <- ev
 }
 
-func (a *Agent) run(ctx context.Context, history []provider.Message) {
+func (a *Agent) run(ctx context.Context, rs runSettings, history []provider.Message) {
 	defer a.emit(Event{Kind: EvDone})
 
-	if a.Provider == nil {
-		msg := a.ProviderErr
+	if rs.prov == nil {
+		msg := rs.providerErr
 		if msg == "" {
 			msg = "no provider configured"
 		}
@@ -230,12 +267,8 @@ func (a *Agent) run(ctx context.Context, history []provider.Message) {
 		}
 	}
 
-	rounds := a.MaxToolRounds
-	if rounds <= 0 {
-		rounds = maxToolRounds
-	}
 	doomKey, doomCount, doomOff := "", 0, false
-	for round := 0; round < rounds; round++ {
+	for round := 0; round < rs.rounds; round++ {
 		stage := "processing prompt"
 		if round > 0 {
 			stage = "processing tool results"
@@ -243,15 +276,15 @@ func (a *Agent) run(ctx context.Context, history []provider.Message) {
 		a.emit(Event{Kind: EvStatus, Status: StatusWaiting, Text: stage})
 
 		req := provider.Request{
-			Model:          a.Model,
-			System:         a.System(),
+			Model:          rs.model,
+			System:         composeSystem(rs.systemBase, rs.goal, a.Exec),
 			Messages:       history,
-			MaxTokens:      a.MaxTokens,
-			Temperature:    a.Temperature,
-			Thinking:       a.Thinking,
-			ThinkingBudget: a.ThinkingBudget,
+			MaxTokens:      rs.maxTokens,
+			Temperature:    rs.temperature,
+			Thinking:       rs.thinking,
+			ThinkingBudget: rs.thinkingBudget,
 		}
-		if a.ToolsEnabled {
+		if rs.toolsEnabled {
 			if a.Exec != nil {
 				req.Tools = append(req.Tools, a.Exec.Tools()...)
 			}
@@ -268,7 +301,7 @@ func (a *Agent) run(ctx context.Context, history []provider.Message) {
 			events := make(chan provider.Event, 64)
 			done := make(chan struct{})
 			go func() {
-				msg, streamErr = a.Provider.Stream(ctx, req, events)
+				msg, streamErr = rs.prov.Stream(ctx, req, events)
 				close(done)
 			}()
 			sawThinking, sawText := false, false
@@ -330,7 +363,7 @@ func (a *Agent) run(ctx context.Context, history []provider.Message) {
 			return
 		}
 		if msg.Usage != nil {
-			a.emit(Event{Kind: EvUsage, Usage: msg.Usage, Model: a.Model, Dur: dur})
+			a.emit(Event{Kind: EvUsage, Usage: msg.Usage, Model: rs.model, Dur: dur})
 		}
 		if len(msg.Blocks) > 0 {
 			m := msg
@@ -450,7 +483,7 @@ func (a *Agent) run(ctx context.Context, history []provider.Message) {
 		}
 		history = append(history, toolMsg)
 	}
-	a.emit(Event{Kind: EvError, Err: fmt.Errorf("stopped after %d tool rounds", rounds)})
+	a.emit(Event{Kind: EvError, Err: fmt.Errorf("stopped after %d tool rounds", rs.rounds)})
 }
 
 // Every tool_use must get a tool_result, even on cancellation — providers
