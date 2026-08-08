@@ -627,12 +627,11 @@ func (m *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.decidePerm(tools.Decision{Allow: true, Always: true})
 		case "p", "P":
 			e := m.perms[0]
-			if e.req.Tool == "bash" {
-				if prefix := tools.PrefixSuggestion(e.req.Summary); prefix != "" {
-					m.cfg.BashAllow = append(m.cfg.BashAllow, prefix)
-					m.saveCfg()
-					m.decidePerm(tools.Decision{Allow: true, Prefix: prefix})
-				}
+			if e.req.Tool == "bash" && tools.PrefixGrantable(e.req.Summary) {
+				prefix := tools.PrefixSuggestion(e.req.Summary)
+				m.cfg.BashAllow = append(m.cfg.BashAllow, prefix)
+				m.saveCfg()
+				m.decidePerm(tools.Decision{Allow: true, Prefix: prefix})
 			}
 		case "n", "N", "esc", "ctrl+c":
 			m.decidePerm(tools.Decision{})
@@ -1768,10 +1767,9 @@ func (m *App) renderPerm(w, h int) string {
 	}
 	b.WriteString("\n" + styOK.Render("[y]") + " allow once   " +
 		styWarn.Render("[a]") + " always allow " + e.req.Tool)
-	if e.req.Tool == "bash" {
-		if prefix := tools.PrefixSuggestion(e.req.Summary); prefix != "" {
-			b.WriteString("   " + styAccent.Render("[p]") + " always allow " + prefix + " *")
-		}
+	if e.req.Tool == "bash" && tools.PrefixGrantable(e.req.Summary) {
+		b.WriteString("   " + styAccent.Render("[p]") + " always allow " +
+			tools.PrefixSuggestion(e.req.Summary) + " *")
 	}
 	b.WriteString("   " + styErr.Render("[n]") + " deny")
 	box := borderStyle(true).Padding(1, 2).Render(b.String())
