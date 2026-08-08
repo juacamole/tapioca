@@ -392,7 +392,7 @@ func capOutput(s string) string {
 	if len(s) <= maxOutput {
 		return s
 	}
-	return s[:maxOutput*2/3] + "\n[... output truncated ...]\n" + s[len(s)-maxOutput/3:]
+	return textenc.Cut(s, maxOutput*2/3) + "\n[... output truncated ...]\n" + textenc.CutTail(s, maxOutput/3)
 }
 
 func (e *Executor) runBash(ctx context.Context, raw json.RawMessage) (string, bool, error) {
@@ -502,7 +502,13 @@ func (e *Executor) editFile(raw json.RawMessage) (string, bool, error) {
 	if err != nil {
 		return err.Error(), true, nil
 	}
-	content := string(data)
+	// Match against the same decoded text read_file shows, or UTF-16 files
+	// are uneditable and Latin-1 files get UTF-8 spliced into them.
+	content, isText := textenc.Decode(data)
+	if !isText {
+		return fmt.Sprintf("%s is a binary file; refusing to edit", a.Path), true, nil
+	}
+	reencoded := content != string(data)
 	count := strings.Count(content, a.OldString)
 	switch {
 	case count == 0:
@@ -518,5 +524,9 @@ func (e *Executor) editFile(raw json.RawMessage) (string, bool, error) {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		return err.Error(), true, nil
 	}
-	return fmt.Sprintf("edited %s (%d replacement(s))", path, count), false, nil
+	out := fmt.Sprintf("edited %s (%d replacement(s))", path, count)
+	if reencoded {
+		out += " — note: file was re-encoded to UTF-8"
+	}
+	return out, false, nil
 }

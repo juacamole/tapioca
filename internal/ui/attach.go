@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -73,9 +74,17 @@ func mentionToken(input string) string {
 	}
 	last := fields[len(fields)-1]
 	if strings.HasPrefix(last, "@") && len(last) >= 1 {
-		return last[1:]
+		return strings.TrimPrefix(last[1:], `"`)
 	}
 	return ""
+}
+
+// mentionInsert renders a completion as an @token, quoting spaced paths.
+func mentionInsert(path string) string {
+	if strings.ContainsAny(path, " \t") {
+		return `@"` + path + `" `
+	}
+	return "@" + path + " "
 }
 
 // listFiles walks cwd shallowly for mention completion candidates.
@@ -130,15 +139,17 @@ func (m *App) mentionMatches() []string {
 	return out
 }
 
-// expandMentions resolves @path tokens: text files are inlined below the
-// prompt, image files become attachments. Returns the expanded text.
+var mentionRe = regexp.MustCompile(`@"([^"]+)"|@(\S+)`)
+
+// expandMentions resolves @path tokens (quoted for spaced paths): text files
+// are inlined below the prompt, image files become attachments.
 func (m *App) expandMentions(text string, atts *[]attachment) string {
 	var inlined []string
-	for _, f := range strings.Fields(text) {
-		if !strings.HasPrefix(f, "@") || len(f) < 2 {
-			continue
+	for _, match := range mentionRe.FindAllStringSubmatch(text, -1) {
+		rel := match[1]
+		if rel == "" {
+			rel = strings.TrimRight(match[2], ".,;:")
 		}
-		rel := strings.TrimRight(f[1:], ".,;:")
 		path := rel
 		if !filepath.IsAbs(path) {
 			path = filepath.Join(m.cwd(), rel)
@@ -162,7 +173,7 @@ func (m *App) expandMentions(text string, atts *[]attachment) string {
 				continue
 			}
 			if len(content) > maxInlineFile {
-				content = content[:maxInlineFile] + "\n[truncated]"
+				content = textenc.Cut(content, maxInlineFile) + "\n[truncated]"
 			}
 			inlined = append(inlined, fmt.Sprintf("[file: %s]\n```\n%s\n```", rel, content))
 		}

@@ -266,8 +266,10 @@ func (m *App) applySelection() {
 	m.vp.SetYOffset(off)
 }
 
-// clearSelection restores the styled transcript.
+// clearSelection drops the mark and restores the styled transcript.
 func (m *App) clearSelection() {
+	m.selActive = false
+	m.selStart, m.selEnd = selPoint{}, selPoint{}
 	off := m.vp.YOffset
 	m.vp.SetContent(strings.Join(m.chatStyled, "\n"))
 	m.vp.SetYOffset(off)

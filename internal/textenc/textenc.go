@@ -69,6 +69,29 @@ func Decode(data []byte) (string, bool) {
 	return b.String(), true
 }
 
+// Cut truncates s to at most n bytes without splitting a UTF-8 sequence.
+func Cut(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
+}
+
+// CutTail keeps at most the last n bytes of s, starting on a rune boundary.
+func CutTail(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	i := len(s) - n
+	for i < len(s) && !utf8.RuneStart(s[i]) {
+		i++
+	}
+	return s[i:]
+}
+
 func utf16String(data []byte, ord binary.ByteOrder) string {
 	u := make([]uint16, 0, len(data)/2)
 	for i := 0; i+1 < len(data); i += 2 {

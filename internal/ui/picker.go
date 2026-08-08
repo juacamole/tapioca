@@ -95,7 +95,8 @@ func (p *picker) handleKey(msg tea.KeyMsg) (*pickerItem, bool) {
 		}
 	case "backspace":
 		if len(p.filter) > 0 {
-			p.filter = p.filter[:len(p.filter)-1]
+			r := []rune(p.filter)
+			p.filter = string(r[:len(r)-1])
 		}
 	default:
 		if msg.Type == tea.KeyRunes && !msg.Alt {

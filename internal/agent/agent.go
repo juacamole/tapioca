@@ -15,6 +15,7 @@ import (
 	"tapioca/internal/project"
 	"tapioca/internal/provider"
 	"tapioca/internal/stats"
+	"tapioca/internal/textenc"
 	"tapioca/internal/tools"
 )
 
@@ -486,7 +487,7 @@ func (a *Agent) run(ctx context.Context, rs runSettings, history []provider.Mess
 				isErr = true
 			}
 			if len(text) > maxToolResultSize {
-				text = text[:maxToolResultSize] + "\n[truncated]"
+				text = textenc.Cut(text, maxToolResultSize) + "\n[truncated]"
 			}
 			a.emit(Event{Kind: EvToolEnd, Tool: &ToolInfo{Name: tu.Name, Args: argsPreview, Result: text, IsError: isErr, Dur: tdur}})
 			results = append(results, provider.Block{
