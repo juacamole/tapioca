@@ -64,6 +64,7 @@ type anthBlock struct {
 	Text         string          `json:"text,omitempty"`
 	Thinking     string          `json:"thinking,omitempty"`
 	Signature    string          `json:"signature,omitempty"`
+	Data         string          `json:"data,omitempty"`
 	ID           string          `json:"id,omitempty"`
 	Name         string          `json:"name,omitempty"`
 	Input        json.RawMessage `json:"input,omitempty"`
@@ -119,6 +120,7 @@ type sseEvent struct {
 		Type string `json:"type"`
 		ID   string `json:"id"`
 		Name string `json:"name"`
+		Data string `json:"data"`
 	} `json:"content_block"`
 	Delta *struct {
 		Type        string `json:"type"`
@@ -153,6 +155,10 @@ func (a *Anthropic) convertMessages(model string, msgs []Message) []anthMsg {
 				// that produced them.
 				if b.Signature != "" && (m.Model == "" || m.Model == model) {
 					blocks = append(blocks, anthBlock{Type: "thinking", Thinking: b.Text, Signature: b.Signature})
+				}
+			case "redacted_thinking":
+				if b.Data != "" && (m.Model == "" || m.Model == model) {
+					blocks = append(blocks, anthBlock{Type: "redacted_thinking", Data: b.Data})
 				}
 			case "tool_use":
 				input := b.Input
@@ -254,6 +260,7 @@ func (a *Anthropic) Stream(ctx context.Context, req Request, out chan<- Event) (
 	type blockBuilder struct {
 		typ       string
 		id, name  string
+		data      string
 		text      strings.Builder
 		signature string
 		inputJSON strings.Builder
@@ -276,6 +283,9 @@ func (a *Anthropic) Stream(ctx context.Context, req Request, out chan<- Event) (
 				msg.Blocks = append(msg.Blocks, Block{Type: "text", Text: b.text.String()})
 			case "thinking":
 				msg.Blocks = append(msg.Blocks, Block{Type: "thinking", Text: b.text.String(), Signature: b.signature})
+			case "redacted_thinking":
+				// Opaque, but must be replayed verbatim in tool exchanges.
+				msg.Blocks = append(msg.Blocks, Block{Type: "redacted_thinking", Data: b.data})
 			case "tool_use":
 				input := b.inputJSON.String()
 				// A cancelled stream can leave half-received JSON here;
@@ -318,7 +328,7 @@ func (a *Anthropic) Stream(ctx context.Context, req Request, out chan<- Event) (
 			}
 		case "content_block_start":
 			if ev.ContentBlock != nil {
-				builders[ev.Index] = &blockBuilder{typ: ev.ContentBlock.Type, id: ev.ContentBlock.ID, name: ev.ContentBlock.Name}
+				builders[ev.Index] = &blockBuilder{typ: ev.ContentBlock.Type, id: ev.ContentBlock.ID, name: ev.ContentBlock.Name, data: ev.ContentBlock.Data}
 				if ev.ContentBlock.Type == "tool_use" {
 					out <- Event{Type: EventToolUseStart, ToolID: ev.ContentBlock.ID, ToolName: ev.ContentBlock.Name}
 				}
@@ -373,6 +383,10 @@ func (a *Anthropic) Stream(ctx context.Context, req Request, out chan<- Event) (
 	}
 	if err := scanner.Err(); err != nil {
 		return finish(), fmt.Errorf("anthropic: reading stream: %w", err)
+	}
+	if stopReason == "" {
+		// Clean EOF without completion: a proxy cut the stream; retryable.
+		return finish(), &APIError{Provider: a.name, Status: 502, Message: "stream ended before completion"}
 	}
 	out <- Event{Type: EventDone, StopReason: stopReason}
 	return finish(), nil

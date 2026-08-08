@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"math/rand"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -101,6 +103,20 @@ func Retryable(err error) bool {
 		default:
 			return false
 		}
+	}
+	// *url.Error implements net.Error, so without unwrapping, permanent
+	// failures (bad TLS cert, unsupported scheme) would burn the whole
+	// retry schedule.
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		if ue.Timeout() {
+			return true
+		}
+		var op *net.OpError
+		if errors.As(ue.Err, &op) {
+			return true
+		}
+		return errors.Is(ue.Err, io.EOF) || errors.Is(ue.Err, io.ErrUnexpectedEOF)
 	}
 	var ne net.Error
 	if errors.As(err, &ne) {

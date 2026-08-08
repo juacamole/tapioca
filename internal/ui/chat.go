@@ -145,6 +145,8 @@ func renderMessage(m *provider.Message, a *agent.Agent, w int, verbose bool) str
 		switch bl.Type {
 		case "thinking":
 			b.WriteString("\n" + renderThinking(bl.Text, w, verbose))
+		case "redacted_thinking":
+			b.WriteString("\n" + styThink.Render("thought (redacted by the provider)"))
 		case "text":
 			if strings.TrimSpace(bl.Text) != "" {
 				b.WriteString("\n" + renderMarkdown(bl.Text, w))

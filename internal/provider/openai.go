@@ -306,6 +306,10 @@ func (o *OpenAI) Stream(ctx context.Context, req Request, out chan<- Event) (Mes
 	if err := scanner.Err(); err != nil {
 		return finish(), fmt.Errorf("%s: reading stream: %w", o.name, err)
 	}
+	if stopReason == "" {
+		return finish(), &APIError{Provider: o.name, Status: 502, Message: "stream ended before completion"}
+	}
+	out <- Event{Type: EventUsage, Usage: usage}
 	out <- Event{Type: EventDone, StopReason: stopReason}
 	return finish(), nil
 }

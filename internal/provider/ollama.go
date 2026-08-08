@@ -243,8 +243,7 @@ func (o *Ollama) Stream(ctx context.Context, req Request, out chan<- Event) (Mes
 	if err := scanner.Err(); err != nil {
 		return finish(), fmt.Errorf("ollama: reading stream: %w", err)
 	}
-	out <- Event{Type: EventDone, StopReason: stopReason}
-	return finish(), nil
+	return finish(), &APIError{Provider: o.name, Status: 502, Message: "stream ended before completion"}
 }
 
 func (o *Ollama) numCtx(msgs []olMsg, toolDefs []ToolDef) int {
@@ -260,6 +259,14 @@ func (o *Ollama) numCtx(msgs []olMsg, toolDefs []ToolDef) int {
 	}
 	est := chars / 4
 	n := est + est/4 + 8192
+	// Any num_ctx change makes Ollama reload the model; bucketing keeps it
+	// stable for many turns at a time.
+	for _, b := range []int{8192, 16384, 32768, 65536, 131072, 262144} {
+		if n <= b {
+			n = b
+			break
+		}
+	}
 	if o.ctxWindow > 0 && n > o.ctxWindow {
 		n = o.ctxWindow
 	}
