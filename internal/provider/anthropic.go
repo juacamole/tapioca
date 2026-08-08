@@ -278,7 +278,9 @@ func (a *Anthropic) Stream(ctx context.Context, req Request, out chan<- Event) (
 				msg.Blocks = append(msg.Blocks, Block{Type: "thinking", Text: b.text.String(), Signature: b.signature})
 			case "tool_use":
 				input := b.inputJSON.String()
-				if strings.TrimSpace(input) == "" {
+				// A cancelled stream can leave half-received JSON here;
+				// storing it would poison every later marshal.
+				if strings.TrimSpace(input) == "" || !json.Valid([]byte(input)) {
 					input = "{}"
 				}
 				msg.Blocks = append(msg.Blocks, Block{Type: "tool_use", ID: b.id, Name: b.name, Input: json.RawMessage(input)})

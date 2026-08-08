@@ -65,8 +65,13 @@ type Config struct {
 	Keys      map[string]string         `toml:"keys"`
 	Costs     map[string]Cost           `toml:"costs"` // model prefix -> $/Mtok
 
-	path string // where this config was loaded from
+	path    string // where this config was loaded from
+	presave func(*Config)
 }
+
+// SetPresave registers a transform applied to a copy of the config before
+// every Save, so runtime-only overrides (CLI flags) never persist to disk.
+func (c *Config) SetPresave(fn func(*Config)) { c.presave = fn }
 
 // Default returns the built-in configuration.
 func Default() *Config {
@@ -200,11 +205,15 @@ func (c *Config) Save() error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
+	tosave := *c
+	if c.presave != nil {
+		c.presave(&tosave)
+	}
 	var buf bytes.Buffer
 	buf.WriteString("# Tapioca configuration.\n")
 	buf.WriteString("# Managed by the app (settings dashboard writes here); manual edits are\n")
 	buf.WriteString("# fine too and are picked up on next start.\n\n")
-	if err := toml.NewEncoder(&buf).Encode(c); err != nil {
+	if err := toml.NewEncoder(&buf).Encode(&tosave); err != nil {
 		return err
 	}
 	tmp := path + ".tmp"
