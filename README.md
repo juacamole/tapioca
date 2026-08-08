@@ -33,12 +33,18 @@ prompt.
   **`web_search`** (DuckDuckGo) and **`web_fetch`** (readable page text) for
   research; the web tools are read-only, need no permission, and work in
   plan mode.
-- **Permission modes** — cycle with `shift+tab`, shown in the status bar:
+- **Permission modes** — cycle with `shift+tab`, shown in the status bar
+  (see [SECURITY.md](SECURITY.md) for what each one actually enforces):
   - `plan` — no file modifications; bash asks; the agent is instructed to
     investigate read-only and present a plan
   - `manual` — every mutating tool call prompts (allow once / always / deny)
   - `auto` — file edits auto-approved, bash still asks
-  - `bypass` — everything runs without asking
+  - `bypass` — everything runs without asking (containers/throwaway VMs;
+    it disables the exfiltration and grant safeguards too)
+
+  Secrets outside the worktree and first-contact web hosts prompt even in
+  `auto`, provider API keys are hidden from tool subprocesses, and stored
+  sessions/memory/checkpoints are owner-only on disk.
 - **Providers** — Ollama, Anthropic, and any **OpenAI-compatible** server
   (LM Studio, vLLM, llama.cpp, OpenRouter, OpenAI) via `type = "openai"`.
   All stream, all support tool calls and thinking where the backend does.
