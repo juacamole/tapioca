@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -105,6 +106,45 @@ func (e *Executor) wordAllowed(word string) bool {
 	return false
 }
 
+// escapes reports shell constructs that make a segment's first word a poor
+// summary of what will run: substitution executes other programs, and
+// redirection writes files. Granting "echo" must not silently grant
+// "echo $(rm -rf ~)" or "echo x > main.go".
+func escapes(segment string) bool {
+	if strings.Contains(segment, "$(") || strings.Contains(segment, "`") ||
+		strings.Contains(segment, "${") || strings.Contains(segment, "<(") {
+		return true
+	}
+	inSingle, inDouble := false, false
+	for i := 0; i < len(segment); i++ {
+		switch c := segment[i]; c {
+		case '\\':
+			i++
+		case '\'':
+			if !inDouble {
+				inSingle = !inSingle
+			}
+		case '"':
+			if !inSingle {
+				inDouble = !inDouble
+			}
+		case '>', '<':
+			if !inSingle && !inDouble {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// segmentAllowed reports whether a granted word covers this exact segment.
+func (e *Executor) segmentAllowed(segment string) bool {
+	if escapes(segment) {
+		return false
+	}
+	return e.wordAllowed(PrefixSuggestion(segment))
+}
+
 // ExternalAllowed reports whether an externally-provided tool (MCP) may run
 // without asking. Plan mode ignores grants, like the builtin gate.
 func (e *Executor) ExternalAllowed(key string) bool {
@@ -136,13 +176,29 @@ func (e *Executor) Grants() (tools []string, bashWords []string) {
 	return tools, append([]string(nil), e.bashPrefixes...)
 }
 
-// PrefixSuggestion returns the word an always-allow-prefix grant would use.
+// interpreters execute arbitrary code from arguments or stdin, so granting
+// them is equivalent to granting everything; the UI declines to offer it.
+var interpreters = map[string]bool{
+	"sh": true, "bash": true, "zsh": true, "fish": true, "dash": true,
+	"python": true, "python3": true, "perl": true, "ruby": true, "node": true,
+	"deno": true, "bun": true, "php": true, "env": true, "eval": true,
+	"xargs": true, "nix-shell": true, "ssh": true, "sudo": true, "doas": true,
+}
+
+// PrefixSuggestion returns the word an always-allow-prefix grant would use,
+// or "" when a blanket grant for it would be meaningless or unsafe.
 func PrefixSuggestion(command string) string {
 	f := strings.Fields(command)
 	if len(f) == 0 {
 		return ""
 	}
 	return f[0]
+}
+
+// PrefixGrantable reports whether [p] should be offered for a segment.
+func PrefixGrantable(segment string) bool {
+	w := PrefixSuggestion(segment)
+	return w != "" && !interpreters[w] && !escapes(segment)
 }
 
 // SetCheckpoint registers a hook run before every mutating tool call.
@@ -270,6 +326,13 @@ func (e *Executor) resolve(path string) string {
 // Call executes a built-in tool. It returns (result, isError, err); err is
 // reserved for internal failures, tool-level problems are (msg, true, nil).
 func (e *Executor) Call(ctx context.Context, name string, raw json.RawMessage, ask AskFunc) (string, bool, error) {
+	// Read-only tools skip the mutation gate, but two of them compose into
+	// exfiltration (read a secret, POST it to a URL), and prompt injection
+	// from fetched pages or repo files can drive exactly that. So they get
+	// their own narrow checks below.
+	if out, isErr, handled := e.gateReadOnly(name, raw, ask); handled {
+		return out, isErr, nil
+	}
 	readOnly := name == "read_file" || name == "web_search" || name == "web_fetch"
 	if !readOnly { // mutating tools go through the permission gate
 		mode := e.Mode()
@@ -302,7 +365,7 @@ func (e *Executor) Call(ctx context.Context, name string, raw json.RawMessage, a
 			}
 			if json.Unmarshal(raw, &a) == nil && strings.TrimSpace(a.Command) != "" {
 				for _, seg := range segments(a.Command) {
-					if grantsApply && e.wordAllowed(PrefixSuggestion(seg)) {
+					if grantsApply && e.segmentAllowed(seg) {
 						continue
 					}
 					d := ask(name, seg)
@@ -360,6 +423,138 @@ func (e *Executor) Call(ctx context.Context, name string, raw json.RawMessage, a
 		return e.webFetch(ctx, raw)
 	}
 	return "", true, fmt.Errorf("unknown builtin tool %q", name)
+}
+
+// sensitiveNames are files whose contents are worth stealing regardless of
+// where they live.
+var sensitiveNames = []string{
+	".env", "id_rsa", "id_ed25519", "id_ecdsa", "credentials",
+	".netrc", ".pgpass", "kubeconfig", "shadow",
+}
+
+// sensitiveDirs are directories that never contain project source but do
+// contain keys, tokens and browser data.
+var sensitiveDirs = []string{
+	".ssh", ".aws", ".gnupg", ".config/gh", ".config/gcloud", ".kube",
+	".docker", ".mozilla", ".config/google-chrome", ".password-store",
+	".local/share/keyrings",
+}
+
+// sensitivePath reports whether reading path deserves a prompt even though
+// read_file is otherwise ungated.
+func (e *Executor) sensitivePath(path string) bool {
+	clean := e.resolve(path)
+	base := strings.ToLower(filepath.Base(clean))
+	for _, n := range sensitiveNames {
+		if base == n || strings.HasPrefix(base, n+".") {
+			return true
+		}
+	}
+	home, err := os.UserHomeDir()
+	if err == nil {
+		for _, d := range sensitiveDirs {
+			full := filepath.Join(home, d)
+			if clean == full || strings.HasPrefix(clean, full+string(filepath.Separator)) {
+				return true
+			}
+		}
+	}
+	// Anything under the worktree is fair game; secrets elsewhere are not.
+	cwd := e.Cwd()
+	inTree := clean == cwd || strings.HasPrefix(clean, cwd+string(filepath.Separator))
+	if !inTree {
+		for _, d := range e.ExtraDirs() {
+			abs, err := filepath.Abs(d)
+			if err != nil {
+				continue
+			}
+			if clean == abs || strings.HasPrefix(clean, abs+string(filepath.Separator)) {
+				inTree = true
+				break
+			}
+		}
+	}
+	return !inTree && strings.HasPrefix(clean, home+string(filepath.Separator)) && looksSecret(base)
+}
+
+func looksSecret(base string) bool {
+	for _, frag := range []string{"secret", "token", "password", "credential", "apikey", "api_key"} {
+		if strings.Contains(base, frag) {
+			return true
+		}
+	}
+	return false
+}
+
+// gateReadOnly prompts for the read-only calls that can leak data: reading
+// secrets outside the worktree, and fetching a host for the first time.
+func (e *Executor) gateReadOnly(name string, raw json.RawMessage, ask AskFunc) (string, bool, bool) {
+	if e.Mode() == ModeBypass {
+		return "", false, false
+	}
+	switch name {
+	case "read_file":
+		var a struct {
+			Path string `json:"path"`
+		}
+		if json.Unmarshal(raw, &a) != nil || a.Path == "" || !e.sensitivePath(a.Path) {
+			return "", false, false
+		}
+		key := "read:" + e.resolve(a.Path)
+		if e.granted(key) {
+			return "", false, false
+		}
+		d := ask("read_file (outside the working directory)", e.resolve(a.Path))
+		if !d.Allow {
+			return "the user denied reading " + a.Path, true, true
+		}
+		if d.Always {
+			e.grant(key)
+		}
+	case "web_fetch":
+		var a struct {
+			URL string `json:"url"`
+		}
+		if json.Unmarshal(raw, &a) != nil || strings.TrimSpace(a.URL) == "" {
+			return "", false, false
+		}
+		host := hostOf(a.URL)
+		key := "fetch:" + host
+		if host == "" || e.granted(key) {
+			return "", false, false
+		}
+		d := ask("web_fetch (new host)", a.URL)
+		if !d.Allow {
+			return "the user denied fetching " + a.URL, true, true
+		}
+		if d.Always {
+			e.grant(key)
+		}
+	}
+	return "", false, false
+}
+
+func hostOf(raw string) string {
+	if !strings.Contains(raw, "://") {
+		raw = "https://" + raw
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	return strings.ToLower(u.Hostname())
+}
+
+func (e *Executor) granted(key string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.allowed[key]
+}
+
+func (e *Executor) grant(key string) {
+	e.mu.Lock()
+	e.allowed[key] = true
+	e.mu.Unlock()
 }
 
 // summary produces the one-line description shown in the permission prompt.
