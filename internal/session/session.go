@@ -3,6 +3,8 @@
 package session
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -57,8 +59,13 @@ type Meta struct {
 // Dir returns the session storage directory.
 func Dir() string { return filepath.Join(config.DataDir(), "sessions") }
 
-// NewID returns a timestamp-based session id.
-func NewID() string { return time.Now().Format("20060102-150405") }
+// NewID returns a timestamp-based session id with a random suffix, so two
+// same-second launches can never claim the same file.
+func NewID() string {
+	var b [2]byte
+	_, _ = rand.Read(b[:])
+	return time.Now().Format("20060102-150405") + "-" + hex.EncodeToString(b[:])
+}
 
 func pathFor(id string) string { return filepath.Join(Dir(), id+".json") }
 
@@ -89,6 +96,9 @@ func Load(id string) (*Session, error) {
 	if err := json.Unmarshal(data, &s); err != nil {
 		return nil, fmt.Errorf("parsing session %s: %w", id, err)
 	}
+	// The filename is the identity: a copied file must save under the name
+	// it was loaded from, not clobber the original via its embedded id.
+	s.ID = id
 	return &s, nil
 }
 
