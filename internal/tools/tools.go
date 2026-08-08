@@ -108,9 +108,10 @@ func (e *Executor) wordAllowed(word string) bool {
 }
 
 // escapes reports shell constructs that make a segment's first word a poor
-// summary of what will run: substitution executes other programs, and
-// redirection writes files. Granting "echo" must not silently grant
-// "echo $(rm -rf ~)" or "echo x > main.go".
+// summary of what will run: substitution executes other programs, redirection
+// writes files, and a lone & chains a second command that segments() cannot
+// see. Granting "echo" must not silently grant "echo $(rm -rf ~)",
+// "echo x > main.go" or "echo hi & curl evil.com".
 func escapes(segment string) bool {
 	if strings.Contains(segment, "$(") || strings.Contains(segment, "`") ||
 		strings.Contains(segment, "${") || strings.Contains(segment, "<(") {
@@ -129,7 +130,7 @@ func escapes(segment string) bool {
 			if !inSingle {
 				inDouble = !inDouble
 			}
-		case '>', '<':
+		case '>', '<', '&':
 			if !inSingle && !inDouble {
 				return true
 			}
@@ -179,11 +180,29 @@ func (e *Executor) Grants() (tools []string, bashWords []string) {
 
 // interpreters execute arbitrary code from arguments or stdin, so granting
 // them is equivalent to granting everything; the UI declines to offer it.
+// Exec-wrappers (env, timeout, sudo, …) count: they run their arguments.
 var interpreters = map[string]bool{
 	"sh": true, "bash": true, "zsh": true, "fish": true, "dash": true,
+	"ksh": true, "csh": true, "tcsh": true, "pwsh": true, "nu": true,
 	"python": true, "python3": true, "perl": true, "ruby": true, "node": true,
-	"deno": true, "bun": true, "php": true, "env": true, "eval": true,
-	"xargs": true, "nix-shell": true, "ssh": true, "sudo": true, "doas": true,
+	"deno": true, "bun": true, "php": true, "lua": true, "tclsh": true,
+	"awk": true, "gawk": true, "mawk": true, "sed": true,
+	"env": true, "eval": true, "exec": true, "command": true, "builtin": true,
+	"xargs": true, "nohup": true, "setsid": true, "timeout": true, "time": true,
+	"nice": true, "ionice": true, "stdbuf": true, "watch": true,
+	"sudo": true, "doas": true, "su": true, "ssh": true, "chroot": true,
+	"nix-shell": true, "nix": true, "docker": true, "podman": true,
+}
+
+// isInterpreter matches path and version variants too: /usr/bin/python3,
+// python3.11 and bash-5.2 are the same grant as their bare name.
+func isInterpreter(word string) bool {
+	base := strings.ToLower(filepath.Base(word))
+	if interpreters[base] {
+		return true
+	}
+	trimmed := strings.TrimRight(base, "0123456789.-")
+	return trimmed != base && interpreters[trimmed]
 }
 
 // PrefixSuggestion returns the word an always-allow-prefix grant would use,
@@ -199,7 +218,7 @@ func PrefixSuggestion(command string) string {
 // PrefixGrantable reports whether [p] should be offered for a segment.
 func PrefixGrantable(segment string) bool {
 	w := PrefixSuggestion(segment)
-	return w != "" && !interpreters[w] && !escapes(segment)
+	return w != "" && !isInterpreter(w) && !escapes(segment)
 }
 
 // SetCheckpoint registers a hook run before every mutating tool call.
@@ -475,12 +494,12 @@ func (e *Executor) sensitivePath(path string) bool {
 			}
 		}
 	}
-	return !inTree && strings.HasPrefix(clean, home+string(filepath.Separator)) && looksSecret(base)
+	return !inTree && looksSecret(strings.ToLower(clean))
 }
 
-func looksSecret(base string) bool {
+func looksSecret(path string) bool {
 	for _, frag := range []string{"secret", "token", "password", "credential", "apikey", "api_key"} {
-		if strings.Contains(base, frag) {
+		if strings.Contains(path, frag) {
 			return true
 		}
 	}

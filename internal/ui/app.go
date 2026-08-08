@@ -23,6 +23,7 @@ import (
 	"tapioca/internal/config"
 	"tapioca/internal/mcp"
 	"tapioca/internal/provider"
+	"tapioca/internal/secretenv"
 	"tapioca/internal/tools"
 )
 
@@ -581,6 +582,7 @@ func (m *App) handleEditorDone(msg editorDoneMsg) (tea.Model, tea.Cmd) {
 		}
 		*m.cfg = *newCfg
 		m.keys = NewKeyMap(m.cfg.Keys)
+		secretenv.SetExtra(m.cfg.SecretEnv)
 		if m.mgr.Exec != nil {
 			m.mgr.Exec.SetMode(m.cfg.PermissionMode)
 			m.mgr.Exec.SetBashPrefixes(m.cfg.BashAllow)
@@ -1765,8 +1767,16 @@ func (m *App) renderPerm(w, h int) string {
 	if len(m.perms) > 1 {
 		b.WriteString(styDim.Render(fmt.Sprintf("\n(+%d more requests waiting)", len(m.perms)-1)) + "\n")
 	}
+	// The read/fetch gates grant one path or host, not the whole tool; say so.
+	always := e.req.Tool
+	switch {
+	case strings.HasPrefix(e.req.Tool, "read_file"):
+		always = "this path"
+	case strings.HasPrefix(e.req.Tool, "web_fetch"):
+		always = "this host"
+	}
 	b.WriteString("\n" + styOK.Render("[y]") + " allow once   " +
-		styWarn.Render("[a]") + " always allow " + e.req.Tool)
+		styWarn.Render("[a]") + " always allow " + always)
 	if e.req.Tool == "bash" && tools.PrefixGrantable(e.req.Summary) {
 		b.WriteString("   " + styAccent.Render("[p]") + " always allow " +
 			tools.PrefixSuggestion(e.req.Summary) + " *")

@@ -34,10 +34,13 @@ Rules that hold in all modes except `bypass`:
 - Session grants (`[a]`) and bash word grants (`[p]`) never apply in `plan`
   mode.
 - A granted word only covers a segment with no command substitution
-  (`$(…)`, backticks, `${…}`, `<(…)`) and no redirection (`>`, `<`). So an
-  `echo` grant cannot run `echo $(rm -rf ~)` or write files.
-- `[p]` is not offered for interpreters (`sh`, `python`, `node`, `sudo`,
-  `ssh`, `xargs`, `env`, …) where a blanket grant means arbitrary execution.
+  (`$(…)`, backticks, `${…}`, `<(…)`), no redirection (`>`, `<`) and no
+  background chaining (`&`). So an `echo` grant cannot run
+  `echo $(rm -rf ~)`, write files, or slip in `echo hi & curl evil.com`.
+- `[p]` is not offered for interpreters and exec-wrappers (`sh`, `python`,
+  `node`, `sudo`, `ssh`, `xargs`, `env`, `timeout`, `nix`, `docker`, …)
+  where a blanket grant means arbitrary execution — including path and
+  version variants like `/usr/bin/python3.11`.
 - Compound commands are approved segment by segment; denying one blocks the
   whole command.
 - MCP tools prompt like built-in ones, and their grants appear as
@@ -53,7 +56,8 @@ exceptions exist, because otherwise those tools compose into exfiltration
 - `read_file` prompts for paths outside the working directory (and
   `--add-dir` trees) that look sensitive: `.ssh`, `.aws`, `.gnupg`,
   `gh`/`gcloud`/`kube`/`docker` config, browser profiles, `.env`, `id_*`,
-  `credentials`, and names containing `token`/`secret`/`password`.
+  `credentials`, and any out-of-tree path containing
+  `token`/`secret`/`password` — wherever it lives, not just under `$HOME`.
 - `web_fetch` prompts the first time a host is used; `[a]` remembers it for
   the session.
 

