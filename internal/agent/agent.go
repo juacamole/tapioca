@@ -298,6 +298,7 @@ func (a *Agent) run(ctx context.Context, rs runSettings, history []provider.Mess
 		var msg provider.Message
 		var streamErr error
 		var stopReason string
+		var lost provider.Usage // usage billed on failed attempts
 		start := time.Now()
 		for attempt := 1; ; attempt++ {
 			events := make(chan provider.Event, 64)
@@ -342,6 +343,12 @@ func (a *Agent) run(ctx context.Context, rs runSettings, history []provider.Mess
 			if !ok {
 				break
 			}
+			if msg.Usage != nil {
+				lost.InputTokens += msg.Usage.InputTokens
+				lost.OutputTokens += msg.Usage.OutputTokens
+				lost.CacheReadTokens += msg.Usage.CacheReadTokens
+				lost.CacheWriteTokens += msg.Usage.CacheWriteTokens
+			}
 			a.emit(Event{Kind: EvRetry, Err: streamErr, Attempt: attempt, Max: provider.RetryMaxAttempts, Delay: delay})
 			select {
 			case <-time.After(delay):
@@ -349,6 +356,20 @@ func (a *Agent) run(ctx context.Context, rs runSettings, history []provider.Mess
 			}
 		}
 		dur := time.Since(start)
+
+		// Failed and cancelled attempts still billed their input; report
+		// everything that was consumed, on every exit path.
+		total := lost
+		if msg.Usage != nil {
+			total.InputTokens += msg.Usage.InputTokens
+			total.OutputTokens += msg.Usage.OutputTokens
+			total.CacheReadTokens += msg.Usage.CacheReadTokens
+			total.CacheWriteTokens += msg.Usage.CacheWriteTokens
+		}
+		if total != (provider.Usage{}) {
+			u := total
+			a.emit(Event{Kind: EvUsage, Usage: &u, Provider: rs.providerName, Model: rs.model, Dur: dur})
+		}
 
 		cancelled := errors.Is(streamErr, context.Canceled) || (streamErr != nil && ctx.Err() != nil)
 		if streamErr != nil && !cancelled {
@@ -363,9 +384,6 @@ func (a *Agent) run(ctx context.Context, rs runSettings, history []provider.Mess
 			}
 			a.emit(Event{Kind: EvError, Err: streamErr})
 			return
-		}
-		if msg.Usage != nil {
-			a.emit(Event{Kind: EvUsage, Usage: msg.Usage, Provider: rs.providerName, Model: rs.model, Dur: dur})
 		}
 		if len(msg.Blocks) > 0 {
 			m := msg
