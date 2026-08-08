@@ -26,6 +26,7 @@ var panelDefs = []panelDef{
 	{"tokens", "tokens", 2, renderTokensPanel},
 	{"git", "git", 2, renderGitPanel},
 	{"changes", "changes", 3, renderChangesPanel},
+	{"todos", "plan", 3, renderTodoPanel},
 	{"tools", "tool calls", 3, renderToolsPanel},
 	{"mcp", "mcp servers", 2, renderMCPPanel},
 	{"session", "session", 2, renderSessionPanel},
@@ -346,6 +347,31 @@ func renderTokensPanel(m *App, a *agent.Agent, w, h int) []string {
 	}
 	if len(outs) > 0 {
 		lines = append(lines, styAccent.Render(sparkline(outs, w-2))+styDim.Render(" out/req"))
+	}
+	return lines
+}
+
+func renderTodoPanel(m *App, a *agent.Agent, w, h int) []string {
+	if len(a.Todos) == 0 {
+		return []string{styDim.Render("no plan — the agent writes one for multi-step tasks")}
+	}
+	done, total := a.TodoProgress()
+	lines := []string{fmt.Sprintf("%d/%d done", done, total)}
+	for _, t := range a.Todos {
+		if len(lines) >= h {
+			lines = append(lines[:h-1], styDim.Render(fmt.Sprintf("… %d more", total-h+2)))
+			break
+		}
+		var mark, text string
+		switch t.Status {
+		case agent.TodoDone:
+			mark, text = styOK.Render("x"), styDim.Render(t.Content)
+		case agent.TodoDoing:
+			mark, text = styWarn.Render(">"), styAccent.Render(t.Content)
+		default:
+			mark, text = styDim.Render("·"), t.Content
+		}
+		lines = append(lines, mark+" "+truncate(text, w-2))
 	}
 	return lines
 }

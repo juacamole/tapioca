@@ -19,6 +19,13 @@ import (
 	"tapioca/internal/stats"
 )
 
+// TodoItem is one entry of an agent's plan. It lives here because agents
+// import session, not the other way round; agent aliases it.
+type TodoItem struct {
+	Content string `json:"content"`
+	Status  string `json:"status"`
+}
+
 // AgentState is one agent's serializable state.
 type AgentState struct {
 	Name           string             `json:"name"`
@@ -34,6 +41,7 @@ type AgentState struct {
 	CtxTokens      int                `json:"ctx_tokens,omitempty"`
 	Messages       []provider.Message `json:"messages"`
 	Queue          []provider.Message `json:"queue,omitempty"`
+	Todos          []TodoItem         `json:"todos,omitempty"`
 	Stats          stats.Stats        `json:"stats"`
 }
 

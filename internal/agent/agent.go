@@ -136,6 +136,7 @@ type Agent struct {
 	Messages      []provider.Message
 	Queue         []provider.Message // prompts queued while the agent is busy
 	PendingNotes  []provider.Message // notices deferred until the turn ends
+	Todos         []TodoItem         // the model's own plan (todo_write)
 	MaxToolRounds int                // 0 = default
 	CompactFailed bool               // suppress auto-compact until the next good turn
 	Stats         stats.Stats
@@ -223,6 +224,12 @@ func composeSystem(base, goal string, exec *tools.Executor) string {
 		if mem := project.Memory(cwd); mem != "" {
 			sys += "\n\nProject memory (remembered facts):\n" + mem
 		}
+		// Tool guidance belongs here rather than in the default system prompt:
+		// that one is user-editable and already saved in existing configs.
+		sys += "\n\nTool notes: use grep and glob to search, not bash grep/find/ls — " +
+			"they are faster and run without asking for approval. Read files with " +
+			"read_file, not cat. When a task needs several steps, record them with " +
+			"todo_write and keep it updated as you go."
 		if exec.Mode() == tools.ModePlan {
 			sys += "\n\nPLAN MODE is active: you may inspect the codebase with read-only " +
 				"tools, but you must NOT modify files or run mutating commands. " +
@@ -291,6 +298,7 @@ func (a *Agent) run(ctx context.Context, rs runSettings, history []provider.Mess
 			if a.Exec != nil {
 				req.Tools = append(req.Tools, a.Exec.Tools()...)
 			}
+			req.Tools = append(req.Tools, TodoTool)
 			if a.MCP != nil {
 				req.Tools = append(req.Tools, a.MCP.AllTools()...)
 			}
@@ -455,6 +463,8 @@ func (a *Agent) run(ctx context.Context, rs runSettings, history []provider.Mess
 			)
 			toolStart := time.Now()
 			switch {
+			case tu.Name == TodoTool.Name:
+				text, isErr = a.writeTodos(tu.Input)
 			case a.Exec != nil && a.Exec.Has(tu.Name):
 				// No deadline here: the executor times the execution itself,
 				// after any permission prompt has been answered.
