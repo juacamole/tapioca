@@ -214,9 +214,16 @@ var defaultCosts = []struct {
 
 type costRates struct{ In, Out, CacheR, CacheW float64 }
 
-// costFor resolves $/Mtok rates by longest prefix match; cache rates derive
-// from the input rate (read x0.10, write x1.25) unless a catalog knows better.
-func (m *App) costFor(model string) (costRates, bool) {
+// localProvider reports whether a provider entry is a local backend, whose
+// inference is free and whose model names must not match hosted catalog ids.
+func (m *App) localProvider(name string) bool {
+	t := m.cfg.Providers[name].Type
+	return t == "ollama" || t == ""
+}
+
+// costFor resolves $/Mtok rates: explicit config overrides always win, the
+// hosted catalog and prefix defaults apply only to non-local providers.
+func (m *App) costFor(providerName, model string) (costRates, bool) {
 	best := -1
 	var r costRates
 	ok := false
@@ -224,6 +231,9 @@ func (m *App) costFor(model string) (costRates, bool) {
 		if strings.HasPrefix(model, prefix) && len(prefix) > best {
 			best, r, ok = len(prefix), costRates{In: c.In, Out: c.Out}, true
 		}
+	}
+	if !ok && providerName != "" && m.localProvider(providerName) {
+		return costRates{}, false
 	}
 	if !ok {
 		if cm, found := catalog.Lookup(model); found && (cm.In > 0 || cm.Out > 0) {
@@ -252,7 +262,7 @@ func (m *App) costFor(model string) (costRates, bool) {
 func (m *App) sessionCost(a *agent.Agent) float64 {
 	var total float64
 	for _, req := range a.Stats.Requests {
-		if r, ok := m.costFor(req.Model); ok {
+		if r, ok := m.costFor(req.Provider, req.Model); ok {
 			total += float64(req.In)*r.In/1e6 + float64(req.Out)*r.Out/1e6 +
 				float64(req.CacheR)*r.CacheR/1e6 + float64(req.CacheW)*r.CacheW/1e6
 		}
@@ -261,11 +271,17 @@ func (m *App) sessionCost(a *agent.Agent) float64 {
 }
 
 // contextWindowFor returns the context window: config override, then
-// catalog/probe data, then a per-provider-type guess.
+// probe data (local) or catalog (hosted), then a per-provider-type guess.
 func (m *App) contextWindowFor(a *agent.Agent) int {
 	pc := m.cfg.Providers[a.ProviderName]
 	if pc.ContextWindow > 0 {
 		return pc.ContextWindow
+	}
+	if m.localProvider(a.ProviderName) {
+		if lm, ok := catalog.LookupLocal(a.Model); ok && lm.Context > 0 {
+			return lm.Context
+		}
+		return 8192
 	}
 	if cm, ok := catalog.Lookup(a.Model); ok && cm.Context > 0 {
 		return cm.Context

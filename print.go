@@ -100,10 +100,13 @@ loop:
 			}
 		case agent.EvUsage:
 			if ev.Usage != nil {
-				res.InputTokens += ev.Usage.InputTokens
-				res.OutputTokens += ev.Usage.OutputTokens
-				res.CacheReadTokens += ev.Usage.CacheReadTokens
-				res.CacheWriteTokens += ev.Usage.CacheWriteTokens
+				u := ev.Usage
+				res.InputTokens += u.InputTokens
+				res.OutputTokens += u.OutputTokens
+				res.CacheReadTokens += u.CacheReadTokens
+				res.CacheWriteTokens += u.CacheWriteTokens
+				a.Stats.AddRequest(ev.Provider, ev.Model, u.InputTokens, u.OutputTokens, u.CacheReadTokens, u.CacheWriteTokens, ev.Dur)
+				a.CtxTokens = u.InputTokens + u.OutputTokens + u.CacheReadTokens + u.CacheWriteTokens
 			}
 		case agent.EvToolStart:
 			res.ToolCalls++

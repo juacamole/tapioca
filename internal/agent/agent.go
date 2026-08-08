@@ -90,20 +90,21 @@ type PermissionReq struct {
 
 // Event is one update from a running agent.
 type Event struct {
-	AgentID int
-	Kind    EventKind
-	Text    string
-	Status  Status
-	Tool    *ToolInfo
-	Usage   *provider.Usage
-	Model   string
-	Dur     time.Duration
-	Message *provider.Message
-	Perm    *PermissionReq
-	Err     error
-	Attempt int
-	Max     int
-	Delay   time.Duration
+	AgentID  int
+	Kind     EventKind
+	Text     string
+	Status   Status
+	Tool     *ToolInfo
+	Usage    *provider.Usage
+	Provider string
+	Model    string
+	Dur      time.Duration
+	Message  *provider.Message
+	Perm     *PermissionReq
+	Err      error
+	Attempt  int
+	Max      int
+	Delay    time.Duration
 }
 
 const (
@@ -364,7 +365,7 @@ func (a *Agent) run(ctx context.Context, rs runSettings, history []provider.Mess
 			return
 		}
 		if msg.Usage != nil {
-			a.emit(Event{Kind: EvUsage, Usage: msg.Usage, Model: rs.model, Dur: dur})
+			a.emit(Event{Kind: EvUsage, Usage: msg.Usage, Provider: rs.providerName, Model: rs.model, Dur: dur})
 		}
 		if len(msg.Blocks) > 0 {
 			m := msg
