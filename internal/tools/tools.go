@@ -283,7 +283,7 @@ func (e *Executor) Mode() string {
 	return e.mode
 }
 
-var toolNames = []string{"bash", "read_file", "write_file", "edit_file", "web_search", "web_fetch"}
+var toolNames = []string{"bash", "read_file", "write_file", "edit_file", "grep", "glob", "web_search", "web_fetch"}
 
 // Has reports whether name is a built-in tool.
 func (e *Executor) Has(name string) bool {
@@ -317,6 +317,16 @@ func (e *Executor) Tools() []provider.ToolDef {
 			Name:        "edit_file",
 			Description: "Replace an exact string in a file. old_string must match exactly and be unique unless replace_all is true.",
 			InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"},"old_string":{"type":"string"},"new_string":{"type":"string"},"replace_all":{"type":"boolean"}},"required":["path","old_string","new_string"]}`),
+		},
+		{
+			Name:        "grep",
+			Description: "Search file contents by regular expression. Prefer this over bash grep: it is faster, skips ignored and binary files, and returns file:line:text. Optionally restrict to a subtree with path or to filenames with glob.",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"pattern":{"type":"string","description":"regular expression"},"path":{"type":"string","description":"directory or file to search, default the working directory"},"glob":{"type":"string","description":"only search files matching this glob, e.g. *.go"},"case_insensitive":{"type":"boolean"},"max_results":{"type":"integer","description":"default 100"}},"required":["pattern"]}`),
+		},
+		{
+			Name:        "glob",
+			Description: "Find files by glob pattern (** spans directories; a pattern without / searches everywhere). Returns paths most recently modified first. Prefer this over bash find or ls.",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"pattern":{"type":"string","description":"e.g. **/*_test.go or *.md"},"path":{"type":"string","description":"root to search, default the working directory"}},"required":["pattern"]}`),
 		},
 		{
 			Name:        "web_search",
@@ -353,7 +363,8 @@ func (e *Executor) Call(ctx context.Context, name string, raw json.RawMessage, a
 	if out, isErr, handled := e.gateReadOnly(name, raw, ask); handled {
 		return out, isErr, nil
 	}
-	readOnly := name == "read_file" || name == "web_search" || name == "web_fetch"
+	readOnly := name == "read_file" || name == "web_search" || name == "web_fetch" ||
+		name == "grep" || name == "glob"
 	if !readOnly { // mutating tools go through the permission gate
 		mode := e.Mode()
 		fileEdit := name == "write_file" || name == "edit_file"
@@ -437,6 +448,10 @@ func (e *Executor) Call(ctx context.Context, name string, raw json.RawMessage, a
 		return e.writeFile(raw)
 	case "edit_file":
 		return e.editFile(raw)
+	case "grep":
+		return e.grep(ctx, raw)
+	case "glob":
+		return e.globFiles(ctx, raw)
 	case "web_search":
 		return e.webSearch(ctx, raw)
 	case "web_fetch":
@@ -480,21 +495,24 @@ func (e *Executor) sensitivePath(path string) bool {
 		}
 	}
 	// Anything under the worktree is fair game; secrets elsewhere are not.
-	cwd := e.Cwd()
-	inTree := clean == cwd || strings.HasPrefix(clean, cwd+string(filepath.Separator))
-	if !inTree {
-		for _, d := range e.ExtraDirs() {
-			abs, err := filepath.Abs(d)
-			if err != nil {
-				continue
-			}
-			if clean == abs || strings.HasPrefix(clean, abs+string(filepath.Separator)) {
-				inTree = true
-				break
-			}
+	return !e.inWorkArea(clean) && looksSecret(strings.ToLower(clean))
+}
+
+// inWorkArea reports whether an absolute path lies in the working directory
+// or one of the directories announced with --add-dir.
+func (e *Executor) inWorkArea(clean string) bool {
+	under := func(dir string) bool {
+		return clean == dir || strings.HasPrefix(clean, dir+string(filepath.Separator))
+	}
+	if under(e.Cwd()) {
+		return true
+	}
+	for _, d := range e.ExtraDirs() {
+		if abs, err := filepath.Abs(d); err == nil && under(abs) {
+			return true
 		}
 	}
-	return !inTree && looksSecret(strings.ToLower(clean))
+	return false
 }
 
 func looksSecret(path string) bool {
@@ -527,6 +545,27 @@ func (e *Executor) gateReadOnly(name string, raw json.RawMessage, ask AskFunc) (
 		d := ask("read_file (outside the working directory)", e.resolve(a.Path))
 		if !d.Allow {
 			return "the user denied reading " + a.Path, true, true
+		}
+		if d.Always {
+			e.grant(key)
+		}
+	case "grep", "glob":
+		// Searching outside the worktree is the same exfiltration move as
+		// reading a secret, one level of indirection away.
+		var a struct {
+			Path string `json:"path"`
+		}
+		if json.Unmarshal(raw, &a) != nil || strings.TrimSpace(a.Path) == "" {
+			return "", false, false
+		}
+		root := e.resolve(a.Path)
+		key := "read:" + root
+		if e.inWorkArea(root) || e.granted(key) {
+			return "", false, false
+		}
+		d := ask(name+" (outside the working directory)", root)
+		if !d.Allow {
+			return "the user denied searching " + a.Path, true, true
 		}
 		if d.Always {
 			e.grant(key)
@@ -586,6 +625,16 @@ func (e *Executor) summary(name string, raw json.RawMessage) string {
 		}
 		_ = json.Unmarshal(raw, &a)
 		return a.Command
+	case "grep", "glob":
+		var a struct {
+			Pattern string `json:"pattern"`
+			Path    string `json:"path"`
+		}
+		_ = json.Unmarshal(raw, &a)
+		if a.Path != "" {
+			return a.Pattern + "  in " + a.Path
+		}
+		return a.Pattern
 	default:
 		var a struct {
 			Path string `json:"path"`

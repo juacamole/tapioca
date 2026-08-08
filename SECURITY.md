@@ -48,16 +48,18 @@ Rules that hold in all modes except `bypass`:
 
 ## Read-only tools
 
-`read_file`, `web_search` and `web_fetch` do not prompt for ordinary use,
-because an agent that asks before every file read is unusable. Two narrow
-exceptions exist, because otherwise those tools compose into exfiltration
-(read a key, send it somewhere):
+`read_file`, `grep`, `glob`, `web_search` and `web_fetch` do not prompt for
+ordinary use, because an agent that asks before every file read is unusable.
+Narrow exceptions exist, because otherwise those tools compose into
+exfiltration (read a key, send it somewhere):
 
 - `read_file` prompts for paths outside the working directory (and
   `--add-dir` trees) that look sensitive: `.ssh`, `.aws`, `.gnupg`,
   `gh`/`gcloud`/`kube`/`docker` config, browser profiles, `.env`, `id_*`,
   `credentials`, and any out-of-tree path containing
   `token`/`secret`/`password` — wherever it lives, not just under `$HOME`.
+- `grep` and `glob` prompt when their search root is outside those trees, and
+  never return matches from files `read_file` would have gated.
 - `web_fetch` prompts the first time a host is used; `[a]` remembers it for
   the session.
 
