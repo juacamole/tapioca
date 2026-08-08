@@ -33,9 +33,14 @@ type Model struct {
 	CacheW  float64
 }
 
+// hosted holds the models.dev snapshot; local holds runtime-probed entries
+// (e.g. ollama /api/show). They are separate because local model names
+// collide with hosted ids — "deepseek-r1:8b" must not inherit hosted API
+// pricing or context windows.
 var (
-	mu   sync.RWMutex
-	byID = map[string]Model{}
+	mu     sync.RWMutex
+	hosted = map[string]Model{}
+	local  = map[string]Model{}
 )
 
 func file() string { return filepath.Join(config.DataDir(), "models.json") }
@@ -48,7 +53,7 @@ func Load() {
 	}
 	if m := parse(data); len(m) > 0 {
 		mu.Lock()
-		byID = m
+		hosted = m
 		mu.Unlock()
 	}
 }
@@ -85,7 +90,7 @@ func Refresh() {
 	}
 	mu.Lock()
 	for k, v := range m {
-		byID[k] = v
+		hosted[k] = v
 	}
 	mu.Unlock()
 }
@@ -157,17 +162,25 @@ func normalize(id string) string {
 	return id
 }
 
-// Lookup finds metadata for a model id (tag suffixes ignored).
+// Lookup finds hosted metadata for a model id (tag suffixes ignored).
 func Lookup(id string) (Model, bool) {
 	mu.RLock()
 	defer mu.RUnlock()
-	m, ok := byID[normalize(id)]
+	m, ok := hosted[normalize(id)]
 	return m, ok
 }
 
-// Store records a runtime override, e.g. a probed local model.
+// LookupLocal finds runtime-probed metadata for a local model.
+func LookupLocal(id string) (Model, bool) {
+	mu.RLock()
+	defer mu.RUnlock()
+	m, ok := local[id]
+	return m, ok
+}
+
+// Store records probed metadata for a local model.
 func Store(id string, m Model) {
 	mu.Lock()
-	byID[normalize(id)] = m
+	local[id] = m
 	mu.Unlock()
 }

@@ -460,7 +460,7 @@ func (m *App) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 	case agent.EvUsage:
 		if ev.Usage != nil {
 			u := ev.Usage
-			a.Stats.AddRequest(ev.Model, u.InputTokens, u.OutputTokens, u.CacheReadTokens, u.CacheWriteTokens, ev.Dur)
+			a.Stats.AddRequest(ev.Provider, ev.Model, u.InputTokens, u.OutputTokens, u.CacheReadTokens, u.CacheWriteTokens, ev.Dur)
 			a.CtxTokens = u.InputTokens + u.OutputTokens + u.CacheReadTokens + u.CacheWriteTokens
 			a.CompactFailed = false
 		}
@@ -1422,12 +1422,13 @@ func (m *App) sendPrepared(a *agent.Agent, userMsg provider.Message) tea.Cmd {
 }
 
 // maybeProbeCtx asks Ollama for the model's true context window once per
-// model, feeding the context gauge for models the catalog doesn't know.
+// model. Hosted catalog entries never preempt the probe — local model names
+// collide with hosted ids and would inherit wrong windows.
 func (m *App) maybeProbeCtx(a *agent.Agent) tea.Cmd {
 	if a.Model == "" || m.probedCtx[a.Model] {
 		return nil
 	}
-	if _, ok := catalog.Lookup(a.Model); ok {
+	if _, ok := catalog.LookupLocal(a.Model); ok {
 		return nil
 	}
 	ol, isOllama := a.Provider.(*provider.Ollama)

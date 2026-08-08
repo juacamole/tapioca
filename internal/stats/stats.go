@@ -8,13 +8,14 @@ const keepLast = 100
 
 // RequestStat records one completed model request.
 type RequestStat struct {
-	Time   time.Time     `json:"time"`
-	Model  string        `json:"model"`
-	In     int           `json:"in"`
-	Out    int           `json:"out"`
-	CacheR int           `json:"cache_r,omitempty"`
-	CacheW int           `json:"cache_w,omitempty"`
-	Dur    time.Duration `json:"dur"`
+	Time     time.Time     `json:"time"`
+	Provider string        `json:"provider,omitempty"`
+	Model    string        `json:"model"`
+	In       int           `json:"in"`
+	Out      int           `json:"out"`
+	CacheR   int           `json:"cache_r,omitempty"`
+	CacheW   int           `json:"cache_w,omitempty"`
+	Dur      time.Duration `json:"dur"`
 }
 
 // ToolCallStat records one tool invocation.
@@ -40,13 +41,13 @@ type Stats struct {
 }
 
 // AddRequest records a completed request and updates totals.
-func (s *Stats) AddRequest(model string, in, out, cacheR, cacheW int, dur time.Duration) {
+func (s *Stats) AddRequest(providerName, model string, in, out, cacheR, cacheW int, dur time.Duration) {
 	s.InputTokens += in
 	s.OutputTokens += out
 	s.CacheReadTokens += cacheR
 	s.CacheWriteTokens += cacheW
 	s.Requests = append(s.Requests, RequestStat{
-		Time: time.Now(), Model: model, In: in, Out: out,
+		Time: time.Now(), Provider: providerName, Model: model, In: in, Out: out,
 		CacheR: cacheR, CacheW: cacheW, Dur: dur,
 	})
 	if len(s.Requests) > keepLast {
