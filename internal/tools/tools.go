@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"tapioca/internal/provider"
+	"tapioca/internal/secretenv"
 	"tapioca/internal/textenc"
 )
 
@@ -599,6 +600,7 @@ func (e *Executor) runBash(ctx context.Context, raw json.RawMessage) (string, bo
 	}
 	cmd := exec.CommandContext(ctx, "sh", "-c", a.Command)
 	cmd.Dir = e.Cwd()
+	cmd.Env = secretenv.Scrubbed()
 	// Descendants holding the output pipe would make CombinedOutput block
 	// past cancellation; kill the whole process group and cap the wait.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}

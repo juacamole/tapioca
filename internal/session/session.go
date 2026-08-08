@@ -72,7 +72,7 @@ func pathFor(id string) string { return filepath.Join(Dir(), id+".json") }
 
 // Save writes the session atomically.
 func (s *Session) Save() error {
-	if err := os.MkdirAll(Dir(), 0o755); err != nil {
+	if err := os.MkdirAll(Dir(), 0o700); err != nil {
 		return err
 	}
 	s.UpdatedAt = time.Now()
@@ -81,7 +81,7 @@ func (s *Session) Save() error {
 		return err
 	}
 	tmp := pathFor(s.ID) + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return err
 	}
 	return os.Rename(tmp, pathFor(s.ID))

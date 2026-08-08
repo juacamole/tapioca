@@ -8,13 +8,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
 	"strconv"
 	"sync"
 	"time"
 
 	"tapioca/internal/config"
+	"tapioca/internal/secretenv"
 )
 
 const protocolVersion = "2024-11-05"
@@ -62,7 +62,9 @@ type Client struct {
 // lists its tools.
 func Start(ctx context.Context, cfg config.MCPServerConfig) (*Client, error) {
 	cmd := exec.Command(cfg.Command, cfg.Args...)
-	cmd.Env = os.Environ()
+	// Provider credentials stay with Tapioca; servers that need secrets get
+	// them explicitly through their own [mcp.env] block.
+	cmd.Env = secretenv.Scrubbed()
 	for k, v := range cfg.Env {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}
