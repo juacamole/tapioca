@@ -18,6 +18,7 @@ import (
 	"tapioca/internal/checkpoint"
 	"tapioca/internal/config"
 	"tapioca/internal/mcp"
+	"tapioca/internal/secretenv"
 	"tapioca/internal/session"
 	"tapioca/internal/tools"
 	"tapioca/internal/ui"
@@ -215,6 +216,7 @@ func main() {
 	if err != nil {
 		cwd, _ = os.UserHomeDir()
 	}
+	secretenv.SetExtra(cfg.SecretEnv)
 	exec := tools.NewExecutor(cwd, mode)
 	exec.SetExtraDirs(args.addDirs)
 	exec.SetBashPrefixes(cfg.BashAllow)

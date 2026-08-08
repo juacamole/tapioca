@@ -58,7 +58,7 @@ func ensure(workTree string) error {
 	if _, err := os.Stat(filepath.Join(d, "HEAD")); err == nil {
 		return nil
 	}
-	if err := os.MkdirAll(d, 0o755); err != nil {
+	if err := os.MkdirAll(d, 0o700); err != nil {
 		return err
 	}
 	_, err := run(workTree, "init", "-q")

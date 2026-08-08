@@ -59,6 +59,7 @@ type Config struct {
 	PermissionMode  string  `toml:"permission_mode"` // plan | manual | auto | bypass
 
 	BashAllow []string                  `toml:"bash_allow"` // always-allowed bash command words
+	SecretEnv []string                  `toml:"secret_env"` // extra env vars hidden from tools
 	Providers map[string]ProviderConfig `toml:"providers"`
 	MCP       []MCPServerConfig         `toml:"mcp"`
 	Dashboard DashboardConfig           `toml:"dashboard"`
@@ -202,7 +203,7 @@ func (c *Config) Save() error {
 	if path == "" {
 		path = DefaultPath()
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
 	tosave := *c
@@ -217,7 +218,7 @@ func (c *Config) Save() error {
 		return err
 	}
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, buf.Bytes(), 0o644); err != nil {
+	if err := os.WriteFile(tmp, buf.Bytes(), 0o600); err != nil {
 		return err
 	}
 	return os.Rename(tmp, path)
@@ -225,10 +226,10 @@ func (c *Config) Save() error {
 
 // WriteDefault writes a commented starter config to path.
 func WriteDefault(path string) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	return os.WriteFile(path, []byte(defaultTOML), 0o644)
+	return os.WriteFile(path, []byte(defaultTOML), 0o600)
 }
 
 const defaultTOML = `# Tapioca configuration
@@ -247,6 +248,8 @@ autosave = true                 # save the session after every completed turn
 auto_compact = true             # summarize old turns when context nears the limit
 permission_mode = "manual"      # plan | manual | auto | bypass (cycle with shift+tab)
 # bash_allow = ["git", "go"]    # bash commands that never prompt ([p] in the prompt adds here)
+# secret_env = ["MY_TOKEN"]     # extra env vars hidden from tools and MCP servers
+                                # (provider API keys are always hidden)
 editor = ""                     # prompt editor; falls back to $VISUAL, $EDITOR, nvim, vim
 
 system_prompt = """
