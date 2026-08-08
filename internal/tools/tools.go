@@ -6,6 +6,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -14,6 +15,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
+	"time"
 
 	"tapioca/internal/provider"
 	"tapioca/internal/textenc"
@@ -54,7 +57,10 @@ func NormalizeMode(m string) string {
 	}
 }
 
-const maxOutput = 30_000
+const (
+	maxOutput   = 30_000
+	execTimeout = 3 * time.Minute
+)
 
 // Executor runs built-in tools inside a working directory.
 type Executor struct {
@@ -97,6 +103,24 @@ func (e *Executor) wordAllowed(word string) bool {
 		}
 	}
 	return false
+}
+
+// ExternalAllowed reports whether an externally-provided tool (MCP) may run
+// without asking. Plan mode ignores grants, like the builtin gate.
+func (e *Executor) ExternalAllowed(key string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.mode == ModeBypass {
+		return true
+	}
+	return e.mode != ModePlan && e.allowed[key]
+}
+
+// GrantExternal records an always-allow for an external tool key.
+func (e *Executor) GrantExternal(key string) {
+	e.mu.Lock()
+	e.allowed[key] = true
+	e.mu.Unlock()
 }
 
 // Grants reports the session's always-allowed tools and bash words.
@@ -264,8 +288,11 @@ func (e *Executor) Call(ctx context.Context, name string, raw json.RawMessage, a
 		case ModeBypass:
 			needAsk = false
 		}
+		// Grants never outrank plan mode: an always-allow answered while in
+		// auto must not let mutations slip through a later plan session.
+		grantsApply := mode != ModePlan
 		e.mu.Lock()
-		blanket := e.allowed[name]
+		blanket := grantsApply && e.allowed[name]
 		e.mu.Unlock()
 		if needAsk && !blanket && name == "bash" {
 			// Compound commands are approved segment by segment; a denied
@@ -275,7 +302,7 @@ func (e *Executor) Call(ctx context.Context, name string, raw json.RawMessage, a
 			}
 			if json.Unmarshal(raw, &a) == nil && strings.TrimSpace(a.Command) != "" {
 				for _, seg := range segments(a.Command) {
-					if e.wordAllowed(PrefixSuggestion(seg)) {
+					if grantsApply && e.wordAllowed(PrefixSuggestion(seg)) {
 						continue
 					}
 					d := ask(name, seg)
@@ -316,6 +343,8 @@ func (e *Executor) Call(ctx context.Context, name string, raw json.RawMessage, a
 		}
 	}
 
+	ctx, cancel := context.WithTimeout(ctx, execTimeout)
+	defer cancel()
 	switch name {
 	case "bash":
 		return e.runBash(ctx, raw)
@@ -375,8 +404,22 @@ func (e *Executor) runBash(ctx context.Context, raw json.RawMessage) (string, bo
 	}
 	cmd := exec.CommandContext(ctx, "sh", "-c", a.Command)
 	cmd.Dir = e.Cwd()
+	// Descendants holding the output pipe would make CombinedOutput block
+	// past cancellation; kill the whole process group and cap the wait.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return nil
+		}
+		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
+	cmd.WaitDelay = 10 * time.Second
 	out, err := cmd.CombinedOutput()
 	text := capOutput(string(out))
+	if errors.Is(err, exec.ErrWaitDelay) {
+		// The command exited fine; a lingering child just kept the pipe open.
+		err = nil
+	}
 	if err != nil {
 		if text != "" {
 			text += "\n"

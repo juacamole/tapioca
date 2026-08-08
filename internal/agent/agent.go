@@ -196,6 +196,7 @@ func (a *Agent) System() string {
 // Send starts a turn using history (which must already include the new user
 // message). It returns immediately; progress arrives on a.Events.
 func (a *Agent) Send(history []provider.Message) {
+	history = RepairHistory(history)
 	ctx, cancel := context.WithCancel(context.Background())
 	a.cancel = cancel
 	go a.run(ctx, history)
@@ -316,10 +317,14 @@ func (a *Agent) run(ctx context.Context, history []provider.Message) {
 
 		cancelled := errors.Is(streamErr, context.Canceled) || (streamErr != nil && ctx.Err() != nil)
 		if streamErr != nil && !cancelled {
-			// Keep whatever partial content survived under the error.
+			// Keep whatever partial content survived under the error, and
+			// close any dangling tool calls it carries.
 			if len(msg.Blocks) > 0 {
 				m := msg
 				a.emit(Event{Kind: EvMessage, Message: &m})
+				if uses := msg.ToolUses(); len(uses) > 0 {
+					a.emitToolResults(interruptedResults(uses))
+				}
 			}
 			a.emit(Event{Kind: EvError, Err: streamErr})
 			return
@@ -395,16 +400,33 @@ func (a *Agent) run(ctx context.Context, history []provider.Message) {
 				callErr error
 			)
 			toolStart := time.Now()
-			callCtx, cancelCall := context.WithTimeout(ctx, toolCallTimeout)
 			switch {
 			case a.Exec != nil && a.Exec.Has(tu.Name):
-				text, isErr, callErr = a.Exec.Call(callCtx, tu.Name, tu.Input, ask)
+				// No deadline here: the executor times the execution itself,
+				// after any permission prompt has been answered.
+				text, isErr, callErr = a.Exec.Call(ctx, tu.Name, tu.Input, ask)
 			case a.MCP != nil:
-				text, isErr, callErr = a.MCP.Call(callCtx, tu.Name, tu.Input)
+				// MCP tools go through the same permission gate as builtins.
+				key := "mcp:" + tu.Name
+				allowed := a.Exec == nil || a.Exec.ExternalAllowed(key)
+				if !allowed {
+					d := ask(key, argsPreview)
+					allowed = d.Allow
+					if d.Always && a.Exec != nil {
+						a.Exec.GrantExternal(key)
+					}
+				}
+				if !allowed {
+					text, isErr = "the user denied permission for this call", true
+				} else {
+					toolStart = time.Now()
+					callCtx, cancelCall := context.WithTimeout(ctx, toolCallTimeout)
+					text, isErr, callErr = a.MCP.Call(callCtx, tu.Name, tu.Input)
+					cancelCall()
+				}
 			default:
 				callErr = fmt.Errorf("no handler for tool %q", tu.Name)
 			}
-			cancelCall()
 			tdur := time.Since(toolStart)
 			if callErr != nil {
 				text = "tool error: " + callErr.Error()

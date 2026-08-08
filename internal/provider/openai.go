@@ -221,7 +221,7 @@ func (o *OpenAI) Stream(ctx context.Context, req Request, out chan<- Event) (Mes
 		for _, i := range order {
 			tc := toolCalls[i]
 			args := strings.TrimSpace(tc.args.String())
-			if args == "" {
+			if args == "" || !json.Valid([]byte(args)) {
 				args = "{}"
 			}
 			id := tc.id

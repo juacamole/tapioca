@@ -313,8 +313,8 @@ func cmdRemember(m *App, arg string) tea.Cmd {
 
 func cmdBtw(m *App, arg string) tea.Cmd {
 	a := m.mgr.ActiveAgent()
-	if a == nil {
-		return nil
+	if a == nil || m.busyGuard(a) {
+		return m.flashCmd()
 	}
 	if arg == "" {
 		m.setFlash("usage: /btw <note for the model>", true)
@@ -405,7 +405,7 @@ func cmdPermissions(m *App, _ string) tea.Cmd {
 	b.WriteString(styPanelTitle.Render("never prompts") + "\n")
 	b.WriteString("  read_file, web_search, web_fetch " + styDim.Render("(read-only builtins)") + "\n")
 	if n := len(m.mgr.MCP.AllTools()); n > 0 {
-		b.WriteString(fmt.Sprintf("  %d MCP tools %s\n", n, styDim.Render("(no permission gate yet)")))
+		b.WriteString(fmt.Sprintf("  %d MCP tools prompt like builtins %s\n", n, styDim.Render("(grants show as mcp:name)")))
 	}
 	switch mode {
 	case "auto":

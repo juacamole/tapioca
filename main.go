@@ -191,21 +191,10 @@ func main() {
 	}
 	catalog.Load()
 	go catalog.Refresh()
-	if args.model != "" {
-		provName, model := cfg.DefaultProvider, args.model
-		if p, rest, ok := strings.Cut(args.model, ":"); ok {
-			if _, exists := cfg.Providers[p]; exists && rest != "" {
-				provName, model = p, rest
-			}
-		}
-		cfg.DefaultProvider, cfg.DefaultModel = provName, model
-	}
-	if args.systemPrompt != "" {
-		cfg.SystemPrompt = args.systemPrompt
-	}
-	if args.appendSystem != "" {
-		cfg.SystemPrompt += "\n\n" + args.appendSystem
-	}
+	// Flag overrides are runtime-only: they apply to agents (or via presave
+	// exclusion), never to the config file — a shift+tab mid-run must not
+	// bake --model or a scratch MCP list into the user's config.
+	origMCP := cfg.MCP
 	if args.mcpConfig != "" {
 		var extra struct {
 			MCP []config.MCPServerConfig `toml:"mcp"`
@@ -214,6 +203,7 @@ func main() {
 			fail(fmt.Errorf("parsing %s: %w", args.mcpConfig, err))
 		}
 		cfg.MCP = extra.MCP
+		cfg.SetPresave(func(c *config.Config) { c.MCP = origMCP })
 	}
 
 	mode := cfg.PermissionMode
@@ -273,6 +263,32 @@ func main() {
 		}
 	} else {
 		mgr.NewAgent()
+	}
+
+	if args.model != "" {
+		provName, model := cfg.DefaultProvider, args.model
+		if p, rest, ok := strings.Cut(args.model, ":"); ok {
+			if _, exists := cfg.Providers[p]; exists && rest != "" {
+				provName, model = p, rest
+			}
+		}
+		prov, err := mgr.ProviderFor(provName)
+		if err != nil {
+			fail(err)
+		}
+		for _, a := range mgr.Agents {
+			a.Provider, a.ProviderName, a.ProviderErr, a.Model = prov, provName, "", model
+		}
+	}
+	if args.systemPrompt != "" || args.appendSystem != "" {
+		for _, a := range mgr.Agents {
+			if args.systemPrompt != "" {
+				a.SystemPrompt = args.systemPrompt
+			}
+			if args.appendSystem != "" {
+				a.SystemPrompt += "\n\n" + args.appendSystem
+			}
+		}
 	}
 
 	if args.printPrompt != "" {

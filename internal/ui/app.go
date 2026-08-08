@@ -763,11 +763,13 @@ func (m *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case m.keys.Is(msg, "next_agent"):
 		m.mgr.Next()
+		m.recalling = false
 		m.refreshChat(true)
 		return m, nil
 
 	case m.keys.Is(msg, "prev_agent"):
 		m.mgr.Prev()
+		m.recalling = false
 		m.refreshChat(true)
 		return m, nil
 
@@ -902,6 +904,11 @@ func (m *App) handleInputKey(msg tea.KeyMsg, a *agent.Agent) (tea.Model, tea.Cmd
 				if m.recallIdx < len(prompts) {
 					m.recallIdx++
 				}
+				// The prompt list can shrink under a live recall (agent
+				// switch, compaction); clamp instead of panicking.
+				if m.recallIdx > len(prompts) {
+					m.recallIdx = len(prompts)
+				}
 				m.ta.SetValue(prompts[len(prompts)-m.recallIdx])
 				m.recalcLayout()
 				return m, nil
@@ -910,10 +917,13 @@ func (m *App) handleInputKey(msg tea.KeyMsg, a *agent.Agent) (tea.Model, tea.Cmd
 		if s == "down" && m.recalling {
 			prompts := userPrompts(a)
 			m.recallIdx--
-			if m.recallIdx <= 0 {
+			if m.recallIdx > len(prompts) {
+				m.recallIdx = len(prompts)
+			}
+			if m.recallIdx <= 0 || len(prompts) == 0 {
 				m.recalling = false
 				m.ta.Reset()
-			} else if m.recallIdx <= len(prompts) {
+			} else {
 				m.ta.SetValue(prompts[len(prompts)-m.recallIdx])
 			}
 			m.recalcLayout()

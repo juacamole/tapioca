@@ -221,7 +221,7 @@ func (m *Manager) LoadSession(s *session.Session) {
 			ThinkingBudget: st.ThinkingBudget,
 			ToolsEnabled:   st.ToolsEnabled,
 			CtxTokens:      st.CtxTokens,
-			Messages:       st.Messages,
+			Messages:       RepairHistory(st.Messages),
 			Stats:          st.Stats,
 			Events:         make(chan Event, 512),
 			MCP:            m.MCP,
