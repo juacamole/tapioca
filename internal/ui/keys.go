@@ -24,7 +24,7 @@ var actions = []Action{
 	{"edit_prompt", "edit prompt in vim/$EDITOR", "ctrl+g", "chat"},
 	{"edit_system", "edit system prompt (use /systemprompt)", "", "chat"},
 	{"cancel", "stop generation / close overlay", "esc", "chat"},
-	{"quit", "stop chat · clear input · twice = exit", "ctrl+c", "chat"},
+	{"quit", "stop chat" + gl.sep + "clear input" + gl.sep + "twice = exit", "ctrl+c", "chat"},
 	{"verbose", "toggle verbose chat (full thoughts/tools)", "ctrl+o", "chat"},
 	{"paste_image", "attach an image from the clipboard", "ctrl+v", "chat"},
 

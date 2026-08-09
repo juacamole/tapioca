@@ -82,8 +82,14 @@ permission prompt.
   is copied on release (wl-copy/xclip/pbcopy, OSC 52 fallback). In chat
   focus `y` copies the last response and `Y` the whole transcript. `f3`
   releases the mouse entirely for native terminal selection.
+- **Themes & glyphs** — `/theme` picks a palette (`taro`, `contrast` —
+  colorblind-safe Okabe-Ito, `mono` — no color at all), `/glyphs` picks the
+  character set: `unicode` (default), `ascii` (renders in *any* terminal or
+  font, borders included) or `nerd` (icons, needs a patched font). Every
+  color is overridable with a hex code under `[colors]`, per background if
+  you want (`"#light/#dark"`). Both switch live and are saved.
 - **/settings** — opens the config file in vim/$EDITOR and hot-reloads it on
-  save (keybinds, providers, defaults, layout — applied to running agents).
+  save (keybinds, providers, defaults, layout, theme — applied live).
 - **Sessions** — the whole workspace autosaves; `/resume` opens a picker
   whose filter searches **across the text of all saved conversations**.
   Titles are written by the model from your first prompt (`title_model` to
@@ -108,6 +114,7 @@ Type `/` for the completion popup:
 | `/regen` · `/edit` | redo / rewrite the last exchange |
 | `/fork` · `/agent [name]` | branch conversation / new agent |
 | `/resume [id]` · `/new` · `/save` | session management |
+| `/theme [name]` · `/glyphs [name]` | palette / character set (no arg: picker) |
 | `/verbose` · `/thinking` · `/tools` · `/zen` | toggles |
 | `/help` · `/quit` | the obvious |
 
@@ -196,7 +203,14 @@ prompt editor all write back). Sessions live in
 `~/.local/share/tapioca/sessions/`. Things typically set once by hand:
 
 ```toml
-permission_mode = "ask"            # ask | auto | readonly
+permission_mode = "manual"         # plan | manual | auto | bypass
+
+theme = "taro"                     # taro | contrast | mono
+glyphs = "unicode"                 # unicode | ascii | nerd
+
+[colors]                           # override any theme color with hex
+accent = "#6C4FD8/#A78BFA"         # "#hex" for both, "#light/#dark" to differ
+agents = "#A78BFA, #7CC7FF"        # per-agent identity colors, cycled
 
 [providers.lmstudio]
 type = "openai"                    # any OpenAI-compatible server

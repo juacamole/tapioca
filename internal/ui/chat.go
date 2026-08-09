@@ -77,8 +77,8 @@ func welcomeText(w int) string {
 		styAppTitle.Render("tapioca"),
 		"",
 		styDim.Render("type a prompt and press enter to chat"),
-		styDim.Render("f1 shows every keybind · /help lists commands"),
-		styDim.Render("ctrl+g writes the prompt in vim · ctrl+o toggles verbose chat"),
+		styDim.Render("f1 shows every keybind" + gl.sep + "/help lists commands"),
+		styDim.Render("ctrl+g writes the prompt in vim" + gl.sep + "ctrl+o toggles verbose chat"),
 		styDim.Render("tab focuses the dashboard to change settings"),
 	}
 	return strings.Join(lines, "\n")
@@ -127,7 +127,7 @@ func renderMessage(m *provider.Message, a *agent.Agent, w int, verbose bool) str
 			}
 			return b.String()
 		}
-		b.WriteString(styUser.Render("| you ") + ts + "\n")
+		b.WriteString(styUser.Render(gl.bar+" you ") + ts + "\n")
 		b.WriteString(renderText(m.Text(), w))
 		for _, bl := range m.Blocks {
 			if bl.Type == "image" {
@@ -139,7 +139,7 @@ func renderMessage(m *provider.Message, a *agent.Agent, w int, verbose bool) str
 
 	// Assistant message.
 	col := lipgloss.NewStyle().Bold(true).Foreground(agentColor(a.ID))
-	head := col.Render("| "+a.Name) + styDim.Render(" · "+m.Model+" · ") + ts
+	head := col.Render(gl.bar+" "+a.Name) + styDim.Render(""+gl.sep+""+m.Model+""+gl.sep+"") + ts
 	b.WriteString(head)
 	for _, bl := range m.Blocks {
 		switch bl.Type {
@@ -229,7 +229,7 @@ func renderToolResult(bl *provider.Block, w int, verbose bool) string {
 func renderStreaming(a *agent.Agent, w int, spin string, verbose bool) string {
 	col := lipgloss.NewStyle().Bold(true).Foreground(agentColor(a.ID))
 	var b strings.Builder
-	b.WriteString(col.Render("| "+a.Name) + styDim.Render(" · "+statusLabel(a)+" "+spin))
+	b.WriteString(col.Render(gl.bar+" "+a.Name) + styDim.Render(""+gl.sep+""+statusLabel(a)+" "+spin))
 
 	if a.StreamThinking != "" {
 		if verbose {
@@ -252,7 +252,7 @@ func renderStreaming(a *agent.Agent, w int, spin string, verbose bool) string {
 		}
 	}
 	if a.StreamText != "" {
-		b.WriteString("\n" + renderText(a.StreamText+"▌", w))
+		b.WriteString("\n" + renderText(a.StreamText+gl.bar, w))
 	}
 	return b.String()
 }
@@ -313,7 +313,13 @@ func truncate(s string, n int) string {
 	if len(r) <= n {
 		return s
 	}
-	return string(r[:n-1]) + "…"
+	// The ellipsis is one rune in unicode but three in ascii; both have to fit
+	// inside n or every truncated label overflows its column.
+	e := []rune(gl.ellipsis)
+	if len(e) >= n {
+		return string(r[:n])
+	}
+	return string(r[:n-len(e)]) + gl.ellipsis
 }
 
 func padRight(s string, n int) string {

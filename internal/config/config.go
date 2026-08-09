@@ -57,6 +57,8 @@ type Config struct {
 	Autosave        bool    `toml:"autosave"`
 	AutoCompact     bool    `toml:"auto_compact"`    // summarize when context nears the limit
 	TitleModel      string  `toml:"title_model"`     // [provider:]model for session titles; empty uses the agent's
+	Theme           string  `toml:"theme"`           // taro | contrast | mono
+	Glyphs          string  `toml:"glyphs"`          // unicode | ascii | nerd
 	PermissionMode  string  `toml:"permission_mode"` // plan | manual | auto | bypass
 
 	BashAllow []string                  `toml:"bash_allow"` // always-allowed bash command words
@@ -65,7 +67,8 @@ type Config struct {
 	MCP       []MCPServerConfig         `toml:"mcp"`
 	Dashboard DashboardConfig           `toml:"dashboard"`
 	Keys      map[string]string         `toml:"keys"`
-	Costs     map[string]Cost           `toml:"costs"` // model prefix -> $/Mtok
+	Colors    map[string]string         `toml:"colors"` // theme overrides: "#hex" or "#light/#dark"
+	Costs     map[string]Cost           `toml:"costs"`  // model prefix -> $/Mtok
 
 	path    string // where this config was loaded from
 	presave func(*Config)
@@ -91,6 +94,8 @@ func Default() *Config {
 		Autosave:       true,
 		AutoCompact:    true,
 		PermissionMode: "ask",
+		Theme:          "taro",
+		Glyphs:         "unicode",
 		Providers: map[string]ProviderConfig{
 			"ollama":    {Type: "ollama", BaseURL: "http://localhost:11434"},
 			"anthropic": {Type: "anthropic", APIKeyEnv: "ANTHROPIC_API_KEY"},
@@ -252,6 +257,25 @@ permission_mode = "manual"      # plan | manual | auto | bypass (cycle with shif
 # secret_env = ["MY_TOKEN"]     # extra env vars hidden from tools and MCP servers
                                 # (provider API keys are always hidden)
 editor = ""                     # prompt editor; falls back to $VISUAL, $EDITOR, nvim, vim
+# title_model = "ollama:qwen3"  # cheap model for session titles; empty = the agent's own
+
+theme = "taro"                  # taro | contrast (colorblind-safe) | mono — /theme switches
+glyphs = "unicode"              # unicode | ascii (any terminal) | nerd (patched font) — /glyphs
+
+# Override any theme color. "#hex" applies to both backgrounds, "#light/#dark"
+# differs per background. Setting one lifts the mono theme's no-color rule.
+# [colors]
+# accent  = "#6C4FD8/#A78BFA"   # titles, focus, highlights
+# dim     = "#8B8B98/#6A6A78"   # secondary text
+# user    = "#1F8A5D/#6EE7A8"   # your messages
+# error   = "#D03050/#FB7185"
+# ok      = "#1F8A5D/#6EE7A8"
+# warn    = "#B45309/#FBBF24"
+# border  = "#D9D9E3/#33333E"
+# think   = "#8E44AD/#D8B4FE"   # reasoning output
+# tool    = "#1D6FB8/#7CC7FF"   # tool calls
+# code_bg = "#F1F1F6/#232330"
+# agents  = "#A78BFA, #7CC7FF, #5EEAD4"   # per-agent identity colors, cycled
 
 system_prompt = """
 You are a pragmatic coding assistant working in a terminal.
@@ -289,8 +313,8 @@ api_key_env = "ANTHROPIC_API_KEY"
 visible = true
 width = 0.33                    # fraction of the screen used by dashboards
 position = "right"              # right | left | top | bottom
-# Available panels: agents, tokens, git, changes, tools, mcp, session, settings
-panels = ["agents", "tokens", "git", "tools", "settings"]
+# Available panels: agents, tokens, todos, git, changes, tools, mcp, session, settings
+panels = ["agents", "tokens", "todos", "git", "tools", "settings"]
 
 # MCP servers (stdio transport). Their tools are offered to every agent.
 # [[mcp]]

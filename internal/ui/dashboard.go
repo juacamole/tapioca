@@ -125,7 +125,7 @@ func (m *App) panelBox(d *panelDef, a *agent.Agent, w, h int, focused bool) stri
 	lines := fitLines(d.render(m, a, innerW, contentH), innerW, contentH)
 	title := d.title
 	if d.key == "settings" && m.dashEditing && focused {
-		title += " · editing"
+		title += "" + gl.sep + "editing"
 	}
 	content := styPanelTitle.Render(truncate(title, innerW)) + "\n" + strings.Join(lines, "\n")
 	return borderStyle(focused).Width(innerW).Height(innerH).Render(content)
@@ -303,15 +303,15 @@ func renderTokensPanel(m *App, a *agent.Agent, w, h int) []string {
 		fmt.Sprintf("%s %s  %s %s",
 			styDim.Render("in"), humanInt(s.InputTokens),
 			styDim.Render("out"), humanInt(s.OutputTokens)),
-		fmt.Sprintf("%s %s · %d reqs",
+		fmt.Sprintf("%s %s"+gl.sep+"%d reqs",
 			styDim.Render("total"), humanInt(s.InputTokens+s.OutputTokens), len(s.Requests)),
 	}
 	if s.CacheReadTokens > 0 || s.CacheWriteTokens > 0 {
-		lines = append(lines, fmt.Sprintf("%s %s read · %s write",
+		lines = append(lines, fmt.Sprintf("%s %s read"+gl.sep+"%s write",
 			styDim.Render("cache"), humanInt(s.CacheReadTokens), humanInt(s.CacheWriteTokens)))
 	}
 	if lr := s.LastRequest(); lr != nil {
-		lines = append(lines, fmt.Sprintf("%s %s->%s · %.1fs",
+		lines = append(lines, fmt.Sprintf("%s %s->%s"+gl.sep+"%.1fs",
 			styDim.Render("last"), humanInt(lr.In), humanInt(lr.Out), lr.Dur.Seconds()))
 	}
 	if win := m.contextWindowFor(a); win > 0 && a.CtxTokens > 0 {
@@ -328,7 +328,7 @@ func renderTokensPanel(m *App, a *agent.Agent, w, h int) []string {
 		} else if pct >= 60 {
 			sty = styWarn
 		}
-		bar := sty.Render(strings.Repeat("█", filled)) + styDim.Render(strings.Repeat("░", barW-filled))
+		bar := sty.Render(strings.Repeat(gl.gaugeFull, filled)) + styDim.Render(strings.Repeat(gl.gaugeEmpty, barW-filled))
 		lines = append(lines, fmt.Sprintf("%s %s%s", styDim.Render("ctx"), bar, styDim.Render(label)))
 	}
 	if cost := m.sessionCost(a); cost > 0 {
@@ -365,11 +365,11 @@ func renderTodoPanel(m *App, a *agent.Agent, w, h int) []string {
 		var mark, text string
 		switch t.Status {
 		case agent.TodoDone:
-			mark, text = styOK.Render("x"), styDim.Render(t.Content)
+			mark, text = styOK.Render(gl.todoDone), styDim.Render(t.Content)
 		case agent.TodoDoing:
-			mark, text = styWarn.Render(">"), styAccent.Render(t.Content)
+			mark, text = styWarn.Render(gl.todoDoing), styAccent.Render(t.Content)
 		default:
-			mark, text = styDim.Render("·"), t.Content
+			mark, text = styDim.Render(gl.todoWait), t.Content
 		}
 		lines = append(lines, mark+" "+truncate(text, w-2))
 	}
@@ -382,7 +382,7 @@ func renderToolsPanel(m *App, a *agent.Agent, w, h int) []string {
 		enabled = styOK.Render("on")
 	}
 	lines := []string{
-		fmt.Sprintf("%s tools · agent: %s · %s", humanInt(m.toolCount()), enabled,
+		fmt.Sprintf("%s tools"+gl.sep+"agent: %s"+gl.sep+"%s", humanInt(m.toolCount()), enabled,
 			styDim.Render(m.permMode())),
 	}
 	tcs := a.Stats.ToolCalls
@@ -397,9 +397,9 @@ func renderToolsPanel(m *App, a *agent.Agent, w, h int) []string {
 		case tc.Running:
 			icon = styWarn.Render(m.spin.View())
 		case tc.IsError:
-			icon = styErr.Render("x")
+			icon = styErr.Render(gl.toolErr)
 		default:
-			icon = styOK.Render("+")
+			icon = styOK.Render(gl.toolOK)
 		}
 		dur := ""
 		if !tc.Running {
@@ -424,16 +424,16 @@ func renderAgentsPanel(m *App, a *agent.Agent, w, h int) []string {
 		var dot string
 		switch {
 		case ag.Status == agent.StatusError:
-			dot = styErr.Render("●")
+			dot = styErr.Render(gl.dot)
 		case ag.Status.Busy():
-			dot = styWarn.Render("●")
+			dot = styWarn.Render(gl.dot)
 		default:
-			dot = styDim.Render("●")
+			dot = styDim.Render(gl.dot)
 		}
 		name := lipgloss.NewStyle().Foreground(agentColor(ag.ID)).Render(ag.Name)
 		lines = append(lines, fmt.Sprintf("%s%s %s %s", marker, dot, name,
 			styDim.Render(truncate(ag.Model, max(6, w-lipgloss.Width(ag.Name)-8)))))
-		lines = append(lines, styDim.Render(fmt.Sprintf("     %s · %s tok · %d msgs",
+		lines = append(lines, styDim.Render(fmt.Sprintf("     %s"+gl.sep+"%s tok"+gl.sep+"%d msgs",
 			statusLabel(ag), humanInt(ag.TotalTokens()), len(ag.Messages))))
 	}
 	return lines
@@ -450,9 +450,9 @@ func renderMCPPanel(m *App, a *agent.Agent, w, h int) []string {
 	}
 	var lines []string
 	for _, c := range clients {
-		dot := styOK.Render("●")
+		dot := styOK.Render(gl.dot)
 		if !c.Alive() {
-			dot = styErr.Render("●")
+			dot = styErr.Render(gl.dot)
 		}
 		lines = append(lines, fmt.Sprintf("%s %s %s", dot, c.Name,
 			styDim.Render(fmt.Sprintf("(%d tools)", len(c.Tools)))))
@@ -495,9 +495,9 @@ func renderSessionPanel(m *App, a *agent.Agent, w, h int) []string {
 	return []string{
 		fmt.Sprintf("%s %s", styDim.Render("id"), m.sessID),
 		fmt.Sprintf("%s %s", styDim.Render("name"), truncate(name, w-6)),
-		fmt.Sprintf("%s · autosave %s", dirty, auto),
+		fmt.Sprintf("%s"+gl.sep+"autosave %s", dirty, auto),
 		fmt.Sprintf("%s %s", styDim.Render("saved"), saved),
-		styDim.Render(fmt.Sprintf("%d agents · %d msgs", len(m.mgr.Agents), msgs)),
+		styDim.Render(fmt.Sprintf("%d agents"+gl.sep+"%d msgs", len(m.mgr.Agents), msgs)),
 	}
 }
 
@@ -557,11 +557,11 @@ func renderSettingsPanel(m *App, a *agent.Agent, w, h int) []string {
 	if !zenMode {
 		switch {
 		case editing:
-			lines = append(lines, styDim.Render("arrows adjust · enter pick · esc done"))
+			lines = append(lines, styDim.Render("arrows adjust"+gl.sep+"enter pick"+gl.sep+"esc done"))
 		case m.focus == focusDash:
-			lines = append(lines, styDim.Render("enter to edit · shift+arrows move panel"))
+			lines = append(lines, styDim.Render("enter to edit"+gl.sep+"shift+arrows move panel"))
 		default:
-			lines = append(lines, styDim.Render("tab or click to edit · saved to config"))
+			lines = append(lines, styDim.Render("tab or click to edit"+gl.sep+"saved to config"))
 		}
 	}
 	return lines
@@ -579,7 +579,7 @@ func compactTok(n int) string {
 }
 
 func sparkline(vals []int, w int) string {
-	chars := []rune("▁▂▃▄▅▆▇█")
+	chars := gl.spark
 	if w < 1 {
 		w = 1
 	}

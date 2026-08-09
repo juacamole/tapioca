@@ -159,7 +159,7 @@ func NewApp(cfg *config.Config, mgr *agent.Manager, sessID, sessName string, cre
 	ta.Focus()
 	ta.KeyMap.InsertNewline.SetEnabled(false)
 
-	sp := spinner.New(spinner.WithSpinner(spinner.MiniDot))
+	sp := spinner.New(spinner.WithSpinner(gl.spinner))
 	sp.Style = styAccent
 
 	return &App{
@@ -305,7 +305,7 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if len(msg.items) == 0 {
 			e := "no models found"
 			if len(msg.errs) > 0 {
-				e = strings.Join(msg.errs, " · ")
+				e = strings.Join(msg.errs, ""+gl.sep+"")
 			}
 			m.setFlash(e, true)
 			return m, m.flashCmd()
@@ -494,7 +494,7 @@ func (m *App) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		if ev.Err != nil {
 			reason = truncate(ev.Err.Error(), 24)
 		}
-		a.RetryNote = fmt.Sprintf("%d/%d · %s", ev.Attempt+1, ev.Max, reason)
+		a.RetryNote = fmt.Sprintf("%d/%d"+gl.sep+"%s", ev.Attempt+1, ev.Max, reason)
 	case agent.EvError:
 		if ev.Err != nil {
 			a.LastErr = ev.Err.Error()
@@ -592,6 +592,10 @@ func (m *App) handleEditorDone(msg editorDoneMsg) (tea.Model, tea.Cmd) {
 		*m.cfg = *newCfg
 		m.keys = NewKeyMap(m.cfg.Keys)
 		secretenv.SetExtra(m.cfg.SecretEnv)
+		m.cfg.Theme = SetTheme(m.cfg.Theme, m.cfg.Colors)
+		m.cfg.Glyphs = SetGlyphs(m.cfg.Glyphs)
+		m.spin.Spinner = gl.spinner
+		m.repaint()
 		if m.mgr.Exec != nil {
 			m.mgr.Exec.SetMode(m.cfg.PermissionMode)
 			m.mgr.Exec.SetBashPrefixes(m.cfg.BashAllow)
@@ -1024,7 +1028,7 @@ func (m *App) handleCtrlC(a *agent.Agent) (tea.Model, tea.Cmd) {
 	if m.focus == focusInput && strings.TrimSpace(m.ta.Value()) != "" {
 		m.ta.Reset()
 		m.recalcLayout()
-		m.setFlash("input cleared · press ctrl+c again to exit", false)
+		m.setFlash("input cleared"+gl.sep+"press ctrl+c again to exit", false)
 	} else {
 		m.setFlash("press ctrl+c again to exit", false)
 	}
@@ -1189,7 +1193,7 @@ func (m *App) handleDashKey(msg tea.KeyMsg, a *agent.Agent) (tea.Model, tea.Cmd)
 		if defs[m.dashPanelSel].key == "settings" {
 			m.dashEditing = true
 		} else {
-			m.setFlash("settings is the editable panel · shift+arrows move this one · /panels configures", false)
+			m.setFlash("settings is the editable panel"+gl.sep+"shift+arrows move this one"+gl.sep+"/panels configures", false)
 			return m, m.flashCmd()
 		}
 		return m, nil
@@ -1319,6 +1323,12 @@ func (m *App) applyPick(it pickerItem) tea.Cmd {
 		m.dirty = true
 		m.setFlash(fmt.Sprintf("%s -> %s", providerName, model), false)
 		return m.flashCmd()
+
+	case pickTheme:
+		return m.applyTheme(it.value)
+
+	case pickGlyphs:
+		return m.applyGlyphs(it.value)
 
 	case pickSession:
 		return m.loadSessionByID(it.value)
@@ -1695,7 +1705,7 @@ func (m *App) renderBody(bodyH int) string {
 		}
 	}
 
-	sep := styDim.Render(strings.Repeat("─", max(1, innerW)))
+	sep := styDim.Render(strings.Repeat(gl.line, max(1, innerW)))
 	content := vpView + "\n" + sep + "\n"
 	if len(m.pending) > 0 {
 		var labels []string
@@ -1738,7 +1748,7 @@ func (m *App) renderMentionMenu(fs []string, w int) string {
 		}
 	}
 	if !zenMode {
-		lines = append(lines, styDim.Render("up/down choose · tab complete"))
+		lines = append(lines, styDim.Render("up/down choose"+gl.sep+"tab complete"))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -1765,7 +1775,7 @@ func (m *App) renderSlashMenu(ms []*slashCmd, w int) string {
 		}
 	}
 	if !zenMode {
-		lines = append(lines, styDim.Render("up/down choose · tab complete · enter run"))
+		lines = append(lines, styDim.Render("up/down choose"+gl.sep+"tab complete"+gl.sep+"enter run"))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -1785,7 +1795,7 @@ func (m *App) renderPerm(w, h int) string {
 	summary := sanitizeText(e.req.Summary)
 	lines := strings.Split(wrapPlain(summary, min(80, w-16)), "\n")
 	if len(lines) > 10 {
-		lines = append(lines[:10], styDim.Render("…"))
+		lines = append(lines[:10], styDim.Render(gl.ellipsis))
 	}
 	for _, l := range lines {
 		b.WriteString("  " + styCode.Render(" "+l+" ") + "\n")
@@ -1815,7 +1825,7 @@ func (m *App) renderPerm(w, h int) string {
 func (m *App) renderTextOverlay(w, h int) string {
 	content := styPanelTitle.Render(truncate(m.textTitle, m.textVP.Width)) + "\n" + m.textVP.View()
 	if !zenMode {
-		content += "\n" + styDim.Render("j/k scroll · u/d page · g/G top/bottom · esc close")
+		content += "\n" + styDim.Render("j/k scroll"+gl.sep+"u/d page"+gl.sep+"g/G top/bottom"+gl.sep+"esc close")
 	}
 	box := borderStyle(true).Padding(0, 1).Render(content)
 	return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, box)
@@ -1826,9 +1836,9 @@ func (m *App) renderTitle() string {
 	if name == "" {
 		name = m.sessID
 	}
-	left := " " + styAppTitle.Render("tapioca") + styDim.Render(" · "+truncate(name, 32))
+	left := " " + styAppTitle.Render("tapioca") + styDim.Render(""+gl.sep+""+truncate(name, 32))
 	if m.mgr.Exec != nil {
-		left += styDim.Render(" · " + shortPath(m.mgr.Exec.Cwd()))
+		left += styDim.Render("" + gl.sep + "" + shortPath(m.mgr.Exec.Cwd()))
 	}
 
 	a := m.mgr.ActiveAgent()
@@ -1838,7 +1848,7 @@ func (m *App) renderTitle() string {
 		if model == "" {
 			model = "(no model)"
 		}
-		right = styDim.Render(fmt.Sprintf("%s:%s · effort:%s · maxtok %s ",
+		right = styDim.Render(fmt.Sprintf("%s:%s"+gl.sep+"effort:%s"+gl.sep+"maxtok %s ",
 			a.ProviderName, model, effortName(a), humanInt(a.MaxTokens)))
 	}
 	gap := m.w - lipgloss.Width(left) - lipgloss.Width(right)
@@ -1861,7 +1871,7 @@ func shortPath(p string) string {
 		p = "~" + strings.TrimPrefix(p, home)
 	}
 	if len(p) > 32 {
-		p = "…" + p[len(p)-31:]
+		p = gl.ellipsis + p[len(p)-31:]
 	}
 	return p
 }
@@ -1872,13 +1882,13 @@ func (m *App) renderTabs() string {
 		var dot string
 		switch {
 		case a.Status == agent.StatusError:
-			dot = styErr.Render("●")
+			dot = styErr.Render(gl.dot)
 		case a.Status.Busy():
 			dot = styWarn.Render(m.spin.View())
 		default:
-			dot = styDim.Render("●")
+			dot = styDim.Render(gl.dot)
 		}
-		label := fmt.Sprintf("%d·%s", i+1, a.Name)
+		label := fmt.Sprintf("%d%s%s", i+1, gl.sepTight, a.Name)
 		if i == m.mgr.Active {
 			tabs = append(tabs, dot+" "+styTabActive.Render(label))
 		} else {
@@ -1888,7 +1898,7 @@ func (m *App) renderTabs() string {
 	line := " " + strings.Join(tabs, "   ")
 	hint := ""
 	if !zenMode {
-		hint = styDim.Render(m.keys.FirstKey("prev_agent") + "/" + m.keys.FirstKey("next_agent") + " switch · " + m.keys.FirstKey("new_agent") + " new · /fork ")
+		hint = styDim.Render(m.keys.FirstKey("prev_agent") + "/" + m.keys.FirstKey("next_agent") + " switch" + gl.sep + "" + m.keys.FirstKey("new_agent") + " new" + gl.sep + "/fork ")
 	}
 	gap := m.w - lipgloss.Width(line) - lipgloss.Width(hint)
 	if gap < 1 {
@@ -1911,11 +1921,11 @@ func (m *App) renderStatus() string {
 		k := m.keys
 		switch m.focus {
 		case focusDash:
-			left = " " + styDim.Render("dashboard: up/down select · left/right adjust · enter toggle/pick · "+k.FirstKey("panels")+" panels · tab back")
+			left = " " + styDim.Render("dashboard: up/down select"+gl.sep+"left/right adjust"+gl.sep+"enter toggle/pick"+gl.sep+""+k.FirstKey("panels")+" panels"+gl.sep+"tab back")
 		case focusChat:
-			left = " " + styDim.Render("chat: j/k scroll · u/d page · g/G top/bottom · tab next focus")
+			left = " " + styDim.Render("chat: j/k scroll"+gl.sep+"u/d page"+gl.sep+"g/G top/bottom"+gl.sep+"tab next focus")
 		default:
-			left = " " + styDim.Render(fmt.Sprintf("%s send · / commands · %s newline · %s vim · %s verbose · %s help",
+			left = " " + styDim.Render(fmt.Sprintf("%s send"+gl.sep+"/ commands"+gl.sep+"%s newline"+gl.sep+"%s vim"+gl.sep+"%s verbose"+gl.sep+"%s help",
 				k.FirstKey("send"), k.FirstKey("newline"), k.FirstKey("edit_prompt"),
 				k.FirstKey("verbose"), k.FirstKey("help")))
 		}
@@ -1937,12 +1947,12 @@ func (m *App) renderStatus() string {
 		st := statusLabel(a)
 		if a.Status.Busy() {
 			if a.Status == agent.StatusThinking && len(a.StreamThinking) > 0 {
-				st += fmt.Sprintf(" · %s", humanTokens(len(a.StreamThinking)))
+				st += fmt.Sprintf("%s%s", gl.sep, humanTokens(len(a.StreamThinking)))
 			}
 			el := time.Since(a.StreamStart).Seconds()
 			rate := ""
 			if el > 0.5 && len(a.StreamText)+len(a.StreamThinking) > 0 {
-				rate = fmt.Sprintf(" · %.0f tok/s", float64(len(a.StreamText)+len(a.StreamThinking))/4.0/el)
+				rate = fmt.Sprintf(""+gl.sep+"%.0f tok/s", float64(len(a.StreamText)+len(a.StreamThinking))/4.0/el)
 			}
 			right += styWarn.Render(m.spin.View()+" "+st+rate) + " "
 		} else if a.Status == agent.StatusError {

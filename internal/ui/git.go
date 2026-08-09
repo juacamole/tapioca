@@ -129,7 +129,7 @@ func renderGitPanel(m *App, a *agent.Agent, w, h int) []string {
 	if g.lastCommit != "" {
 		lines = append(lines, fmt.Sprintf("%s %s", styDim.Render("last"), truncate(g.lastCommit, w-7)))
 	}
-	lines = append(lines, fmt.Sprintf("%s %s · %s %s · %s %s",
+	lines = append(lines, fmt.Sprintf("%s %s"+gl.sep+"%s %s"+gl.sep+"%s %s",
 		styOK.Render(humanInt(staged)), styDim.Render("staged"),
 		styWarn.Render(humanInt(unstaged)), styDim.Render("unstaged"),
 		styErr.Render(humanInt(untracked)), styDim.Render("untracked")))
