@@ -49,6 +49,20 @@ func buildSlashCmds() []slashCmd {
 			m.openPanelsPicker()
 			return nil
 		}},
+		{"theme", "[name]", "switch color theme (no arg: picker)", func(m *App, arg string) tea.Cmd {
+			if arg == "" {
+				m.openThemePicker()
+				return nil
+			}
+			return m.applyTheme(arg)
+		}},
+		{"glyphs", "[name]", "switch glyph set: unicode|ascii|nerd", func(m *App, arg string) tea.Cmd {
+			if arg == "" {
+				m.openGlyphsPicker()
+				return nil
+			}
+			return m.applyGlyphs(arg)
+		}},
 		{"systemprompt", "", "edit the system prompt in your editor", func(m *App, _ string) tea.Cmd {
 			sys := ""
 			if a := m.mgr.ActiveAgent(); a != nil {
@@ -294,7 +308,7 @@ func cmdRemember(m *App, arg string) tea.Cmd {
 			return m.flashCmd()
 		}
 		m.openTextOverlay("project memory — "+shortPath(cwd), mem+"\n\n"+
-			styDim.Render("loaded into every system prompt here · /remember clear wipes"))
+			styDim.Render("loaded into every system prompt here"+gl.sep+"/remember clear wipes"))
 		return nil
 	case "clear":
 		if err := project.ClearMemory(cwd); err != nil {
@@ -353,7 +367,7 @@ func cmdCd(m *App, arg string) tea.Cmd {
 	}
 	note := "cwd: " + e.Cwd()
 	if project.Instructions(e.Cwd()) != "" {
-		note += " · loaded project instructions"
+		note += "" + gl.sep + "loaded project instructions"
 	}
 	m.setFlash(note, false)
 	return tea.Batch(m.flashCmd(), fetchGitCmd(e.Cwd()))
@@ -468,7 +482,7 @@ func cmdCheckpoints(m *App, _ string) tea.Cmd {
 	for _, e := range entries {
 		items = append(items, pickerItem{
 			label: e.Label,
-			desc:  e.ID + " · " + ago(e.Time),
+			desc:  e.ID + "" + gl.sep + "" + ago(e.Time),
 			value: e.ID,
 		})
 	}
@@ -681,7 +695,7 @@ func (m *App) openSessionPicker() tea.Cmd {
 		}
 		items = append(items, pickerItem{
 			label:  label,
-			desc:   fmt.Sprintf("%d agents · %d msgs · %s", meta.Agents, meta.Messages, ago(meta.UpdatedAt)),
+			desc:   fmt.Sprintf("%d agents"+gl.sep+"%d msgs"+gl.sep+"%s", meta.Agents, meta.Messages, ago(meta.UpdatedAt)),
 			value:  meta.ID,
 			search: meta.Blob,
 		})

@@ -310,6 +310,8 @@ func main() {
 	}
 
 	ui.SetMarkdownDark(lipgloss.HasDarkBackground())
+	cfg.Theme = ui.SetTheme(cfg.Theme, cfg.Colors)
+	cfg.Glyphs = ui.SetGlyphs(cfg.Glyphs)
 
 	app := ui.NewApp(cfg, mgr, sessID, sessName, created)
 	if args.resumePicker {

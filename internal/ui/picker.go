@@ -16,6 +16,8 @@ const (
 	pickSession
 	pickPanels
 	pickCheckpoint
+	pickTheme
+	pickGlyphs
 )
 
 type pickerItem struct {
@@ -136,13 +138,13 @@ func (p *picker) view(w, h int, checked func(string) bool) string {
 		mark := ""
 		if p.kind == pickPanels && checked != nil {
 			if checked(it.value) {
-				mark = styOK.Render("✓ ")
+				mark = styOK.Render(gl.check + " ")
 			} else {
-				mark = styDim.Render("· ")
+				mark = styDim.Render(gl.todoWait + " ")
 			}
 		}
 		if i == p.sel {
-			plain := "› " + it.label
+			plain := gl.caret + " " + it.label
 			if it.desc != "" {
 				plain += "  " + it.desc
 			}
@@ -156,9 +158,9 @@ func (p *picker) view(w, h int, checked func(string) bool) string {
 		b.WriteString(lipgloss.NewStyle().MaxWidth(contentW).Render(line) + "\n")
 	}
 	if !zenMode {
-		hint := "up/down move · enter select · esc close"
+		hint := "up/down move" + gl.sep + "enter select" + gl.sep + "esc close"
 		if p.kind == pickPanels {
-			hint = "enter toggle · left/right reorder · esc close"
+			hint = "enter toggle" + gl.sep + "left/right reorder" + gl.sep + "esc close"
 		}
 		b.WriteString("\n" + styDim.Render(hint))
 	}
