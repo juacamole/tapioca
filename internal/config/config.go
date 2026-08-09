@@ -56,6 +56,7 @@ type Config struct {
 	Editor          string  `toml:"editor"`  // falls back to $VISUAL, $EDITOR, nvim, vim
 	Autosave        bool    `toml:"autosave"`
 	AutoCompact     bool    `toml:"auto_compact"`    // summarize when context nears the limit
+	TitleModel      string  `toml:"title_model"`     // [provider:]model for session titles; empty uses the agent's
 	PermissionMode  string  `toml:"permission_mode"` // plan | manual | auto | bypass
 
 	BashAllow []string                  `toml:"bash_allow"` // always-allowed bash command words

@@ -82,6 +82,8 @@ permission prompt.
   save (keybinds, providers, defaults, layout — applied to running agents).
 - **Sessions** — the whole workspace autosaves; `/resume` opens a picker
   whose filter searches **across the text of all saved conversations**.
+  Titles are written by the model from your first prompt (`title_model` to
+  point that at a cheaper one), falling back to truncation.
 - **Vim everywhere** — `ctrl+e` edits the prompt, `ctrl+g` the system
   prompt, in `$EDITOR`/nvim/vim. Verbose vs compact transcripts on `ctrl+o`.
 
