@@ -72,6 +72,7 @@ type Executor struct {
 	allowed      map[string]bool
 	bashPrefixes []string
 	extraDirs    []string
+	seen         map[string]fileStamp // files the agent has read or written
 	checkpoint   func(label string)
 }
 
@@ -707,10 +708,12 @@ func (e *Executor) readFile(raw json.RawMessage) (string, bool, error) {
 	if err := json.Unmarshal(raw, &a); err != nil || a.Path == "" {
 		return "invalid arguments: need {\"path\": \"...\"}", true, nil
 	}
-	data, err := os.ReadFile(e.resolve(a.Path))
+	path := e.resolve(a.Path)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return err.Error(), true, nil
 	}
+	e.note(path)
 	content, isText := textenc.Decode(data)
 	if !isText {
 		return fmt.Sprintf("%s is a binary file (%d bytes); not showing raw contents", a.Path, len(data)), true, nil
@@ -743,12 +746,16 @@ func (e *Executor) writeFile(raw json.RawMessage) (string, bool, error) {
 		return "invalid arguments: need {\"path\", \"content\"}", true, nil
 	}
 	path := e.resolve(a.Path)
+	if e.changedExternally(path) {
+		return staleFileMsg(a.Path), true, nil
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err.Error(), true, nil
 	}
 	if err := os.WriteFile(path, []byte(a.Content), 0o644); err != nil {
 		return err.Error(), true, nil
 	}
+	e.note(path)
 	return fmt.Sprintf("wrote %d bytes to %s", len(a.Content), path), false, nil
 }
 
@@ -763,6 +770,9 @@ func (e *Executor) editFile(raw json.RawMessage) (string, bool, error) {
 		return "invalid arguments: need {\"path\", \"old_string\", \"new_string\"}", true, nil
 	}
 	path := e.resolve(a.Path)
+	if e.changedExternally(path) {
+		return staleFileMsg(a.Path), true, nil
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return err.Error(), true, nil
@@ -789,6 +799,7 @@ func (e *Executor) editFile(raw json.RawMessage) (string, bool, error) {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		return err.Error(), true, nil
 	}
+	e.note(path)
 	out := fmt.Sprintf("edited %s (%d replacement(s))", path, count)
 	if reencoded {
 		out += " — note: file was re-encoded to UTF-8"
