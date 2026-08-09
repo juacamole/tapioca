@@ -25,12 +25,15 @@ type Cost struct {
 	Out float64 `toml:"out"`
 }
 
-// MCPServerConfig describes one MCP server launched over stdio.
+// MCPServerConfig describes one MCP server: a child process over stdio, or an
+// HTTP endpoint when URL is set.
 type MCPServerConfig struct {
 	Name    string            `toml:"name"`
 	Command string            `toml:"command"`
 	Args    []string          `toml:"args"`
 	Env     map[string]string `toml:"env"`
+	URL     string            `toml:"url"`     // streamable HTTP endpoint
+	Headers map[string]string `toml:"headers"` // sent on every request; ${VAR} expands
 }
 
 // DashboardConfig controls the dashboard area.
@@ -315,6 +318,14 @@ width = 0.33                    # fraction of the screen used by dashboards
 position = "right"              # right | left | top | bottom
 # Available panels: agents, tokens, todos, git, changes, tools, mcp, session, settings
 panels = ["agents", "tokens", "todos", "git", "tools", "settings"]
+
+# Remote MCP servers over streamable HTTP. Headers are sent on every request;
+# ${VAR} expands from the environment so tokens need not live in this file.
+# [[mcp]]
+# name = "example"
+# url = "https://mcp.example.com/mcp"
+# [mcp.headers]
+# Authorization = "Bearer ${EXAMPLE_MCP_TOKEN}"
 
 # MCP servers (stdio transport). Their tools are offered to every agent.
 # [[mcp]]
