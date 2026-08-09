@@ -45,6 +45,9 @@ Rules that hold in all modes except `bypass`:
   whole command.
 - MCP tools prompt like built-in ones, and their grants appear as
   `mcp:<tool>`.
+- Subagents (`spawn_agent`) run under the same mode, executor and grants as
+  the agent that spawned them, and their tool calls prompt you the same way.
+  A subagent cannot spawn further agents.
 
 ## Read-only tools
 

@@ -659,6 +659,7 @@ func (m *App) loadSessionByID(id string) tea.Cmd {
 		m.setFlash(err.Error(), true)
 		return m.flashCmd()
 	}
+	m.releaseAllSpawns("the session was replaced")
 	m.mgr.LoadSession(s)
 	m.sessID = s.ID
 	m.sessName = s.Name

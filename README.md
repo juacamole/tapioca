@@ -56,6 +56,10 @@ permission prompt.
 - **Multi-agent** — independent agents with their own provider, model,
   system prompt, goal, history and stats; they stream concurrently.
   `/fork` branches the current conversation into a new agent.
+- **Subagents** — the model can delegate a self-contained task with
+  `spawn_agent`: it runs in its own tab with a fresh context window and only
+  its final answer comes back, so wide searches never flood the main
+  conversation. Subagents cannot spawn their own.
 - **External edits are respected** — if you change a file in your own editor
   after the agent read it, `write_file`/`edit_file` refuse to overwrite it
   until the agent re-reads, and the next prompt carries a note listing what

@@ -66,6 +66,7 @@ const (
 	EvToolEnd
 	EvUsage
 	EvPermission // a built-in tool wants permission; answer via Perm.Reply
+	EvSpawn      // the agent delegated a task; answer via Spawn.Reply
 	EvRetry      // transient provider failure; retrying after Delay
 	EvNotice     // non-fatal warning for the user
 	EvError
@@ -102,6 +103,7 @@ type Event struct {
 	Dur      time.Duration
 	Message  *provider.Message
 	Perm     *PermissionReq
+	Spawn    *SpawnReq
 	Err      error
 	Attempt  int
 	Max      int
@@ -137,6 +139,7 @@ type Agent struct {
 	Queue         []provider.Message // prompts queued while the agent is busy
 	PendingNotes  []provider.Message // notices deferred until the turn ends
 	Todos         []TodoItem         // the model's own plan (todo_write)
+	Depth         int                // 0 for agents you created; 1 for spawned ones
 	MaxToolRounds int                // 0 = default
 	CompactFailed bool               // suppress auto-compact until the next good turn
 	Stats         stats.Stats
@@ -299,6 +302,9 @@ func (a *Agent) run(ctx context.Context, rs runSettings, history []provider.Mess
 				req.Tools = append(req.Tools, a.Exec.Tools()...)
 			}
 			req.Tools = append(req.Tools, TodoTool)
+			if a.Depth == 0 {
+				req.Tools = append(req.Tools, SpawnTool)
+			}
 			if a.MCP != nil {
 				req.Tools = append(req.Tools, a.MCP.AllTools()...)
 			}
@@ -465,6 +471,8 @@ func (a *Agent) run(ctx context.Context, rs runSettings, history []provider.Mess
 			switch {
 			case tu.Name == TodoTool.Name:
 				text, isErr = a.writeTodos(tu.Input)
+			case tu.Name == SpawnTool.Name:
+				text, isErr = a.spawnAgent(ctx, tu.Input)
 			case a.Exec != nil && a.Exec.Has(tu.Name):
 				// No deadline here: the executor times the execution itself,
 				// after any permission prompt has been answered.
