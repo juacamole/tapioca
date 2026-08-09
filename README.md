@@ -48,6 +48,11 @@ permission prompt.
   Secrets outside the worktree and first-contact web hosts prompt even in
   `auto`, provider API keys are hidden from tool subprocesses, and stored
   sessions/memory/checkpoints are owner-only on disk.
+- **Sandboxed bash** (`sandbox = true` or `--sandbox`) — runs shell commands
+  under bubblewrap with the worktree writable, the rest of the filesystem
+  read-only and **`$HOME` replaced by an empty tmpfs**, so `.ssh`/`.aws`
+  aren't merely gated, they're absent. Missing `bwrap` fails loudly instead
+  of quietly running unconfined.
 - **Providers** — Ollama, Anthropic, and any **OpenAI-compatible** server
   (LM Studio, vLLM, llama.cpp, OpenRouter, OpenAI) via `type = "openai"`.
   All stream, all support tool calls and thinking where the backend does.
@@ -187,6 +192,7 @@ tapioca --fork-session -c          # continue, but into a new session id
 tapioca --model ollama:qwen3       # model for this run
 tapioca --permission-mode plan     # start in plan mode
 tapioca --dangerously-skip-permissions   # bypass all tool prompts
+tapioca --sandbox                  # confine bash to the worktree (bubblewrap)
 tapioca -p "fix the failing test"  # headless: run one prompt, print, exit
 tapioca -p "summarize" --output-format json --max-turns 5
 tapioca --system-prompt "..." --append-system-prompt "..."

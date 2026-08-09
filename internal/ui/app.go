@@ -607,6 +607,8 @@ func (m *App) handleEditorDone(msg editorDoneMsg) (tea.Model, tea.Cmd) {
 		if m.mgr.Exec != nil {
 			m.mgr.Exec.SetMode(m.cfg.PermissionMode)
 			m.mgr.Exec.SetBashPrefixes(m.cfg.BashAllow)
+			m.mgr.Exec.SetSandbox(m.cfg.Sandbox)
+			m.mgr.Exec.SetSandboxNetwork(m.cfg.SandboxNetwork)
 		}
 		m.mgr.ReloadProviders()
 		// Push the edited defaults onto existing agents too, so the file is

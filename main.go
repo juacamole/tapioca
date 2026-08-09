@@ -42,6 +42,7 @@ type cliArgs struct {
 
 	continueLatest bool
 	resumePicker   bool
+	sandbox        bool
 	forkSession    bool
 	listSessions   bool
 }
@@ -56,6 +57,7 @@ Options:
       --model [provider:]<model>     Model for this run
       --permission-mode <mode>       plan | manual | auto | bypass
       --dangerously-skip-permissions Run all tools without asking (bypass)
+      --sandbox                      Confine bash to the working tree (bubblewrap)
       --settings <file>              Config file (default ~/.config/tapioca/config.toml)
       --system-prompt <text>         Replace the system prompt
       --append-system-prompt <text>  Append to the system prompt
@@ -113,6 +115,8 @@ func parseArgs(argv []string) (*cliArgs, error) {
 			a.permMode, err = get()
 		case "--dangerously-skip-permissions":
 			a.permMode = tools.ModeBypass
+		case "--sandbox":
+			a.sandbox = true
 		case "--settings", "-config", "--config":
 			a.settings, err = get()
 		case "--system-prompt":
@@ -196,6 +200,9 @@ func main() {
 	// Flag overrides are runtime-only: they apply to agents (or via presave
 	// exclusion), never to the config file — a shift+tab mid-run must not
 	// bake --model or a scratch MCP list into the user's config.
+	// SetPresave takes one function, so the exclusions are composed here
+	// rather than each flag overwriting the previous one's.
+	var presaves []func(*config.Config)
 	origMCP := cfg.MCP
 	if args.mcpConfig != "" {
 		var extra struct {
@@ -205,7 +212,7 @@ func main() {
 			fail(fmt.Errorf("parsing %s: %w", args.mcpConfig, err))
 		}
 		cfg.MCP = extra.MCP
-		cfg.SetPresave(func(c *config.Config) { c.MCP = origMCP })
+		presaves = append(presaves, func(c *config.Config) { c.MCP = origMCP })
 	}
 
 	mode := cfg.PermissionMode
@@ -220,6 +227,22 @@ func main() {
 	exec := tools.NewExecutor(cwd, mode)
 	exec.SetExtraDirs(args.addDirs)
 	exec.SetBashPrefixes(cfg.BashAllow)
+	if args.sandbox && !cfg.Sandbox {
+		cfg.Sandbox = true
+		presaves = append(presaves, func(c *config.Config) { c.Sandbox = false })
+	}
+	if len(presaves) > 0 {
+		cfg.SetPresave(func(c *config.Config) {
+			for _, fn := range presaves {
+				fn(c)
+			}
+		})
+	}
+	exec.SetSandbox(cfg.Sandbox)
+	exec.SetSandboxNetwork(cfg.SandboxNetwork)
+	if cfg.Sandbox && !tools.SandboxAvailable() {
+		fmt.Fprintln(os.Stderr, "warning: sandbox is enabled but bubblewrap (bwrap) was not found — bash calls will fail until it is installed")
+	}
 	if checkpoint.Available() {
 		exec.SetCheckpoint(func(label string) {
 			_, _ = checkpoint.Snapshot(exec.Cwd(), label)
