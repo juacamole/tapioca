@@ -124,6 +124,7 @@ type App struct {
 
 	sessID      string
 	sessName    string
+	sessTitled  bool // the name came from the titler or a saved session
 	sessCreated time.Time
 	sessSaved   time.Time
 	dirty       bool
@@ -173,6 +174,7 @@ func NewApp(cfg *config.Config, mgr *agent.Manager, sessID, sessName string, cre
 		compacting:  map[int]context.CancelFunc{},
 		sessID:      sessID,
 		sessName:    sessName,
+		sessTitled:  sessName != "",
 		sessCreated: created,
 	}
 }
@@ -310,6 +312,13 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.pick = newPicker(pickModel, "switch model", msg.items)
 		m.overlay = overlayPicker
+		return m, nil
+
+	case titleDoneMsg:
+		if msg.name != "" && msg.sessID == m.sessID && !m.sessTitled {
+			m.sessName, m.sessTitled = msg.name, true
+			m.dirty = true
+		}
 		return m, nil
 
 	case compactDoneMsg:
@@ -1422,8 +1431,12 @@ func (m *App) sendPrepared(a *agent.Agent, userMsg provider.Message) tea.Cmd {
 	}
 
 	a.Messages = append(a.Messages, userMsg)
+	var titleCmd tea.Cmd
 	if m.sessName == "" {
-		m.sessName = truncate(userMsg.Text(), 48)
+		// Truncation is the immediate name; a model refines it in the
+		// background, so a slow or absent titler costs nothing.
+		m.sessName = truncate(userMsg.Text(), titleMaxLen)
+		titleCmd = m.titleCmd(userMsg.Text())
 	}
 	history := make([]provider.Message, len(a.Messages))
 	copy(history, a.Messages)
@@ -1436,7 +1449,7 @@ func (m *App) sendPrepared(a *agent.Agent, userMsg provider.Message) tea.Cmd {
 
 	m.dirty = true
 	m.refreshChat(true)
-	return m.maybeProbeCtx(a)
+	return tea.Batch(m.maybeProbeCtx(a), titleCmd)
 }
 
 // maybeProbeCtx asks Ollama for the model's true context window once per
@@ -1477,6 +1490,7 @@ func (m *App) newSession() {
 	m.mgr.Active = 0
 	m.sessID = sessionNewID()
 	m.sessName = ""
+	m.sessTitled = false
 	m.sessCreated = time.Now()
 	m.sessSaved = time.Time{}
 	m.dirty = false

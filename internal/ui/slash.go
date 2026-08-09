@@ -648,6 +648,7 @@ func (m *App) loadSessionByID(id string) tea.Cmd {
 	m.mgr.LoadSession(s)
 	m.sessID = s.ID
 	m.sessName = s.Name
+	m.sessTitled = s.Name != ""
 	m.sessCreated = s.CreatedAt
 	m.sessSaved = s.UpdatedAt
 	m.dirty = false
