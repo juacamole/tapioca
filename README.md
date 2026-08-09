@@ -56,6 +56,10 @@ permission prompt.
 - **Multi-agent** — independent agents with their own provider, model,
   system prompt, goal, history and stats; they stream concurrently.
   `/fork` branches the current conversation into a new agent.
+- **External edits are respected** — if you change a file in your own editor
+  after the agent read it, `write_file`/`edit_file` refuse to overwrite it
+  until the agent re-reads, and the next prompt carries a note listing what
+  changed.
 - **Conversation mechanics** — `/regen` regenerates the last response,
   `/edit` pulls the last prompt back into the input, `up` recalls prompt
   history, and prompts typed while the agent is busy are **queued** and sent

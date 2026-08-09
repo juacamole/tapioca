@@ -1430,6 +1430,18 @@ func (m *App) sendPrepared(a *agent.Agent, userMsg provider.Message) tea.Cmd {
 		}
 	}
 
+	// Files edited outside Tapioca since the agent read them: say so before
+	// the prompt, so it re-reads instead of acting on a stale picture.
+	if m.mgr.Exec != nil {
+		if changed := m.mgr.Exec.ChangedFiles(); len(changed) > 0 {
+			notice := provider.TextMessage("user",
+				"(side note, no reply needed) these files changed on disk since you read them: "+
+					strings.Join(changed, ", ")+" — re-read them before relying on your earlier view.")
+			notice.Hidden = true
+			a.Messages = append(a.Messages, notice)
+		}
+	}
+
 	a.Messages = append(a.Messages, userMsg)
 	var titleCmd tea.Cmd
 	if m.sessName == "" {
