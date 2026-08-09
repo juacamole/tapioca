@@ -60,6 +60,8 @@ type Config struct {
 	Autosave        bool    `toml:"autosave"`
 	AutoCompact     bool    `toml:"auto_compact"`    // summarize when context nears the limit
 	TitleModel      string  `toml:"title_model"`     // [provider:]model for session titles; empty uses the agent's
+	Sandbox         bool    `toml:"sandbox"`         // confine bash with bubblewrap
+	SandboxNetwork  bool    `toml:"sandbox_network"` // allow network inside the sandbox
 	Theme           string  `toml:"theme"`           // taro | contrast | mono
 	Glyphs          string  `toml:"glyphs"`          // unicode | ascii | nerd
 	PermissionMode  string  `toml:"permission_mode"` // plan | manual | auto | bypass
@@ -97,6 +99,9 @@ func Default() *Config {
 		Autosave:       true,
 		AutoCompact:    true,
 		PermissionMode: "ask",
+		// Sandboxing is opt-in, but once on, network access stays unless the
+		// user turns it off — a silent loss of network reads as a broken build.
+		SandboxNetwork: true,
 		Theme:          "taro",
 		Glyphs:         "unicode",
 		Providers: map[string]ProviderConfig{
@@ -256,6 +261,9 @@ zen = false                     # hide keybind hints; toggle with /zen
 autosave = true                 # save the session after every completed turn
 auto_compact = true             # summarize old turns when context nears the limit
 permission_mode = "manual"      # plan | manual | auto | bypass (cycle with shift+tab)
+sandbox = false                 # run bash inside bubblewrap: worktree writable,
+                                # $HOME hidden, rest read-only (needs bwrap)
+sandbox_network = true          # false cuts network inside the sandbox
 # bash_allow = ["git", "go"]    # bash commands that never prompt ([p] in the prompt adds here)
 # secret_env = ["MY_TOKEN"]     # extra env vars hidden from tools and MCP servers
                                 # (provider API keys are always hidden)

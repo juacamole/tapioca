@@ -73,6 +73,8 @@ type Executor struct {
 	bashPrefixes []string
 	extraDirs    []string
 	seen         map[string]fileStamp // files the agent has read or written
+	sandbox      bool                 // confine bash with bubblewrap
+	sandboxNet   bool
 	checkpoint   func(label string)
 }
 
@@ -667,7 +669,17 @@ func (e *Executor) runBash(ctx context.Context, raw json.RawMessage) (string, bo
 	if err := json.Unmarshal(raw, &a); err != nil || strings.TrimSpace(a.Command) == "" {
 		return "invalid arguments: need {\"command\": \"...\"}", true, nil
 	}
-	cmd := exec.CommandContext(ctx, "sh", "-c", a.Command)
+	var cmd *exec.Cmd
+	if e.Sandboxed() {
+		// Refuse rather than fall back: a user who asked for a sandbox must
+		// never get an unsandboxed shell without being told.
+		if !SandboxAvailable() {
+			return "sandbox is enabled but bubblewrap (bwrap) is not installed — install it or set sandbox = false", true, nil
+		}
+		cmd = exec.CommandContext(ctx, bwrap(), e.sandboxArgs(a.Command)...)
+	} else {
+		cmd = exec.CommandContext(ctx, "sh", "-c", a.Command)
+	}
 	cmd.Dir = e.Cwd()
 	cmd.Env = secretenv.Scrubbed()
 	// Descendants holding the output pipe would make CombinedOutput block

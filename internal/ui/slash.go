@@ -18,6 +18,7 @@ import (
 	"tapioca/internal/project"
 	"tapioca/internal/provider"
 	"tapioca/internal/session"
+	"tapioca/internal/tools"
 )
 
 // slashCmd is one /command usable from the prompt.
@@ -412,10 +413,27 @@ func colorizeDiff(s string) string {
 	return strings.Join(lines, "\n")
 }
 
+// sandboxLine describes what bash can reach, including the case where the
+// sandbox is configured but unusable.
+func sandboxLine(m *App) string {
+	if !m.cfg.Sandbox {
+		return styDim.Render("off — bash runs with your full access")
+	}
+	if !tools.SandboxAvailable() {
+		return styErr.Render("enabled but bwrap is missing — bash calls fail")
+	}
+	net := "network allowed"
+	if !m.cfg.SandboxNetwork {
+		net = "no network"
+	}
+	return styOK.Render("on") + styDim.Render(" — bash sees the worktree writable, $HOME hidden, "+net)
+}
+
 func cmdPermissions(m *App, _ string) tea.Cmd {
 	var b strings.Builder
 	mode := m.permMode()
-	b.WriteString(styPanelTitle.Render("mode") + "  " + styAccent.Render(mode) + styDim.Render("  ("+modeDescriptions[mode]+")") + "\n\n")
+	b.WriteString(styPanelTitle.Render("mode") + "  " + styAccent.Render(mode) + styDim.Render("  ("+modeDescriptions[mode]+")") + "\n")
+	b.WriteString(styPanelTitle.Render("sandbox") + "  " + sandboxLine(m) + "\n\n")
 
 	b.WriteString(styPanelTitle.Render("never prompts") + "\n")
 	b.WriteString("  read_file, grep, glob, web_search, web_fetch " + styDim.Render("(read-only builtins)") + "\n")

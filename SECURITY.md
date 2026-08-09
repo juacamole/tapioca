@@ -66,6 +66,32 @@ exfiltration (read a key, send it somewhere):
 - `web_fetch` prompts the first time a host is used; `[a]` remembers it for
   the session.
 
+## Sandboxing
+
+Everything above decides *whether* a command runs. Sandboxing decides what it
+can reach if it does — the difference between filtering and containment.
+
+```toml
+sandbox = true              # confine bash with bubblewrap (or --sandbox)
+sandbox_network = true      # set false to cut network inside the sandbox
+```
+
+With it on, `bash` runs under `bwrap` where:
+
+- the working tree (and `--add-dir` trees) are **writable**;
+- the rest of the filesystem is **read-only**, so tools still work;
+- **`$HOME` is replaced by an empty tmpfs**, so `.ssh`, `.aws`, browser
+  profiles and shell history are not merely gated — they are not there. Only
+  `.gitconfig` is bound back, since git refuses to commit without an identity;
+- `/tmp` is private, and pid/ipc/uts namespaces are unshared.
+
+If `bwrap` is missing, sandboxed `bash` calls **fail with an explanation**
+rather than silently running unconfined. `/permissions` shows the live state.
+
+Two limits worth knowing: the sandbox applies to `bash` only (the file tools
+are Go code inside the process), and with `sandbox_network = true` a command
+can still reach the network, so it bounds file damage, not exfiltration.
+
 ## Credentials
 
 Provider API keys are removed from the environment handed to shell tools and
@@ -92,9 +118,12 @@ itself.
 - **`bypass` mode disables all of the above.** It exists for throwaway
   sandboxes and containers. Do not combine it with untrusted repositories or
   web browsing.
-- **There is no sandbox yet.** Approved commands run as your user with full
-  access to your machine and network. Filtering is defence in depth, not
-  containment — see issue #21 (bubblewrap sandboxing).
+- **Without `sandbox = true`, there is no containment.** Approved commands
+  run as your user with full access to your machine and network; the
+  permission gate is filtering, not a boundary. See "Sandboxing" above.
+- **The sandbox covers `bash` only.** `read_file`, `write_file` and
+  `edit_file` are Go code inside Tapioca and are bounded by their own
+  checks, not by bubblewrap.
 - **Grants are coarse.** `[p]` grants a command word, not a subcommand:
   allowing `git` allows `git push`. Tools that can execute code through
   configuration (`git -c`, `make`, build scripts) inherit that power.
