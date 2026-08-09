@@ -114,6 +114,7 @@ type App struct {
 	git        gitInfo
 	probedCtx  map[string]bool
 	compacting map[int]context.CancelFunc
+	spawns     map[int]*agent.SpawnReq // subagent id -> the parent awaiting it
 
 	// Chat transcript caches for mouse selection.
 	chatStyled []string
@@ -172,6 +173,7 @@ func NewApp(cfg *config.Config, mgr *agent.Manager, sessID, sessName string, cre
 		mouseOn:     true,
 		probedCtx:   map[string]bool{},
 		compacting:  map[int]context.CancelFunc{},
+		spawns:      map[int]*agent.SpawnReq{},
 		sessID:      sessID,
 		sessName:    sessName,
 		sessTitled:  sessName != "",
@@ -482,6 +484,10 @@ func (m *App) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 				m.overlay = overlayPerm
 			}
 		}
+	case agent.EvSpawn:
+		if ev.Spawn != nil {
+			cmds = append(cmds, m.startSpawn(ev.AgentID, ev.Spawn))
+		}
 	case agent.EvNotice:
 		m.setFlash(ev.Text, true)
 		cmds = append(cmds, m.flashCmd())
@@ -533,6 +539,8 @@ func (m *App) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		if len(m.perms) == 0 && m.overlay == overlayPerm {
 			m.overlay = overlayNone
 		}
+		// A delegating agent is blocked on this turn's answer.
+		m.finishSpawn(a)
 		if m.cfg.Autosave && m.dirty {
 			m.saveSession(false)
 		}
@@ -825,6 +833,7 @@ func (m *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, m.flashCmd()
 		}
 		name := a.Name
+		m.releaseSpawn(a.ID, "the subagent tab was closed")
 		m.mgr.Close(m.mgr.Active)
 		m.refreshChat(true)
 		m.setFlash(fmt.Sprintf("closed %s", name), false)
@@ -1501,6 +1510,7 @@ func (m *App) maybeProbeCtx(a *agent.Agent) tea.Cmd {
 }
 
 func (m *App) newSession() {
+	m.releaseAllSpawns("the session was replaced")
 	for i := len(m.mgr.Agents) - 1; i > 0; i-- {
 		m.mgr.Close(i)
 	}

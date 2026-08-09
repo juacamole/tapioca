@@ -118,6 +118,35 @@ func (m *Manager) Fork(src *Agent) *Agent {
 	return a
 }
 
+// Spawn creates a subagent for a delegated task: the parent's model and
+// settings, but an empty history, so it gets a full context window of its own.
+func (m *Manager) Spawn(parent *Agent, name string) *Agent {
+	m.nextID++
+	if name == "" {
+		name = fmt.Sprintf("task-%d", m.nextID)
+	}
+	a := &Agent{
+		ID:             m.nextID,
+		Name:           name,
+		ProviderName:   parent.ProviderName,
+		Provider:       parent.Provider,
+		ProviderErr:    parent.ProviderErr,
+		Model:          parent.Model,
+		SystemPrompt:   parent.SystemPrompt,
+		MaxTokens:      parent.MaxTokens,
+		Temperature:    parent.Temperature,
+		Thinking:       parent.Thinking,
+		ThinkingBudget: parent.ThinkingBudget,
+		ToolsEnabled:   parent.ToolsEnabled,
+		Depth:          parent.Depth + 1,
+		Events:         make(chan Event, 512),
+		MCP:            m.MCP,
+		Exec:           m.Exec,
+	}
+	m.Agents = append(m.Agents, a)
+	return a
+}
+
 // ActiveAgent returns the currently selected agent, or nil.
 func (m *Manager) ActiveAgent() *Agent {
 	if len(m.Agents) == 0 {
@@ -200,6 +229,7 @@ func (m *Manager) ToSession(id, name string, createdAt time.Time) *session.Sessi
 			Messages:       msgs,
 			Queue:          a.Queue,
 			Todos:          a.Todos,
+			Depth:          a.Depth,
 			Stats:          a.Stats,
 		})
 	}
@@ -230,6 +260,7 @@ func (m *Manager) LoadSession(s *session.Session) {
 			Messages:       RepairHistory(st.Messages),
 			Queue:          st.Queue,
 			Todos:          st.Todos,
+			Depth:          st.Depth,
 			Stats:          st.Stats,
 			Events:         make(chan Event, 512),
 			MCP:            m.MCP,

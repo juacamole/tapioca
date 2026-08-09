@@ -42,6 +42,7 @@ type AgentState struct {
 	Messages       []provider.Message `json:"messages"`
 	Queue          []provider.Message `json:"queue,omitempty"`
 	Todos          []TodoItem         `json:"todos,omitempty"`
+	Depth          int                `json:"depth,omitempty"`
 	Stats          stats.Stats        `json:"stats"`
 }
 
