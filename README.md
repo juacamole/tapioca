@@ -51,8 +51,10 @@ permission prompt.
 - **Providers** — Ollama, Anthropic, and any **OpenAI-compatible** server
   (LM Studio, vLLM, llama.cpp, OpenRouter, OpenAI) via `type = "openai"`.
   All stream, all support tool calls and thinking where the backend does.
-- **MCP** — stdio servers from config; their tools are namespaced
-  `server__tool` and offered alongside the built-ins.
+- **MCP** — stdio servers *and* remote **streamable HTTP** servers (with
+  auth headers; `${VAR}` expands so tokens stay out of the config file);
+  their tools are namespaced `server__tool` and offered alongside the
+  built-ins.
 - **Multi-agent** — independent agents with their own provider, model,
   system prompt, goal, history and stats; they stream concurrently.
   `/fork` branches the current conversation into a new agent.
@@ -225,6 +227,12 @@ context_window = 32768
 name = "filesystem"
 command = "npx"
 args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+
+[[mcp]]                            # or a remote server over HTTP
+name = "example"
+url = "https://mcp.example.com/mcp"
+  [mcp.headers]
+  Authorization = "Bearer ${EXAMPLE_MCP_TOKEN}"
 
 [costs."claude-sonnet"]            # $ per Mtok, matched by model prefix
 in = 3.0
