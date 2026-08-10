@@ -201,7 +201,11 @@ func main() {
 		fail(err)
 	}
 	catalog.Load()
-	go catalog.Refresh()
+	if cfg.ModelCatalog {
+		// One request to models.dev for pricing and context sizes; disable
+		// with model_catalog = false for a fully offline run.
+		go catalog.Refresh()
+	}
 	// Flag overrides are runtime-only: they apply to agents (or via presave
 	// exclusion), never to the config file — a shift+tab mid-run must not
 	// bake --model or a scratch MCP list into the user's config.
@@ -253,6 +257,7 @@ func main() {
 	}
 	exec.SetSandbox(cfg.Sandbox)
 	exec.SetSandboxNetwork(cfg.SandboxNetwork)
+	exec.SetTimeout(time.Duration(cfg.BashTimeout) * time.Second)
 	if cfg.Sandbox && !tools.SandboxAvailable() {
 		fmt.Fprintln(os.Stderr, "warning: sandbox is enabled but bubblewrap (bwrap) was not found — bash calls will fail until it is installed")
 	}

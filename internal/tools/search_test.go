@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -179,5 +180,62 @@ func TestGlobMatchSegments(t *testing.T) {
 		if got := globMatch(c.pattern, c.path); got != c.want {
 			t.Errorf("globMatch(%q, %q) = %v, want %v", c.pattern, c.path, got, c.want)
 		}
+	}
+}
+
+// The original parity test used a bare directory, where .gitignore never comes
+// up — so it passed while the backends genuinely disagreed on a real repo.
+func TestBackendsAgreeOnGitignoredFiles(t *testing.T) {
+	root := t.TempDir()
+	write := func(rel, body string) {
+		t.Helper()
+		p := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(".gitignore", "secret.txt\nbuilt/\n")
+	write("keep.go", "needle here\n")
+	write("secret.txt", "needle in an ignored file\n")
+	write("built/out.go", "needle in ignored output\n")
+
+	git, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git not installed")
+	}
+	for _, args := range [][]string{{"init", "-q"}, {"add", "keep.go"}} {
+		cmd := exec.Command(git, append([]string{"-C", root}, args...)...)
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Skipf("git setup failed: %v %s", err, out)
+		}
+	}
+
+	e := NewExecutor(root, ModeManual)
+	ctx := context.Background()
+	walk, _, err := e.grepWalk(ctx, "needle", root, "", false, defaultMatches)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(walk, "\n")
+	if !strings.Contains(joined, "keep.go") {
+		t.Errorf("tracked file missing:\n%s", joined)
+	}
+	if strings.Contains(joined, "secret.txt") || strings.Contains(joined, "out.go") {
+		t.Errorf("walk returned gitignored files ripgrep would skip:\n%s", joined)
+	}
+
+	rg, _, err := e.grepRipgrep(ctx, "needle", root, "", false, defaultMatches)
+	if err != nil {
+		return // rg absent; the walk assertions above still stand
+	}
+	sort.Strings(rg)
+	sort.Strings(walk)
+	if strings.Join(rg, "\n") != joined {
+		t.Errorf("backends disagree on a gitignored tree:\nripgrep:\n%s\n\nwalk:\n%s",
+			strings.Join(rg, "\n"), joined)
 	}
 }

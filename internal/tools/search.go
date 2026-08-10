@@ -33,6 +33,32 @@ var skipDirs = map[string]bool{
 	"result": true, ".direnv": true,
 }
 
+// trackedSet asks git which files it would consider under root: everything
+// tracked plus untracked-but-not-ignored. ripgrep honours .gitignore and the
+// plain walk cannot, so without this the same query answers differently
+// depending on whether rg happens to be installed. nil means "no opinion"
+// (not a repo, or no git), and the walk falls back to skipDirs alone.
+func trackedSet(root string) map[string]bool {
+	git, err := exec.LookPath("git")
+	if err != nil {
+		return nil
+	}
+	cmd := exec.Command(git, "-C", root, "ls-files", "--cached", "--others",
+		"--exclude-standard", "-z")
+	cmd.Env = secretenv.Scrubbed()
+	out, err := cmd.Output()
+	if err != nil {
+		return nil
+	}
+	set := map[string]bool{}
+	for _, rel := range strings.Split(string(out), "\x00") {
+		if rel != "" {
+			set[filepath.Join(root, rel)] = true
+		}
+	}
+	return set
+}
+
 // searchRoot resolves the directory a search starts from, defaulting to cwd.
 func (e *Executor) searchRoot(path string) string {
 	if strings.TrimSpace(path) == "" {
@@ -141,6 +167,7 @@ func (e *Executor) grepWalk(ctx context.Context, pattern, root, glob string, ins
 	}
 	var matches []string
 	truncated := false
+	tracked := trackedSet(root)
 	walkErr := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return nil
@@ -156,6 +183,9 @@ func (e *Executor) grepWalk(ctx context.Context, pattern, root, glob string, ins
 		}
 		if !d.Type().IsRegular() || e.sensitivePath(path) {
 			return nil
+		}
+		if tracked != nil && !tracked[path] {
+			return nil // git ignores it, and so does ripgrep
 		}
 		if glob != "" && !globMatch(glob, filepath.Base(path)) && !globMatch(glob, e.relative(path)) {
 			return nil
@@ -211,6 +241,7 @@ func (e *Executor) globFiles(ctx context.Context, raw json.RawMessage) (string, 
 		size int64
 	}
 	var hits []hit
+	tracked := trackedSet(root)
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return nil
@@ -226,6 +257,9 @@ func (e *Executor) globFiles(ctx context.Context, raw json.RawMessage) (string, 
 		}
 		rel, relErr := filepath.Rel(root, path)
 		if relErr != nil || !d.Type().IsRegular() || e.sensitivePath(path) {
+			return nil
+		}
+		if tracked != nil && !tracked[path] {
 			return nil
 		}
 		if !globMatch(pattern, filepath.ToSlash(rel)) {
