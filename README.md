@@ -112,6 +112,8 @@ permission prompt.
   rendered by the editor.
 - **Sessions** — the whole workspace autosaves; `/resume` opens a picker
   whose filter searches **across the text of all saved conversations**.
+  Sessions remember the project they belong to: `-c` continues this
+  directory's latest, and `/resume` lists it first.
   Titles are written by the model from your first prompt (`title_model` to
   point that at a cheaper one), falling back to truncation.
 - **Vim everywhere** — `ctrl+e` edits the prompt, `ctrl+g` the system

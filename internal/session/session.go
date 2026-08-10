@@ -50,6 +50,7 @@ type AgentState struct {
 type Session struct {
 	ID        string       `json:"id"`
 	Name      string       `json:"name"`
+	Cwd       string       `json:"cwd,omitempty"` // project the session belongs to
 	CreatedAt time.Time    `json:"created_at"`
 	UpdatedAt time.Time    `json:"updated_at"`
 	Active    int          `json:"active"`
@@ -61,6 +62,7 @@ type Session struct {
 type Meta struct {
 	ID        string
 	Name      string
+	Cwd       string
 	UpdatedAt time.Time
 	Agents    int
 	Messages  int
@@ -172,21 +174,46 @@ func List() ([]Meta, error) {
 				}
 			}
 		}
-		metas = append(metas, Meta{ID: s.ID, Name: s.Name, UpdatedAt: s.UpdatedAt,
+		metas = append(metas, Meta{ID: s.ID, Name: s.Name, Cwd: s.Cwd, UpdatedAt: s.UpdatedAt,
 			Agents: len(s.Agents), Messages: msgs, Blob: blob.String()})
 	}
 	sort.Slice(metas, func(i, j int) bool { return metas[i].UpdatedAt.After(metas[j].UpdatedAt) })
 	return metas, nil
 }
 
-// LatestID returns the most recently updated session id.
-func LatestID() (string, error) {
+// ForProject splits sessions into those belonging to cwd and the rest. Older
+// sessions predate the recorded directory and count as "elsewhere" rather than
+// being claimed by whichever project you happen to be in.
+func ForProject(metas []Meta, cwd string) (here, elsewhere []Meta) {
+	for _, m := range metas {
+		if m.Cwd != "" && sameDir(m.Cwd, cwd) {
+			here = append(here, m)
+		} else {
+			elsewhere = append(elsewhere, m)
+		}
+	}
+	return here, elsewhere
+}
+
+func sameDir(a, b string) bool {
+	return filepath.Clean(a) == filepath.Clean(b)
+}
+
+// LatestID returns the most recently updated session for cwd, falling back to
+// the newest overall so `-c` still works before any session records a
+// directory. Pass "" to ignore the project entirely.
+func LatestID(cwd string) (string, error) {
 	metas, err := List()
 	if err != nil {
 		return "", err
 	}
 	if len(metas) == 0 {
 		return "", fmt.Errorf("no saved sessions")
+	}
+	if cwd != "" {
+		if here, _ := ForProject(metas, cwd); len(here) > 0 {
+			return here[0].ID, nil
+		}
 	}
 	return metas[0].ID, nil
 }
