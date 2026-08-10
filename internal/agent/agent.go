@@ -141,6 +141,7 @@ type Agent struct {
 	PendingNotes  []provider.Message // notices deferred until the turn ends
 	Todos         []TodoItem         // the model's own plan (todo_write)
 	Depth         int                // 0 for agents you created; 1 for spawned ones
+	CanSpawn      bool               // the frontend can run subagents (TUI only)
 	MaxToolRounds int                // 0 = default
 	CompactFailed bool               // suppress auto-compact until the next good turn
 	Stats         stats.Stats
@@ -303,7 +304,7 @@ func (a *Agent) run(ctx context.Context, rs runSettings, history []provider.Mess
 				req.Tools = append(req.Tools, a.Exec.Tools()...)
 			}
 			req.Tools = append(req.Tools, TodoTool)
-			if a.Depth == 0 {
+			if a.Depth == 0 && a.CanSpawn {
 				req.Tools = append(req.Tools, SpawnTool)
 			}
 			if a.MCP != nil {

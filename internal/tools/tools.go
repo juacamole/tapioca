@@ -357,6 +357,17 @@ func (e *Executor) resolve(path string) string {
 	return filepath.Clean(path)
 }
 
+// argPath pulls the "path" argument out of a tool call, or "" when there is
+// none — an unparsable call resolves to the working directory and so counts as
+// inside it, which is the safe direction (it still goes through the gate).
+func argPath(raw json.RawMessage) string {
+	var a struct {
+		Path string `json:"path"`
+	}
+	_ = json.Unmarshal(raw, &a)
+	return a.Path
+}
+
 // plain lifts a tool that produces no display detail into a Result.
 func plain(text string, isErr bool, err error) (Result, error) {
 	return Result{Text: text, IsErr: isErr}, err
@@ -400,6 +411,10 @@ func (e *Executor) CallDetailed(ctx context.Context, name string, raw json.RawMe
 	if !readOnly { // mutating tools go through the permission gate
 		mode := e.Mode()
 		fileEdit := name == "write_file" || name == "edit_file"
+		// "Auto-approve edits" means edits to the project. A write to
+		// ~/.zshrc, ~/.ssh/authorized_keys or Tapioca's own config (which
+		// seeds bash_allow) is a different act and always asks.
+		outside := fileEdit && !e.inWorkArea(e.resolve(argPath(raw)))
 		needAsk := false
 		switch mode {
 		case ModePlan:
@@ -410,15 +425,21 @@ func (e *Executor) CallDetailed(ctx context.Context, name string, raw json.RawMe
 		case ModeManual:
 			needAsk = true
 		case ModeAuto:
-			needAsk = !fileEdit // edits auto-approved, bash asks
+			needAsk = !fileEdit || outside
 		case ModeBypass:
 			needAsk = false
 		}
 		// Grants never outrank plan mode: an always-allow answered while in
 		// auto must not let mutations slip through a later plan session.
 		grantsApply := mode != ModePlan
+		outsideKey := "write:" + e.resolve(argPath(raw))
 		e.mu.Lock()
-		blanket := grantsApply && e.allowed[name]
+		// A blanket "always allow write_file" covers the worktree only; each
+		// path beyond it is granted on its own.
+		blanket := grantsApply && e.allowed[name] && !outside
+		if outside && grantsApply && e.allowed[outsideKey] {
+			blanket = true
+		}
 		e.mu.Unlock()
 		if needAsk && !blanket && name == "bash" {
 			// Compound commands are approved segment by segment; a denied
@@ -451,13 +472,21 @@ func (e *Executor) CallDetailed(ctx context.Context, name string, raw json.RawMe
 			}
 		}
 		if needAsk && !blanket {
-			d := ask(name, e.summary(name, raw))
+			label := name
+			if outside {
+				label = name + " (outside the working directory)"
+			}
+			d := ask(label, e.summary(name, raw))
 			if !d.Allow {
 				return Result{Text: "the user denied permission for this call", IsErr: true}, nil
 			}
 			if d.Always {
 				e.mu.Lock()
-				e.allowed[name] = true
+				if outside {
+					e.allowed[outsideKey] = true // this path, not every path
+				} else {
+					e.allowed[name] = true
+				}
 				e.mu.Unlock()
 			}
 		}

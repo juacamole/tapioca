@@ -313,3 +313,40 @@ func TestToolKindMapping(t *testing.T) {
 		}
 	}
 }
+
+// A model that calls spawn_agent over ACP must get an answer: nothing here can
+// run a subagent, and an unanswered request blocks the turn forever.
+func TestSpawnRequestDoesNotHangTheTurn(t *testing.T) {
+	cfg := testConfig(t)
+	stub := stubProvider(t, cfg)
+	stub.toolCall = "spawn_agent"
+	stub.toolArgs = `{"task":"do something else","name":"helper"}`
+
+	c := newTestClient(t, func(in io.Reader, out io.Writer) {
+		_ = Serve(cfg, in, out)
+	})
+	c.await(c.send("initialize", map[string]any{"protocolVersion": 1}))
+	res, _, _ := c.await(c.send("session/new", map[string]any{"cwd": t.TempDir()}))
+	var sess struct {
+		SessionID string `json:"sessionId"`
+	}
+	json.Unmarshal(res, &sess)
+
+	done := make(chan string, 1)
+	go func() {
+		r, _, _ := c.await(c.send("session/prompt", map[string]any{
+			"sessionId": sess.SessionID,
+			"prompt":    []any{map[string]any{"type": "text", "text": "delegate this"}},
+		}))
+		done <- string(r)
+	}()
+
+	select {
+	case got := <-done:
+		if !strings.Contains(got, "end_turn") {
+			t.Fatalf("turn ended oddly: %s", got)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("session/prompt hung on spawn_agent")
+	}
+}

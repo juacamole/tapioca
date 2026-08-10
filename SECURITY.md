@@ -64,7 +64,20 @@ exfiltration (read a key, send it somewhere):
 - `grep` and `glob` prompt when their search root is outside those trees, and
   never return matches from files `read_file` would have gated.
 - `web_fetch` prompts the first time a host is used; `[a]` remembers it for
-  the session.
+  the session. Redirects must stay on the approved host and may never land on
+  a loopback, link-local or private address, so an approved page cannot bounce
+  the fetch into your network or at a cloud metadata endpoint.
+
+## Writing files
+
+`auto` auto-approves file edits **inside the working directory** (and
+`--add-dir` trees). Writes anywhere else prompt in every mode but `bypass`,
+because "auto-approve edits" is a statement about your project, not about
+`~/.zshrc`, `~/.ssh/authorized_keys`, or Tapioca's own `config.toml` — the
+last of which would seed `bash_allow` on the next start.
+
+`[a]` on such a prompt grants **that path**, not writing at large; and a
+blanket `write_file` grant covers the worktree only.
 
 ## Sandboxing
 
@@ -122,8 +135,9 @@ itself.
   run as your user with full access to your machine and network; the
   permission gate is filtering, not a boundary. See "Sandboxing" above.
 - **The sandbox covers `bash` only.** `read_file`, `write_file` and
-  `edit_file` are Go code inside Tapioca and are bounded by their own
-  checks, not by bubblewrap.
+  `edit_file` are Go code inside Tapioca, so bubblewrap does not contain
+  them; they rely on the gates above instead. In `bypass` they are bounded
+  by nothing at all.
 - **Grants are coarse.** `[p]` grants a command word, not a subcommand:
   allowing `git` allows `git push`. Tools that can execute code through
   configuration (`git -c`, `make`, build scripts) inherit that power.

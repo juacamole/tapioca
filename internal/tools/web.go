@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"html"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -18,7 +19,58 @@ import (
 // Web tools: keyless search via DuckDuckGo's HTML endpoint and a readable
 // page fetcher. Both are non-mutating and skip the permission gate.
 
-var webClient = &http.Client{Timeout: 25 * time.Second}
+// The host of a fetch is approved by the user, but redirects are not: without
+// this a page on an approved host can bounce the fetch to the cloud metadata
+// endpoint or anything else on the local network. Redirects must stay on the
+// approved host and may never land on an internal address.
+var webClient = &http.Client{
+	Timeout: 25 * time.Second,
+	CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 5 {
+			return fmt.Errorf("too many redirects")
+		}
+		origin := via[0].URL.Hostname()
+		if !sameHost(origin, req.URL.Hostname()) {
+			return fmt.Errorf("refusing redirect to %s — fetch that URL directly so it can be approved",
+				req.URL.Hostname())
+		}
+		if internalHost(req.URL.Hostname()) {
+			return fmt.Errorf("refusing redirect to the internal address %s", req.URL.Hostname())
+		}
+		return nil
+	},
+}
+
+func sameHost(a, b string) bool {
+	return strings.EqualFold(strings.TrimPrefix(a, "www."), strings.TrimPrefix(b, "www."))
+}
+
+// internalHost reports addresses that only mean something inside this machine
+// or network: loopback, link-local (169.254.169.254 is the cloud metadata
+// service), and the private ranges.
+func internalHost(host string) bool {
+	ip := net.ParseIP(host)
+	if ip == nil {
+		// A name, not an address: resolve it, since a public name can point
+		// anywhere. Failure to resolve is left to the request itself.
+		addrs, err := net.LookupIP(host)
+		if err != nil {
+			return false
+		}
+		for _, a := range addrs {
+			if isInternalIP(a) {
+				return true
+			}
+		}
+		return false
+	}
+	return isInternalIP(ip)
+}
+
+func isInternalIP(ip net.IP) bool {
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() || ip.IsUnspecified()
+}
 
 const webUA = "Mozilla/5.0 (X11; Linux x86_64) tapioca/0.1"
 
