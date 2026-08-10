@@ -79,6 +79,10 @@ permission prompt.
   after the agent read it, `write_file`/`edit_file` refuse to overwrite it
   until the agent re-reads, and the next prompt carries a note listing what
   changed.
+- **Background commands** — `bash` takes `background: true` for a dev server
+  or a long build; `bash_output` collects what it has produced since last
+  asked and `bash_kill` stops it. Polling never re-prompts, and jobs are
+  killed when Tapioca exits.
 - **Edits show as diffs** — when the agent writes or edits a file the chat
   shows `updated main.go (+1 -1)` and the changed lines, coloured, with a
   little context; the model still gets the terse result, so the diff costs

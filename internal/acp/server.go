@@ -79,6 +79,9 @@ func (s *Server) closeAll() {
 		if sess.reg != nil {
 			sess.reg.CloseAll()
 		}
+		if sess.exec != nil {
+			sess.exec.StopJobs()
+		}
 	}
 }
 
