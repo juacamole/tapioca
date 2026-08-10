@@ -111,6 +111,10 @@ permission prompt.
   font, borders included) or `nerd` (icons, needs a patched font). Every
   color is overridable with a hex code under `[colors]`, per background if
   you want (`"#light/#dark"`). Both switch live and are saved.
+- **Custom commands** — drop a markdown file in `~/.config/tapioca/commands/`
+  or `.tapioca/commands/` in a project and its name becomes a slash command;
+  the first `# heading` is its description and `$ARGUMENTS` takes whatever you
+  type after it. Project commands override personal ones.
 - **/settings** — opens the config file in vim/$EDITOR and hot-reloads it on
   save (keybinds, providers, defaults, layout, theme — applied live).
 - **Editor mode (ACP)** — `tapioca --acp` speaks the
@@ -124,6 +128,10 @@ permission prompt.
   directory's latest, and `/resume` lists it first.
   Titles are written by the model from your first prompt (`title_model` to
   point that at a cheaper one), falling back to truncation.
+- **Project instructions** — `AGENTS.md` (also `TAPIOCA.md`, and other tools'
+  `CLAUDE.md`/`GEMINI.md`/`CRUSH.md`) are read from the repository root down
+  to the working directory, plus a global one in the config dir; `@path` on
+  its own line inlines another file.
 - **Vim everywhere** — `ctrl+e` edits the prompt, `ctrl+g` the system
   prompt, in `$EDITOR`/nvim/vim. Verbose vs compact transcripts on `ctrl+o`.
 

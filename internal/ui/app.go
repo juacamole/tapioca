@@ -117,6 +117,7 @@ type App struct {
 	spawns     map[int]*agent.SpawnReq // subagent id -> the parent awaiting it
 	thinkOpen  map[string]bool         // explicit expand/collapse per thinking block
 	thinkAt    map[int]string          // transcript line -> thinking block key
+	userCmds   []userCmd               // commands loaded from markdown files
 
 	// Chat transcript caches for mouse selection.
 	chatStyled []string
@@ -178,6 +179,7 @@ func NewApp(cfg *config.Config, mgr *agent.Manager, sessID, sessName string, cre
 		spawns:      map[int]*agent.SpawnReq{},
 		thinkOpen:   map[string]bool{},
 		thinkAt:     map[int]string{},
+		userCmds:    loadUserCmds(mgr.Exec.Cwd()),
 		sessID:      sessID,
 		sessName:    sessName,
 		sessTitled:  sessName != "",
@@ -614,6 +616,7 @@ func (m *App) handleEditorDone(msg editorDoneMsg) (tea.Model, tea.Cmd) {
 			m.mgr.Exec.SetSandbox(m.cfg.Sandbox)
 			m.mgr.Exec.SetSandboxNetwork(m.cfg.SandboxNetwork)
 			m.mgr.Exec.SetTimeout(time.Duration(m.cfg.BashTimeout) * time.Second)
+			m.reloadUserCmds()
 		}
 		m.mgr.ReloadProviders()
 		// Push the edited defaults onto existing agents too, so the file is

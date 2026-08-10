@@ -20,26 +20,155 @@ const (
 	maxMemory       = 40_000
 )
 
-var instructionFiles = []string{"AGENTS.md", "TAPIOCA.md"}
+// instructionFiles are the names read from each directory. The other tools'
+// filenames are included deliberately: a repo that already documents itself
+// for one agent should not have to repeat itself for this one.
+var instructionFiles = []string{
+	"AGENTS.md", "TAPIOCA.md", "CLAUDE.md", "GEMINI.md", "CRUSH.md",
+}
 
-// Instructions returns the concatenated instruction files found in cwd.
+const maxImportDepth = 3
+
+// Instructions gathers project context for cwd: a global file first, then
+// every instruction file from the repository root down to cwd. Working in a
+// subdirectory has to pick up the repository's own instructions, and the
+// nearest directory wins by coming last.
 func Instructions(cwd string) string {
 	var parts []string
-	for _, name := range instructionFiles {
-		data, err := os.ReadFile(filepath.Join(cwd, name))
-		if err != nil {
-			continue
+	seen := map[string]bool{}
+
+	add := func(path string) {
+		abs, err := filepath.Abs(path)
+		if err != nil || seen[abs] {
+			return
 		}
-		text, ok := textenc.Decode(data)
-		if !ok || strings.TrimSpace(text) == "" {
-			continue
+		seen[abs] = true
+		text, ok := readInstruction(abs, seen, 0)
+		if !ok {
+			return
 		}
-		if len(text) > maxInstructions {
-			text = text[:maxInstructions] + "\n[truncated]"
-		}
-		parts = append(parts, fmt.Sprintf("[%s]\n%s", name, strings.TrimSpace(text)))
+		parts = append(parts, fmt.Sprintf("[%s]\n%s", displayPath(abs, cwd), text))
 	}
-	return strings.Join(parts, "\n\n")
+
+	for _, name := range instructionFiles {
+		add(filepath.Join(GlobalDir(), name))
+	}
+	for _, dir := range ancestry(cwd) {
+		for _, name := range instructionFiles {
+			add(filepath.Join(dir, name))
+		}
+	}
+
+	out := strings.Join(parts, "\n\n")
+	if len(out) > maxInstructions {
+		out = out[:maxInstructions] + "\n[truncated]"
+	}
+	return out
+}
+
+// GlobalDir is where instruction files that apply everywhere live.
+func GlobalDir() string { return config.Dir() }
+
+// ancestry lists cwd and its parents, outermost first, stopping at the
+// repository root so a stray file in /home or / never joins every prompt.
+func ancestry(cwd string) []string {
+	abs, err := filepath.Abs(cwd)
+	if err != nil {
+		return nil
+	}
+	var dirs []string
+	for dir := abs; ; {
+		dirs = append(dirs, dir)
+		if isRepoRoot(dir) {
+			break
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir || parent == filepath.Dir(parent) {
+			break // reached the filesystem root
+		}
+		dir = parent
+	}
+	// Collected innermost-first; the nearest file should be read last so it
+	// has the final word.
+	for i, j := 0, len(dirs)-1; i < j; i, j = i+1, j-1 {
+		dirs[i], dirs[j] = dirs[j], dirs[i]
+	}
+	return dirs
+}
+
+func isRepoRoot(dir string) bool {
+	for _, marker := range []string{".git", ".hg", ".jj"} {
+		if _, err := os.Stat(filepath.Join(dir, marker)); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// readInstruction reads one file and resolves its @imports.
+func readInstruction(path string, seen map[string]bool, depth int) (string, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", false
+	}
+	text, ok := textenc.Decode(data)
+	if !ok || strings.TrimSpace(text) == "" {
+		return "", false
+	}
+	return strings.TrimSpace(expandImports(text, filepath.Dir(path), seen, depth)), true
+}
+
+// expandImports replaces a line that is exactly "@path" with that file's
+// contents, so a long instruction file can be split up. Cycles and runaway
+// nesting are bounded by seen and depth.
+func expandImports(text, dir string, seen map[string]bool, depth int) string {
+	if depth >= maxImportDepth || !strings.Contains(text, "@") {
+		return text
+	}
+	lines := strings.Split(text, "\n")
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "@") || len(trimmed) < 2 || strings.ContainsAny(trimmed, " \t") {
+			continue
+		}
+		target := expandHome(strings.TrimPrefix(trimmed, "@"))
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(dir, target)
+		}
+		abs, err := filepath.Abs(target)
+		if err != nil || seen[abs] {
+			lines[i] = ""
+			continue
+		}
+		seen[abs] = true
+		if body, ok := readInstruction(abs, seen, depth+1); ok {
+			lines[i] = body
+		} else {
+			lines[i] = ""
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+func expandHome(p string) string {
+	if strings.HasPrefix(p, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, p[2:])
+		}
+	}
+	return p
+}
+
+// displayPath labels a source file: bare name when it is in cwd, otherwise
+// enough path to tell two AGENTS.md files apart.
+func displayPath(abs, cwd string) string {
+	if rel, err := filepath.Rel(cwd, abs); err == nil && !strings.HasPrefix(rel, "..") {
+		return rel
+	}
+	if home, err := os.UserHomeDir(); err == nil && strings.HasPrefix(abs, home) {
+		return "~" + strings.TrimPrefix(abs, home)
+	}
+	return abs
 }
 
 // MemoryPath returns where /remember facts for cwd are stored.

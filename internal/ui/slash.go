@@ -167,6 +167,18 @@ func (m *App) slashMatches() []*slashCmd {
 			out = append(out, &slashCmds[i])
 		}
 	}
+	// User commands complete alongside the built-ins.
+	for i := range m.userCmds {
+		uc := m.userCmds[i]
+		if !strings.HasPrefix(uc.name, pre) {
+			continue
+		}
+		label := uc.desc
+		if uc.project {
+			label += " (project)"
+		}
+		out = append(out, &slashCmd{name: uc.name, args: "[args]", help: label})
+	}
 	return out
 }
 
@@ -177,20 +189,34 @@ func (m *App) runSlash(text string) tea.Cmd {
 	arg = strings.TrimSpace(arg)
 	c := findSlash(name)
 	if c == nil {
+		if uc, ok := m.findUserCmd(name); ok {
+			m.noteSlash(text)
+			cmd := m.runUserCmd(uc, arg)
+			m.refreshChat(true)
+			return cmd
+		}
 		m.setFlash("unknown command /"+name+" — /help lists commands", true)
 		return m.flashCmd()
 	}
-	if a := m.mgr.ActiveAgent(); a != nil {
-		a.Messages = append(a.Messages, provider.Message{
-			Role:   "note",
-			Blocks: []provider.Block{{Type: "text", Text: strings.TrimSpace(text)}},
-			Time:   time.Now(),
-		})
-		m.dirty = true
-	}
+	m.noteSlash(text)
 	cmd := c.run(m, arg)
 	m.refreshChat(true)
 	return cmd
+}
+
+// noteSlash records a typed command in the transcript as a local note; it is
+// never sent to the model.
+func (m *App) noteSlash(text string) {
+	a := m.mgr.ActiveAgent()
+	if a == nil {
+		return
+	}
+	a.Messages = append(a.Messages, provider.Message{
+		Role:   "note",
+		Blocks: []provider.Block{{Type: "text", Text: strings.TrimSpace(text)}},
+		Time:   time.Now(),
+	})
+	m.dirty = true
 }
 
 // busyGuard flashes and reports true when the active agent is mid-turn.
@@ -366,9 +392,13 @@ func cmdCd(m *App, arg string) tea.Cmd {
 		m.setFlash(err.Error(), true)
 		return m.flashCmd()
 	}
+	m.reloadUserCmds() // .tapioca/commands is per project
 	note := "cwd: " + e.Cwd()
 	if project.Instructions(e.Cwd()) != "" {
 		note += "" + gl.sep + "loaded project instructions"
+	}
+	if n := len(m.userCmds); n > 0 {
+		note += fmt.Sprintf("%s%d commands", gl.sep, n)
 	}
 	m.setFlash(note, false)
 	return tea.Batch(m.flashCmd(), fetchGitCmd(e.Cwd()))
