@@ -101,6 +101,11 @@ permission prompt.
   you want (`"#light/#dark"`). Both switch live and are saved.
 - **/settings** — opens the config file in vim/$EDITOR and hot-reloads it on
   save (keybinds, providers, defaults, layout, theme — applied live).
+- **Editor mode (ACP)** — `tapioca --acp` speaks the
+  [Agent Client Protocol](https://agentclientprotocol.com) on stdio, so Zed
+  and other ACP clients can drive Tapioca as their agent: streamed replies,
+  tool calls with status, the todo list as a plan, and permission prompts
+  rendered by the editor.
 - **Sessions** — the whole workspace autosaves; `/resume` opens a picker
   whose filter searches **across the text of all saved conversations**.
   Titles are written by the model from your first prompt (`title_model` to
@@ -198,6 +203,13 @@ tapioca -p "summarize" --output-format json --max-turns 5
 tapioca --system-prompt "..." --append-system-prompt "..."
 tapioca --settings alt.toml --mcp-config mcp.toml --add-dir ../lib
 tapioca --list-sessions
+tapioca --acp                      # serve ACP on stdio (editors launch this)
+```
+
+To use it from Zed, point an ACP agent server at the binary:
+
+```json
+{ "agent_servers": { "Tapioca": { "command": "tapioca", "args": ["--acp"] } } }
 ```
 
 Requires Go 1.22+ to build. `go run .`/`go build` must run inside the repo
@@ -263,6 +275,7 @@ internal/session         workspace snapshots as JSON + full-text search blobs
 internal/stats           token / request / tool-call accounting
 internal/ui              Bubble Tea app: chat, dashboards, slash commands,
                          pickers, permission & diff overlays, vim integration
+internal/acp             Agent Client Protocol server (--acp) for editors
 ```
 
 Each agent streams in its own goroutine and reports through a channel; the
