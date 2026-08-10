@@ -13,6 +13,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"tapioca/internal/acp"
 	"tapioca/internal/agent"
 	"tapioca/internal/catalog"
 	"tapioca/internal/checkpoint"
@@ -43,6 +44,7 @@ type cliArgs struct {
 	continueLatest bool
 	resumePicker   bool
 	sandbox        bool
+	acp            bool
 	forkSession    bool
 	listSessions   bool
 }
@@ -67,6 +69,7 @@ Options:
       --output-format <fmt>          For -p: text (default) or json
       --max-turns <n>                For -p: cap agentic tool rounds
       --list-sessions                List saved sessions and exit
+      --acp                          Serve the Agent Client Protocol on stdio (for editors)
   -v, --version                      Print version
   -h, --help                         Show this help`
 
@@ -117,6 +120,8 @@ func parseArgs(argv []string) (*cliArgs, error) {
 			a.permMode = tools.ModeBypass
 		case "--sandbox":
 			a.sandbox = true
+		case "--acp":
+			a.acp = true
 		case "--settings", "-config", "--config":
 			a.settings, err = get()
 		case "--system-prompt":
@@ -237,6 +242,14 @@ func main() {
 				fn(c)
 			}
 		})
+	}
+	// ACP owns stdout as the protocol channel, so it runs before anything
+	// that might print there, and builds its own per-session executors.
+	if args.acp {
+		if err := acp.Serve(cfg, os.Stdin, os.Stdout); err != nil {
+			fail(err)
+		}
+		return
 	}
 	exec.SetSandbox(cfg.Sandbox)
 	exec.SetSandboxNetwork(cfg.SandboxNetwork)
