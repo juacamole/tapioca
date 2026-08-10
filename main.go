@@ -276,6 +276,7 @@ func main() {
 
 	reg := mcp.NewRegistry()
 	defer reg.CloseAll()
+	defer exec.StopJobs() // nothing keeps running after the app exits
 	if len(cfg.LSP) > 0 {
 		lsps := lsp.NewRegistry(cfg.LSP, cwd)
 		defer lsps.CloseAll()
@@ -354,14 +355,19 @@ func main() {
 	}
 
 	if args.printPrompt != "" {
-		os.Exit(runPrint(cfg, mgr, reg, printOpts{
+		code := runPrint(cfg, mgr, reg, printOpts{
 			prompt:   args.printPrompt,
 			format:   args.outputFormat,
 			maxTurns: args.maxTurns,
 			sessID:   sessID,
 			sessName: sessName,
 			created:  created,
-		}))
+		})
+		// os.Exit skips deferred calls, which would leave background jobs and
+		// MCP servers running after the process is gone.
+		exec.StopJobs()
+		reg.CloseAll()
+		os.Exit(code)
 	}
 
 	ui.SetMarkdownDark(lipgloss.HasDarkBackground())

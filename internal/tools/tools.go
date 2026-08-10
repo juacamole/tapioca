@@ -81,6 +81,8 @@ type Executor struct {
 	timeout      time.Duration        // 0 = defaultExecTimeout
 	sandboxNet   bool
 	diagnose     func(path string) string // language-server check after an edit
+	jobs         map[string]*job          // background bash, by id
+	jobSeq       int
 	checkpoint   func(label string)
 }
 
@@ -292,7 +294,7 @@ func (e *Executor) Mode() string {
 	return e.mode
 }
 
-var toolNames = []string{"bash", "read_file", "write_file", "edit_file", "grep", "glob", "web_search", "web_fetch"}
+var toolNames = []string{"bash", "bash_output", "bash_kill", "read_file", "write_file", "edit_file", "grep", "glob", "web_search", "web_fetch"}
 
 // Has reports whether name is a built-in tool.
 func (e *Executor) Has(name string) bool {
@@ -310,7 +312,7 @@ func (e *Executor) Tools() []provider.ToolDef {
 		{
 			Name:        "bash",
 			Description: "Run a shell command in the working directory and return its combined output. Use for builds, tests, git, search, etc.",
-			InputSchema: json.RawMessage(`{"type":"object","properties":{"command":{"type":"string","description":"The shell command to run"},"timeout":{"type":"integer","description":"seconds to allow; use for long builds or test suites"}},"required":["command"]}`),
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"command":{"type":"string","description":"The shell command to run"},"timeout":{"type":"integer","description":"seconds to allow; use for long builds or test suites"},"background":{"type":"boolean","description":"start it and return immediately; poll with bash_output"}},"required":["command"]}`),
 		},
 		{
 			Name:        "read_file",
@@ -326,6 +328,16 @@ func (e *Executor) Tools() []provider.ToolDef {
 			Name:        "edit_file",
 			Description: "Replace an exact string in a file. old_string must match exactly and be unique unless replace_all is true.",
 			InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"},"old_string":{"type":"string"},"new_string":{"type":"string"},"replace_all":{"type":"boolean"}},"required":["path","old_string","new_string"]}`),
+		},
+		{
+			Name:        "bash_output",
+			Description: "Collect new output from a background bash job, and whether it is still running. Call with no id to list jobs.",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"id":{"type":"string","description":"job id from bash; omit to list"}}}`),
+		},
+		{
+			Name:        "bash_kill",
+			Description: "Stop a background bash job.",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}`),
 		},
 		{
 			Name:        "grep",
@@ -411,8 +423,10 @@ func (e *Executor) CallDetailed(ctx context.Context, name string, raw json.RawMe
 	if out, isErr, handled := e.gateReadOnly(name, raw, ask); handled {
 		return Result{Text: out, IsErr: isErr}, nil
 	}
+	// bash_output and bash_kill only observe or stop a command the user already
+	// approved starting, so they do not prompt again.
 	readOnly := name == "read_file" || name == "web_search" || name == "web_fetch" ||
-		name == "grep" || name == "glob"
+		name == "grep" || name == "glob" || name == "bash_output" || name == "bash_kill"
 	if !readOnly { // mutating tools go through the permission gate
 		mode := e.Mode()
 		fileEdit := name == "write_file" || name == "edit_file"
@@ -508,6 +522,10 @@ func (e *Executor) CallDetailed(ctx context.Context, name string, raw json.RawMe
 	switch name {
 	case "bash":
 		return plain(e.runBash(ctx, raw))
+	case "bash_output":
+		return plain(e.jobOutput(raw))
+	case "bash_kill":
+		return plain(e.killJob(raw))
 	case "read_file":
 		return plain(e.readFile(raw))
 	case "write_file":
@@ -725,28 +743,23 @@ func capOutput(s string) string {
 	return textenc.Cut(s, maxOutput*2/3) + "\n[... output truncated ...]\n" + textenc.CutTail(s, maxOutput/3)
 }
 
-func (e *Executor) runBash(ctx context.Context, raw json.RawMessage) (string, bool, error) {
-	var a struct {
-		Command string `json:"command"`
-	}
-	if err := json.Unmarshal(raw, &a); err != nil || strings.TrimSpace(a.Command) == "" {
-		return "invalid arguments: need {\"command\": \"...\"}", true, nil
-	}
+// bashCommand builds the shell invocation shared by foreground and background
+// runs: the sandbox when enabled, scrubbed environment, and a process group so
+// descendants holding the output pipe cannot outlive a cancellation.
+func (e *Executor) bashCommand(ctx context.Context, command string) (*exec.Cmd, error) {
 	var cmd *exec.Cmd
 	if e.Sandboxed() {
 		// Refuse rather than fall back: a user who asked for a sandbox must
 		// never get an unsandboxed shell without being told.
 		if !SandboxAvailable() {
-			return "sandbox is enabled but bubblewrap (bwrap) is not installed — install it or set sandbox = false", true, nil
+			return nil, errors.New("sandbox is enabled but bubblewrap (bwrap) is not installed — install it or set sandbox = false")
 		}
-		cmd = exec.CommandContext(ctx, bwrap(), e.sandboxArgs(a.Command)...)
+		cmd = exec.CommandContext(ctx, bwrap(), e.sandboxArgs(command)...)
 	} else {
-		cmd = exec.CommandContext(ctx, "sh", "-c", a.Command)
+		cmd = exec.CommandContext(ctx, "sh", "-c", command)
 	}
 	cmd.Dir = e.Cwd()
 	cmd.Env = secretenv.Scrubbed()
-	// Descendants holding the output pipe would make CombinedOutput block
-	// past cancellation; kill the whole process group and cap the wait.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {
 		if cmd.Process == nil {
@@ -755,6 +768,28 @@ func (e *Executor) runBash(ctx context.Context, raw json.RawMessage) (string, bo
 		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	}
 	cmd.WaitDelay = 10 * time.Second
+	return cmd, nil
+}
+
+func (e *Executor) runBash(ctx context.Context, raw json.RawMessage) (string, bool, error) {
+	var a struct {
+		Command    string `json:"command"`
+		Background bool   `json:"background"`
+	}
+	if err := json.Unmarshal(raw, &a); err != nil || strings.TrimSpace(a.Command) == "" {
+		return "invalid arguments: need {\"command\": \"...\"}", true, nil
+	}
+	if a.Background {
+		id, err := e.startBackground(a.Command)
+		if err != nil {
+			return err.Error(), true, nil
+		}
+		return fmt.Sprintf("started %s in the background; poll it with bash_output", id), false, nil
+	}
+	cmd, err := e.bashCommand(ctx, a.Command)
+	if err != nil {
+		return err.Error(), true, nil
+	}
 	out, err := cmd.CombinedOutput()
 	text := capOutput(string(out))
 	if errors.Is(err, exec.ErrWaitDelay) {
