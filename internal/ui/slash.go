@@ -727,7 +727,7 @@ func (m *App) loadSessionByID(id string) tea.Cmd {
 // openSessionPicker lists sessions; typing in the picker searches names AND
 // full conversation text.
 func (m *App) openSessionPicker() tea.Cmd {
-	metas, err := session.List()
+	metas, err := session.ListWithText()
 	if err != nil {
 		m.setFlash("listing sessions: "+err.Error(), true)
 		return m.flashCmd()
