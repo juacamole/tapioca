@@ -58,6 +58,10 @@ permission prompt.
   any other **OpenAI-compatible** server (LM Studio, vLLM, llama.cpp,
   OpenRouter, OpenAI) via `type = "openai"`.
   All stream, all support tool calls and thinking where the backend does.
+- **LSP diagnostics** — configure language servers under `[[lsp]]` and every
+  file the agent writes is checked; errors come back attached to the tool
+  result (`4:2 error: undefined: doesNotExist`), so it fixes them in the same
+  turn rather than after a build.
 - **MCP** — stdio servers *and* remote **streamable HTTP** servers (with
   auth headers; `${VAR}` expands so tokens stay out of the config file);
   their tools are namespaced `server__tool` and offered alongside the
@@ -293,6 +297,7 @@ internal/stats           token / request / tool-call accounting
 internal/ui              Bubble Tea app: chat, dashboards, slash commands,
                          pickers, permission & diff overlays, vim integration
 internal/acp             Agent Client Protocol server (--acp) for editors
+internal/lsp             language servers: diagnostics after each edit
 ```
 
 Each agent streams in its own goroutine and reports through a channel; the

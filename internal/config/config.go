@@ -37,6 +37,14 @@ type MCPServerConfig struct {
 	Headers map[string]string `toml:"headers"` // sent on every request; ${VAR} expands
 }
 
+// LSPServerConfig describes a language server used to check edited files.
+type LSPServerConfig struct {
+	Name       string   `toml:"name"`
+	Command    string   `toml:"command"`
+	Args       []string `toml:"args"`
+	Extensions []string `toml:"extensions"`
+}
+
 // DashboardConfig controls the dashboard area.
 type DashboardConfig struct {
 	Visible  bool     `toml:"visible"`
@@ -73,6 +81,7 @@ type Config struct {
 	SecretEnv []string                  `toml:"secret_env"` // extra env vars hidden from tools
 	Providers map[string]ProviderConfig `toml:"providers"`
 	MCP       []MCPServerConfig         `toml:"mcp"`
+	LSP       []LSPServerConfig         `toml:"lsp"`
 	Dashboard DashboardConfig           `toml:"dashboard"`
 	Keys      map[string]string         `toml:"keys"`
 	Colors    map[string]string         `toml:"colors"` // theme overrides: "#hex" or "#light/#dark"
@@ -364,6 +373,14 @@ panels = ["agents", "tokens", "todos", "git", "tools", "settings"]
 # url = "https://mcp.example.com/mcp"
 # [mcp.headers]
 # Authorization = "Bearer ${EXAMPLE_MCP_TOKEN}"
+
+# Language servers. After every edit the file is checked and any errors are
+# attached to the tool result, so the agent fixes them straight away instead of
+# finding out when a build runs. Servers start with the app.
+# [[lsp]]
+# name = "gopls"
+# command = "gopls"
+# extensions = [".go"]
 
 # MCP servers (stdio transport). Their tools are offered to every agent.
 # [[mcp]]

@@ -80,6 +80,7 @@ type Executor struct {
 	sandbox      bool                 // confine bash with bubblewrap
 	timeout      time.Duration        // 0 = defaultExecTimeout
 	sandboxNet   bool
+	diagnose     func(path string) string // language-server check after an edit
 	checkpoint   func(label string)
 }
 
@@ -831,10 +832,11 @@ func (e *Executor) writeFile(raw json.RawMessage) (Result, error) {
 		return Result{Text: err.Error(), IsErr: true}, nil
 	}
 	e.note(path)
-	return Result{
-		Text:   fmt.Sprintf("wrote %d bytes to %s", len(a.Content), path),
-		Change: e.change(path, before, a.Content, !existed),
-	}, nil
+	text := fmt.Sprintf("wrote %d bytes to %s", len(a.Content), path)
+	if note := e.checkEdited(path); note != "" {
+		text += "\n" + note
+	}
+	return Result{Text: text, Change: e.change(path, before, a.Content, !existed)}, nil
 }
 
 // readText returns a file's contents for diffing, and whether it existed.
@@ -913,6 +915,9 @@ func (e *Executor) editFile(raw json.RawMessage) (Result, error) {
 	if reencoded {
 		out += " — note: file was re-encoded to UTF-8"
 	}
+	if note := e.checkEdited(path); note != "" {
+		out += "\n" + note
+	}
 	return Result{Text: out, Change: e.change(path, before, content, false)}, nil
 }
 
@@ -951,4 +956,24 @@ func (e *Executor) callTimeout(name string, raw json.RawMessage) time.Duration {
 		d = maxExecTimeout
 	}
 	return d
+}
+
+// SetDiagnostics registers a check run after a successful file edit. It lives
+// behind a hook so this package needs no dependency on the LSP client.
+func (e *Executor) SetDiagnostics(fn func(path string) string) {
+	e.mu.Lock()
+	e.diagnose = fn
+	e.mu.Unlock()
+}
+
+// checkEdited reports problems in a file the agent just wrote, as a note to
+// append to the tool result.
+func (e *Executor) checkEdited(path string) string {
+	e.mu.Lock()
+	fn := e.diagnose
+	e.mu.Unlock()
+	if fn == nil {
+		return ""
+	}
+	return fn(path)
 }

@@ -18,6 +18,7 @@ import (
 	"tapioca/internal/catalog"
 	"tapioca/internal/checkpoint"
 	"tapioca/internal/config"
+	"tapioca/internal/lsp"
 	"tapioca/internal/mcp"
 	"tapioca/internal/secretenv"
 	"tapioca/internal/session"
@@ -275,6 +276,12 @@ func main() {
 
 	reg := mcp.NewRegistry()
 	defer reg.CloseAll()
+	if len(cfg.LSP) > 0 {
+		lsps := lsp.NewRegistry(cfg.LSP, cwd)
+		defer lsps.CloseAll()
+		exec.SetDiagnostics(lsps.Check)
+		go lsps.Warm() // load the workspace before the first edit needs it
+	}
 	mgr := agent.NewManager(cfg, reg, exec)
 	// Only the TUI can run a subagent (it owns the tabs and their event
 	// pumps), so only it advertises the tool. Headless runs below never do.
