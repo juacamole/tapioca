@@ -12,6 +12,10 @@ import (
 	"tapioca/internal/provider"
 )
 
+// dashActive mirrors whether any dashboard panel is on screen, so hints do not
+// point at a dashboard that is not there. Set by refreshChat.
+var dashActive bool
+
 // Model output and tool results can carry raw terminal control sequences
 // (colors, \r progress bars, cursor movement) that would corrupt the TUI if
 // rendered verbatim.
@@ -79,7 +83,11 @@ func welcomeText(w int) string {
 		styDim.Render("type a prompt and press enter to chat"),
 		styDim.Render("f1 shows every keybind" + gl.sep + "/help lists commands"),
 		styDim.Render("ctrl+g writes the prompt in vim" + gl.sep + "ctrl+o toggles verbose chat"),
-		styDim.Render("tab focuses the dashboard to change settings"),
+	}
+	if dashActive {
+		lines = append(lines, styDim.Render("tab focuses the dashboard to change settings"))
+	} else {
+		lines = append(lines, styDim.Render("/panels adds dashboard panels"))
 	}
 	return strings.Join(lines, "\n")
 }

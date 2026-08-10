@@ -131,11 +131,6 @@ func (m *App) panelBox(d *panelDef, a *agent.Agent, w, h int, focused bool) stri
 	return borderStyle(focused).Width(innerW).Height(innerH).Render(content)
 }
 
-func (m *App) noPanelsHint(w, h int) string {
-	return lipgloss.NewStyle().Width(w).Height(h).Render(
-		styDim.Render(" no panels — focus dashboard (tab), then " + m.keys.FirstKey("panels")))
-}
-
 // panelFocused reports whether panel index i has dashboard focus.
 func (m *App) panelFocused(i, n int) bool {
 	if m.focus != focusDash || n == 0 {
@@ -155,9 +150,6 @@ func (m *App) panelFocused(i, n int) bool {
 func (m *App) renderDashboard(w, h int) string {
 	a := m.mgr.ActiveAgent()
 	defs, sizes, _ := m.dashLayout(w, h)
-	if len(defs) == 0 {
-		return m.noPanelsHint(w, h)
-	}
 	var boxes []string
 	for i, d := range defs {
 		boxes = append(boxes, m.panelBox(d, a, w, sizes[i], m.panelFocused(i, len(defs))))
@@ -170,9 +162,6 @@ func (m *App) renderDashboard(w, h int) string {
 func (m *App) renderDashboardRow(w, h int) string {
 	a := m.mgr.ActiveAgent()
 	defs, sizes, _ := m.dashLayout(w, h)
-	if len(defs) == 0 {
-		return m.noPanelsHint(w, h)
-	}
 	var boxes []string
 	for i, d := range defs {
 		boxes = append(boxes, m.panelBox(d, a, sizes[i], h, m.panelFocused(i, len(defs))))
