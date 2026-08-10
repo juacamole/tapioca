@@ -193,7 +193,39 @@ func renderToolUse(bl *provider.Block, w int, verbose bool) string {
 	return b.String()
 }
 
+// diffLine colors a formatted diff row by its marker: the eye should find the
+// change without reading line numbers.
+func diffLine(l string, w int) string {
+	trimmed := truncate(l, w)
+	marker := ""
+	if f := strings.Fields(l); len(f) > 1 {
+		marker = f[1]
+	}
+	switch marker {
+	case "+":
+		return styOK.Render(trimmed)
+	case "-":
+		return styErr.Render(trimmed)
+	default:
+		return styDim.Render(trimmed)
+	}
+}
+
+// renderChange shows a file edit as a header plus colored +/- lines.
+func renderChange(display string, w int) string {
+	lines := strings.Split(display, "\n")
+	out := []string{styTool.Render(truncate(lines[0], w))}
+	for _, l := range lines[1:] {
+		out = append(out, "  "+diffLine(l, w-2))
+	}
+	return strings.Join(out, "\n")
+}
+
 func renderToolResult(bl *provider.Block, w int, verbose bool) string {
+	if bl.Display != "" {
+		// The diff says everything the terse "edited x (1 replacement)" did.
+		return renderChange(bl.Display, w)
+	}
 	icon := styOK.Render("ok")
 	if bl.IsError {
 		icon = styErr.Render("err")

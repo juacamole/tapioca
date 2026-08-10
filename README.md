@@ -71,6 +71,10 @@ permission prompt.
   after the agent read it, `write_file`/`edit_file` refuse to overwrite it
   until the agent re-reads, and the next prompt carries a note listing what
   changed.
+- **Edits show as diffs** — when the agent writes or edits a file the chat
+  shows `updated main.go (+1 -1)` and the changed lines, coloured, with a
+  little context; the model still gets the terse result, so the diff costs
+  no context.
 - **Conversation mechanics** — `/regen` regenerates the last response,
   `/edit` pulls the last prompt back into the input, `up` recalls prompt
   history, and prompts typed while the agent is busy are **queued** and sent
