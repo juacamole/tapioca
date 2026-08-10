@@ -1,7 +1,6 @@
 package provider
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -11,7 +10,6 @@ import (
 	"os"
 	"sort"
 	"strings"
-	"time"
 
 	"tapioca/internal/config"
 )
@@ -92,14 +90,15 @@ type anthThinking struct {
 }
 
 type anthReq struct {
-	Model       string        `json:"model"`
-	MaxTokens   int           `json:"max_tokens"`
-	System      []anthBlock   `json:"system,omitempty"`
-	Messages    []anthMsg     `json:"messages"`
-	Stream      bool          `json:"stream"`
-	Temperature *float64      `json:"temperature,omitempty"`
-	Thinking    *anthThinking `json:"thinking,omitempty"`
-	Tools       []anthTool    `json:"tools,omitempty"`
+	Model            string        `json:"model,omitempty"`
+	AnthropicVersion string        `json:"anthropic_version,omitempty"`
+	MaxTokens        int           `json:"max_tokens"`
+	System           []anthBlock   `json:"system,omitempty"`
+	Messages         []anthMsg     `json:"messages"`
+	Stream           bool          `json:"stream"`
+	Temperature      *float64      `json:"temperature,omitempty"`
+	Thinking         *anthThinking `json:"thinking,omitempty"`
+	Tools            []anthTool    `json:"tools,omitempty"`
 }
 
 type anthUsage struct {
@@ -191,50 +190,7 @@ func (a *Anthropic) convertMessages(model string, msgs []Message) []anthMsg {
 func (a *Anthropic) Stream(ctx context.Context, req Request, out chan<- Event) (Message, error) {
 	defer close(out)
 
-	body := anthReq{
-		Model:     req.Model,
-		MaxTokens: req.MaxTokens,
-		Messages:  a.convertMessages(req.Model, req.Messages),
-		Stream:    true,
-	}
-	if req.System != "" {
-		// Marking the system prompt caches the whole prefix including tools.
-		body.System = []anthBlock{{Type: "text", Text: req.System, CacheControl: ephemeral}}
-	}
-	for _, t := range req.Tools {
-		schema := t.InputSchema
-		if len(schema) == 0 {
-			schema = json.RawMessage(`{"type":"object"}`)
-		}
-		body.Tools = append(body.Tools, anthTool{Name: t.Name, Description: t.Description, InputSchema: schema})
-	}
-	sort.Slice(body.Tools, func(i, j int) bool { return body.Tools[i].Name < body.Tools[j].Name })
-	// Breakpoints on the last two messages make the growing conversation
-	// prefix cacheable turn over turn.
-	marked := 0
-	for i := len(body.Messages) - 1; i >= 0 && marked < 2; i-- {
-		blocks := body.Messages[i].Content
-		if len(blocks) == 0 {
-			continue
-		}
-		blocks[len(blocks)-1].CacheControl = ephemeral
-		marked++
-	}
-	if req.Thinking {
-		budget := req.ThinkingBudget
-		if budget < 1024 {
-			budget = 1024
-		}
-		if body.MaxTokens <= budget {
-			body.MaxTokens = budget + 1024
-		}
-		body.Thinking = &anthThinking{Type: "enabled", BudgetTokens: budget}
-		// Temperature must be 1 with thinking enabled; omit it.
-	} else if req.Temperature >= 0 {
-		t := req.Temperature
-		body.Temperature = &t
-	}
-
+	body := a.buildBody(req)
 	payload, err := json.Marshal(body)
 	if err != nil {
 		return Message{}, err
@@ -257,139 +213,7 @@ func (a *Anthropic) Stream(ctx context.Context, req Request, out chan<- Event) (
 		return Message{}, newAPIError(a.name, resp, data)
 	}
 
-	type blockBuilder struct {
-		typ       string
-		id, name  string
-		data      string
-		text      strings.Builder
-		signature string
-		inputJSON strings.Builder
-	}
-	builders := map[int]*blockBuilder{}
-	var usage Usage
-	var stopReason string
-	msg := Message{Role: "assistant", Model: req.Model, Time: time.Now()}
-
-	finish := func() Message {
-		idxs := make([]int, 0, len(builders))
-		for i := range builders {
-			idxs = append(idxs, i)
-		}
-		sort.Ints(idxs)
-		for _, i := range idxs {
-			b := builders[i]
-			switch b.typ {
-			case "text":
-				msg.Blocks = append(msg.Blocks, Block{Type: "text", Text: b.text.String()})
-			case "thinking":
-				msg.Blocks = append(msg.Blocks, Block{Type: "thinking", Text: b.text.String(), Signature: b.signature})
-			case "redacted_thinking":
-				// Opaque, but must be replayed verbatim in tool exchanges.
-				msg.Blocks = append(msg.Blocks, Block{Type: "redacted_thinking", Data: b.data})
-			case "tool_use":
-				input := b.inputJSON.String()
-				// A cancelled stream can leave half-received JSON here;
-				// storing it would poison every later marshal.
-				if strings.TrimSpace(input) == "" || !json.Valid([]byte(input)) {
-					input = "{}"
-				}
-				msg.Blocks = append(msg.Blocks, Block{Type: "tool_use", ID: b.id, Name: b.name, Input: json.RawMessage(input)})
-			}
-		}
-		if usage.InputTokens > 0 || usage.OutputTokens > 0 || usage.CacheReadTokens > 0 || usage.CacheWriteTokens > 0 {
-			u := usage
-			msg.Usage = &u
-		}
-		return msg
-	}
-
-	scanner := bufio.NewScanner(resp.Body)
-	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if !strings.HasPrefix(line, "data:") {
-			continue
-		}
-		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-		if data == "" {
-			continue
-		}
-		var ev sseEvent
-		if err := json.Unmarshal([]byte(data), &ev); err != nil {
-			continue
-		}
-		switch ev.Type {
-		case "message_start":
-			if ev.Message != nil {
-				usage.InputTokens = ev.Message.Usage.InputTokens
-				usage.OutputTokens = ev.Message.Usage.OutputTokens
-				usage.CacheReadTokens = ev.Message.Usage.CacheReadTokens
-				usage.CacheWriteTokens = ev.Message.Usage.CacheCreationTokens
-			}
-		case "content_block_start":
-			if ev.ContentBlock != nil {
-				builders[ev.Index] = &blockBuilder{typ: ev.ContentBlock.Type, id: ev.ContentBlock.ID, name: ev.ContentBlock.Name, data: ev.ContentBlock.Data}
-				if ev.ContentBlock.Type == "tool_use" {
-					out <- Event{Type: EventToolUseStart, ToolID: ev.ContentBlock.ID, ToolName: ev.ContentBlock.Name}
-				}
-			}
-		case "content_block_delta":
-			b := builders[ev.Index]
-			if b == nil || ev.Delta == nil {
-				continue
-			}
-			switch ev.Delta.Type {
-			case "text_delta":
-				b.text.WriteString(ev.Delta.Text)
-				out <- Event{Type: EventTextDelta, Text: ev.Delta.Text}
-			case "thinking_delta":
-				b.text.WriteString(ev.Delta.Thinking)
-				out <- Event{Type: EventThinkingDelta, Text: ev.Delta.Thinking}
-			case "signature_delta":
-				b.signature += ev.Delta.Signature
-			case "input_json_delta":
-				b.inputJSON.WriteString(ev.Delta.PartialJSON)
-				out <- Event{Type: EventToolInputDelta, Text: ev.Delta.PartialJSON, ToolID: b.id, ToolName: b.name}
-			}
-		case "content_block_stop":
-			if b := builders[ev.Index]; b != nil && b.typ == "thinking" {
-				out <- Event{Type: EventThinkingDone}
-			}
-		case "message_delta":
-			if ev.Delta != nil && ev.Delta.StopReason != "" {
-				stopReason = ev.Delta.StopReason
-			}
-			if ev.Usage != nil {
-				usage.OutputTokens = ev.Usage.OutputTokens
-			}
-		case "error":
-			m, typ := "stream error", ""
-			if ev.Error != nil {
-				m, typ = ev.Error.Message, ev.Error.Type
-			}
-			status := 400
-			if typ == "overloaded_error" || typ == "api_error" {
-				status = 529 // in-band server trouble is retryable
-			}
-			return finish(), &APIError{Provider: a.name, Status: status, Message: m}
-		case "message_stop":
-			out <- Event{Type: EventUsage, Usage: usage}
-			out <- Event{Type: EventDone, StopReason: stopReason}
-			return finish(), nil
-		}
-	}
-	if ctx.Err() != nil {
-		return finish(), ctx.Err()
-	}
-	if err := scanner.Err(); err != nil {
-		return finish(), fmt.Errorf("anthropic: reading stream: %w", err)
-	}
-	if stopReason == "" {
-		// Clean EOF without completion: a proxy cut the stream; retryable.
-		return finish(), &APIError{Provider: a.name, Status: 502, Message: "stream ended before completion"}
-	}
-	out <- Event{Type: EventDone, StopReason: stopReason}
-	return finish(), nil
+	return a.streamAnthropicSSE(ctx, req.Model, resp.Body, out)
 }
 
 // ListModels implements Provider.
@@ -438,4 +262,56 @@ func apiErrorText(data []byte) string {
 		return "unknown error"
 	}
 	return s
+}
+
+// buildBody assembles the Messages-API request. Bedrock and Vertex send
+// the same shape, so they build it here and adjust the few fields their
+// transports move into the URL.
+func (a *Anthropic) buildBody(req Request) anthReq {
+	var body anthReq
+	body = anthReq{
+		Model:     req.Model,
+		MaxTokens: req.MaxTokens,
+		Messages:  a.convertMessages(req.Model, req.Messages),
+		Stream:    true,
+	}
+	if req.System != "" {
+		// Marking the system prompt caches the whole prefix including tools.
+		body.System = []anthBlock{{Type: "text", Text: req.System, CacheControl: ephemeral}}
+	}
+	for _, t := range req.Tools {
+		schema := t.InputSchema
+		if len(schema) == 0 {
+			schema = json.RawMessage(`{"type":"object"}`)
+		}
+		body.Tools = append(body.Tools, anthTool{Name: t.Name, Description: t.Description, InputSchema: schema})
+	}
+	sort.Slice(body.Tools, func(i, j int) bool { return body.Tools[i].Name < body.Tools[j].Name })
+	// Breakpoints on the last two messages make the growing conversation
+	// prefix cacheable turn over turn.
+	marked := 0
+	for i := len(body.Messages) - 1; i >= 0 && marked < 2; i-- {
+		blocks := body.Messages[i].Content
+		if len(blocks) == 0 {
+			continue
+		}
+		blocks[len(blocks)-1].CacheControl = ephemeral
+		marked++
+	}
+	if req.Thinking {
+		budget := req.ThinkingBudget
+		if budget < 1024 {
+			budget = 1024
+		}
+		if body.MaxTokens <= budget {
+			body.MaxTokens = budget + 1024
+		}
+		body.Thinking = &anthThinking{Type: "enabled", BudgetTokens: budget}
+		// Temperature must be 1 with thinking enabled; omit it.
+	} else if req.Temperature >= 0 {
+		t := req.Temperature
+		body.Temperature = &t
+	}
+
+	return body
 }
