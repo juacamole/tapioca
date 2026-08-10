@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"tapioca/internal/diff"
 	"tapioca/internal/provider"
 	"tapioca/internal/secretenv"
 	"tapioca/internal/textenc"
@@ -356,15 +357,43 @@ func (e *Executor) resolve(path string) string {
 	return filepath.Clean(path)
 }
 
+// plain lifts a tool that produces no display detail into a Result.
+func plain(text string, isErr bool, err error) (Result, error) {
+	return Result{Text: text, IsErr: isErr}, err
+}
+
+// FileChange describes an edit for display. It never reaches the model: the
+// model wrote the change and does not need it echoed back at token cost.
+type FileChange struct {
+	Path    string
+	Ops     []diff.Op
+	Added   int
+	Removed int
+	Created bool
+}
+
+// Result is a tool call's outcome, including display-only detail.
+type Result struct {
+	Text   string
+	IsErr  bool
+	Change *FileChange
+}
+
 // Call executes a built-in tool. It returns (result, isError, err); err is
 // reserved for internal failures, tool-level problems are (msg, true, nil).
 func (e *Executor) Call(ctx context.Context, name string, raw json.RawMessage, ask AskFunc) (string, bool, error) {
+	res, err := e.CallDetailed(ctx, name, raw, ask)
+	return res.Text, res.IsErr, err
+}
+
+// CallDetailed is Call plus whatever the UI needs to render the call.
+func (e *Executor) CallDetailed(ctx context.Context, name string, raw json.RawMessage, ask AskFunc) (Result, error) {
 	// Read-only tools skip the mutation gate, but two of them compose into
 	// exfiltration (read a secret, POST it to a URL), and prompt injection
 	// from fetched pages or repo files can drive exactly that. So they get
 	// their own narrow checks below.
 	if out, isErr, handled := e.gateReadOnly(name, raw, ask); handled {
-		return out, isErr, nil
+		return Result{Text: out, IsErr: isErr}, nil
 	}
 	readOnly := name == "read_file" || name == "web_search" || name == "web_fetch" ||
 		name == "grep" || name == "glob"
@@ -375,7 +404,7 @@ func (e *Executor) Call(ctx context.Context, name string, raw json.RawMessage, a
 		switch mode {
 		case ModePlan:
 			if fileEdit {
-				return "denied: plan mode is active — do not modify files; present a plan instead", true, nil
+				return Result{Text: "denied: plan mode is active — do not modify files; present a plan instead", IsErr: true}, nil
 			}
 			needAsk = true // bash still allowed for read-only inspection, but asks
 		case ModeManual:
@@ -404,7 +433,7 @@ func (e *Executor) Call(ctx context.Context, name string, raw json.RawMessage, a
 					}
 					d := ask(name, seg)
 					if !d.Allow {
-						return "the user denied permission for: " + seg, true, nil
+						return Result{Text: "the user denied permission for: " + seg, IsErr: true}, nil
 					}
 					if d.Prefix != "" {
 						e.mu.Lock()
@@ -424,7 +453,7 @@ func (e *Executor) Call(ctx context.Context, name string, raw json.RawMessage, a
 		if needAsk && !blanket {
 			d := ask(name, e.summary(name, raw))
 			if !d.Allow {
-				return "the user denied permission for this call", true, nil
+				return Result{Text: "the user denied permission for this call", IsErr: true}, nil
 			}
 			if d.Always {
 				e.mu.Lock()
@@ -444,23 +473,23 @@ func (e *Executor) Call(ctx context.Context, name string, raw json.RawMessage, a
 	defer cancel()
 	switch name {
 	case "bash":
-		return e.runBash(ctx, raw)
+		return plain(e.runBash(ctx, raw))
 	case "read_file":
-		return e.readFile(raw)
+		return plain(e.readFile(raw))
 	case "write_file":
 		return e.writeFile(raw)
 	case "edit_file":
 		return e.editFile(raw)
 	case "grep":
-		return e.grep(ctx, raw)
+		return plain(e.grep(ctx, raw))
 	case "glob":
-		return e.globFiles(ctx, raw)
+		return plain(e.globFiles(ctx, raw))
 	case "web_search":
-		return e.webSearch(ctx, raw)
+		return plain(e.webSearch(ctx, raw))
 	case "web_fetch":
-		return e.webFetch(ctx, raw)
+		return plain(e.webFetch(ctx, raw))
 	}
-	return "", true, fmt.Errorf("unknown builtin tool %q", name)
+	return Result{IsErr: true}, fmt.Errorf("unknown builtin tool %q", name)
 }
 
 // sensitiveNames are files whose contents are worth stealing regardless of
@@ -749,29 +778,63 @@ func (e *Executor) readFile(raw json.RawMessage) (string, bool, error) {
 	return capOutput(out), false, nil
 }
 
-func (e *Executor) writeFile(raw json.RawMessage) (string, bool, error) {
+func (e *Executor) writeFile(raw json.RawMessage) (Result, error) {
 	var a struct {
 		Path    string `json:"path"`
 		Content string `json:"content"`
 	}
 	if err := json.Unmarshal(raw, &a); err != nil || a.Path == "" {
-		return "invalid arguments: need {\"path\", \"content\"}", true, nil
+		return Result{Text: "invalid arguments: need {\"path\", \"content\"}", IsErr: true}, nil
 	}
 	path := e.resolve(a.Path)
 	if e.changedExternally(path) {
-		return staleFileMsg(a.Path), true, nil
+		return Result{Text: staleFileMsg(a.Path), IsErr: true}, nil
 	}
+	before, existed := readText(path)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err.Error(), true, nil
+		return Result{Text: err.Error(), IsErr: true}, nil
 	}
 	if err := os.WriteFile(path, []byte(a.Content), 0o644); err != nil {
-		return err.Error(), true, nil
+		return Result{Text: err.Error(), IsErr: true}, nil
 	}
 	e.note(path)
-	return fmt.Sprintf("wrote %d bytes to %s", len(a.Content), path), false, nil
+	return Result{
+		Text:   fmt.Sprintf("wrote %d bytes to %s", len(a.Content), path),
+		Change: e.change(path, before, a.Content, !existed),
+	}, nil
 }
 
-func (e *Executor) editFile(raw json.RawMessage) (string, bool, error) {
+// readText returns a file's contents for diffing, and whether it existed.
+// Binary files diff to nothing useful, so they report as absent.
+func readText(path string) (string, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", false
+	}
+	text, isText := textenc.Decode(data)
+	if !isText {
+		return "", false
+	}
+	return text, true
+}
+
+// change builds the display-only diff for an edit.
+func (e *Executor) change(path, before, after string, created bool) *FileChange {
+	ops := diff.Lines(before, after)
+	added, removed := diff.Stats(ops)
+	if added == 0 && removed == 0 {
+		return nil
+	}
+	return &FileChange{
+		Path:    e.relative(path),
+		Ops:     ops,
+		Added:   added,
+		Removed: removed,
+		Created: created,
+	}
+}
+
+func (e *Executor) editFile(raw json.RawMessage) (Result, error) {
 	var a struct {
 		Path       string `json:"path"`
 		OldString  string `json:"old_string"`
@@ -779,29 +842,30 @@ func (e *Executor) editFile(raw json.RawMessage) (string, bool, error) {
 		ReplaceAll bool   `json:"replace_all"`
 	}
 	if err := json.Unmarshal(raw, &a); err != nil || a.Path == "" || a.OldString == "" {
-		return "invalid arguments: need {\"path\", \"old_string\", \"new_string\"}", true, nil
+		return Result{Text: "invalid arguments: need {\"path\", \"old_string\", \"new_string\"}", IsErr: true}, nil
 	}
 	path := e.resolve(a.Path)
 	if e.changedExternally(path) {
-		return staleFileMsg(a.Path), true, nil
+		return Result{Text: staleFileMsg(a.Path), IsErr: true}, nil
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return err.Error(), true, nil
+		return Result{Text: err.Error(), IsErr: true}, nil
 	}
 	// Match against the same decoded text read_file shows, or UTF-16 files
 	// are uneditable and Latin-1 files get UTF-8 spliced into them.
 	content, isText := textenc.Decode(data)
 	if !isText {
-		return fmt.Sprintf("%s is a binary file; refusing to edit", a.Path), true, nil
+		return Result{Text: fmt.Sprintf("%s is a binary file; refusing to edit", a.Path), IsErr: true}, nil
 	}
+	before := content
 	reencoded := content != string(data)
 	count := strings.Count(content, a.OldString)
 	switch {
 	case count == 0:
-		return "old_string not found in file", true, nil
+		return Result{Text: "old_string not found in file", IsErr: true}, nil
 	case count > 1 && !a.ReplaceAll:
-		return fmt.Sprintf("old_string appears %d times; make it unique or set replace_all", count), true, nil
+		return Result{Text: fmt.Sprintf("old_string appears %d times; make it unique or set replace_all", count), IsErr: true}, nil
 	}
 	if a.ReplaceAll {
 		content = strings.ReplaceAll(content, a.OldString, a.NewString)
@@ -809,12 +873,12 @@ func (e *Executor) editFile(raw json.RawMessage) (string, bool, error) {
 		content = strings.Replace(content, a.OldString, a.NewString, 1)
 	}
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		return err.Error(), true, nil
+		return Result{Text: err.Error(), IsErr: true}, nil
 	}
 	e.note(path)
 	out := fmt.Sprintf("edited %s (%d replacement(s))", path, count)
 	if reencoded {
 		out += " — note: file was re-encoded to UTF-8"
 	}
-	return out, false, nil
+	return Result{Text: out, Change: e.change(path, before, content, false)}, nil
 }

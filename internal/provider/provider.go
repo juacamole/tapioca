@@ -27,6 +27,10 @@ type Block struct {
 	IsError   bool            `json:"is_error,omitempty"`
 	MediaType string          `json:"media_type,omitempty"` // image mime
 	Data      string          `json:"data,omitempty"`       // image base64
+	// Display is shown in the transcript instead of Content when set (a file
+	// diff, say). Providers build their payloads from the fields above, so it
+	// is saved with the session but never sent to the model.
+	Display string `json:"display,omitempty"`
 }
 
 // Message is one conversation turn. Hidden messages reach the model but are

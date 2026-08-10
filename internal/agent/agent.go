@@ -80,6 +80,7 @@ type ToolInfo struct {
 	Result  string
 	IsError bool
 	Dur     time.Duration
+	Change  *tools.FileChange // file edits, for display only
 }
 
 // PermissionReq asks the user to allow a built-in tool call. Exactly one
@@ -466,6 +467,7 @@ func (a *Agent) run(ctx context.Context, rs runSettings, history []provider.Mess
 				text    string
 				isErr   bool
 				callErr error
+				change  *tools.FileChange
 			)
 			toolStart := time.Now()
 			switch {
@@ -476,7 +478,9 @@ func (a *Agent) run(ctx context.Context, rs runSettings, history []provider.Mess
 			case a.Exec != nil && a.Exec.Has(tu.Name):
 				// No deadline here: the executor times the execution itself,
 				// after any permission prompt has been answered.
-				text, isErr, callErr = a.Exec.Call(ctx, tu.Name, tu.Input, ask)
+				var res tools.Result
+				res, callErr = a.Exec.CallDetailed(ctx, tu.Name, tu.Input, ask)
+				text, isErr, change = res.Text, res.IsErr, res.Change
 			case a.MCP != nil:
 				// MCP tools go through the same permission gate as builtins.
 				key := "mcp:" + tu.Name
@@ -507,13 +511,14 @@ func (a *Agent) run(ctx context.Context, rs runSettings, history []provider.Mess
 			if len(text) > maxToolResultSize {
 				text = textenc.Cut(text, maxToolResultSize) + "\n[truncated]"
 			}
-			a.emit(Event{Kind: EvToolEnd, Tool: &ToolInfo{Name: tu.Name, Args: argsPreview, Result: text, IsError: isErr, Dur: tdur}})
+			a.emit(Event{Kind: EvToolEnd, Tool: &ToolInfo{Name: tu.Name, Args: argsPreview, Result: text, IsError: isErr, Dur: tdur, Change: change}})
 			results = append(results, provider.Block{
 				Type:      "tool_result",
 				ToolUseID: tu.ID,
 				Name:      tu.Name,
 				Content:   text,
 				IsError:   isErr,
+				Display:   tools.FormatChange(change),
 			})
 		}
 		toolMsg := a.emitToolResults(results)
