@@ -61,8 +61,11 @@ func NormalizeMode(m string) string {
 }
 
 const (
-	maxOutput   = 30_000
-	execTimeout = 3 * time.Minute
+	maxOutput = 30_000
+	// defaultExecTimeout caps one tool call; bash_timeout in the config moves
+	// it, and a single call may ask for more, up to maxExecTimeout.
+	defaultExecTimeout = 3 * time.Minute
+	maxExecTimeout     = 30 * time.Minute
 )
 
 // Executor runs built-in tools inside a working directory.
@@ -75,6 +78,7 @@ type Executor struct {
 	extraDirs    []string
 	seen         map[string]fileStamp // files the agent has read or written
 	sandbox      bool                 // confine bash with bubblewrap
+	timeout      time.Duration        // 0 = defaultExecTimeout
 	sandboxNet   bool
 	checkpoint   func(label string)
 }
@@ -305,7 +309,7 @@ func (e *Executor) Tools() []provider.ToolDef {
 		{
 			Name:        "bash",
 			Description: "Run a shell command in the working directory and return its combined output. Use for builds, tests, git, search, etc.",
-			InputSchema: json.RawMessage(`{"type":"object","properties":{"command":{"type":"string","description":"The shell command to run"}},"required":["command"]}`),
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"command":{"type":"string","description":"The shell command to run"},"timeout":{"type":"integer","description":"seconds to allow; use for long builds or test suites"}},"required":["command"]}`),
 		},
 		{
 			Name:        "read_file",
@@ -498,7 +502,7 @@ func (e *Executor) CallDetailed(ctx context.Context, name string, raw json.RawMe
 		}
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, execTimeout)
+	ctx, cancel := context.WithTimeout(ctx, e.callTimeout(name, raw))
 	defer cancel()
 	switch name {
 	case "bash":
@@ -910,4 +914,41 @@ func (e *Executor) editFile(raw json.RawMessage) (Result, error) {
 		out += " — note: file was re-encoded to UTF-8"
 	}
 	return Result{Text: out, Change: e.change(path, before, content, false)}, nil
+}
+
+// SetTimeout sets the default ceiling for a tool call. Zero restores the
+// built-in default.
+func (e *Executor) SetTimeout(d time.Duration) {
+	if d > maxExecTimeout {
+		d = maxExecTimeout
+	}
+	e.mu.Lock()
+	e.timeout = d
+	e.mu.Unlock()
+}
+
+// callTimeout resolves how long this call may run: the configured default,
+// unless a bash call asks for longer (a cold build or a full test suite has no
+// business dying at three minutes).
+func (e *Executor) callTimeout(name string, raw json.RawMessage) time.Duration {
+	e.mu.Lock()
+	d := e.timeout
+	e.mu.Unlock()
+	if d <= 0 {
+		d = defaultExecTimeout
+	}
+	if name == "bash" {
+		var a struct {
+			Timeout int `json:"timeout"`
+		}
+		if json.Unmarshal(raw, &a) == nil && a.Timeout > 0 {
+			if asked := time.Duration(a.Timeout) * time.Second; asked > d {
+				d = asked
+			}
+		}
+	}
+	if d > maxExecTimeout {
+		d = maxExecTimeout
+	}
+	return d
 }

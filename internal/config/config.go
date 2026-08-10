@@ -60,6 +60,8 @@ type Config struct {
 	Autosave        bool    `toml:"autosave"`
 	AutoCompact     bool    `toml:"auto_compact"`    // summarize when context nears the limit
 	TitleModel      string  `toml:"title_model"`     // [provider:]model for session titles; empty uses the agent's
+	BashTimeout     int     `toml:"bash_timeout"`    // seconds a tool call may run; 0 = 180
+	ModelCatalog    bool    `toml:"model_catalog"`   // fetch model prices from models.dev at startup
 	Sandbox         bool    `toml:"sandbox"`         // confine bash with bubblewrap
 	SandboxNetwork  bool    `toml:"sandbox_network"` // allow network inside the sandbox
 	Theme           string  `toml:"theme"`           // taro | contrast | mono
@@ -102,6 +104,8 @@ func Default() *Config {
 		// Sandboxing is opt-in, but once on, network access stays unless the
 		// user turns it off — a silent loss of network reads as a broken build.
 		SandboxNetwork: true,
+		ModelCatalog:   true,
+		BashTimeout:    180,
 		Theme:          "taro",
 		Glyphs:         "unicode",
 		Providers: map[string]ProviderConfig{
@@ -267,6 +271,10 @@ permission_mode = "manual"      # plan | manual | auto | bypass (cycle with shif
 sandbox = false                 # run bash inside bubblewrap: worktree writable,
                                 # $HOME hidden, rest read-only (needs bwrap)
 sandbox_network = true          # false cuts network inside the sandbox
+bash_timeout = 180              # seconds a tool call may run; a bash call can
+                                # ask for more (up to 30 min) via its timeout arg
+model_catalog = true            # fetch model prices/context sizes from
+                                # models.dev on startup; false = no network
 # bash_allow = ["git", "go"]    # bash commands that never prompt ([p] in the prompt adds here)
 # secret_env = ["MY_TOKEN"]     # extra env vars hidden from tools and MCP servers
                                 # (provider API keys are always hidden)

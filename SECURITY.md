@@ -117,6 +117,16 @@ secret_env = ["MY_COMPANY_TOKEN"]
 MCP servers still receive whatever you set explicitly in their `[mcp.env]`
 block.
 
+## Network calls Tapioca makes itself
+
+Besides the provider you configured and whatever the agent fetches:
+
+- **models.dev**, once at startup, for model prices and context sizes. Set
+  `model_catalog = false` to skip it — useful when running against a local
+  Ollama and nothing else.
+
+Nothing else phones home; there is no telemetry.
+
 ## Data at rest
 
 Sessions, project memory (`/remember`) and checkpoint snapshots contain

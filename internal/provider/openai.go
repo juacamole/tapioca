@@ -66,8 +66,25 @@ type oaReq struct {
 	Stream        bool           `json:"stream"`
 	StreamOptions map[string]any `json:"stream_options,omitempty"`
 	MaxTokens     int            `json:"max_tokens,omitempty"`
-	Temperature   *float64       `json:"temperature,omitempty"`
-	Tools         []oaTool       `json:"tools,omitempty"`
+	// Reasoning models reject max_tokens and a non-default temperature, and
+	// need to be told how hard to think.
+	MaxCompletion   int      `json:"max_completion_tokens,omitempty"`
+	ReasoningEffort string   `json:"reasoning_effort,omitempty"`
+	Temperature     *float64 `json:"temperature,omitempty"`
+	Tools           []oaTool `json:"tools,omitempty"`
+}
+
+// reasoningEffort maps the thinking budget onto the low/medium/high scale
+// OpenAI-compatible servers expect.
+func reasoningEffort(budget int) string {
+	switch {
+	case budget <= 1024:
+		return "low"
+	case budget <= 4096:
+		return "medium"
+	default:
+		return "high"
+	}
 }
 
 type oaTool struct {
@@ -158,11 +175,18 @@ func (o *OpenAI) Stream(ctx context.Context, req Request, out chan<- Event) (Mes
 		Messages:      o.convertMessages(req.System, req.Messages),
 		Stream:        true,
 		StreamOptions: map[string]any{"include_usage": true},
-		MaxTokens:     req.MaxTokens,
 	}
-	if req.Temperature >= 0 {
-		t := req.Temperature
-		body.Temperature = &t
+	if req.Thinking {
+		// Asking for thinking makes this a reasoning request, which has a
+		// different shape: no max_tokens, no temperature.
+		body.MaxCompletion = req.MaxTokens
+		body.ReasoningEffort = reasoningEffort(req.ThinkingBudget)
+	} else {
+		body.MaxTokens = req.MaxTokens
+		if req.Temperature >= 0 {
+			t := req.Temperature
+			body.Temperature = &t
+		}
 	}
 	for _, td := range req.Tools {
 		var t oaTool
