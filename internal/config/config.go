@@ -17,6 +17,7 @@ type ProviderConfig struct {
 	APIKey        string `toml:"api_key"`        // literal key (discouraged; prefer env)
 	APIKeyEnv     string `toml:"api_key_env"`    // env var holding the key
 	ContextWindow int    `toml:"context_window"` // tokens; 0 = per-type default
+	APIVersion    string `toml:"api_version"`    // azure only; defaults to a known-good one
 }
 
 // Cost is the price per million tokens for a model prefix.
@@ -321,6 +322,18 @@ type = "anthropic"
 api_key_env = "ANTHROPIC_API_KEY"
 # api_key = "sk-ant-..."        # or put the key inline (not recommended)
 # base_url = "https://api.anthropic.com"
+
+# Google Gemini via its OpenAI-compatible endpoint.
+# [providers.gemini]
+# type = "gemini"
+# api_key_env = "GEMINI_API_KEY"
+
+# Azure OpenAI: base_url is your resource, and the model name is a deployment.
+# [providers.azure]
+# type = "azure"
+# base_url = "https://<resource>.openai.azure.com"
+# api_key_env = "AZURE_OPENAI_API_KEY"
+# api_version = "2024-10-21"
 
 # Any OpenAI-compatible server: OpenAI, LM Studio, vLLM, llama.cpp, OpenRouter…
 # [providers.openai]

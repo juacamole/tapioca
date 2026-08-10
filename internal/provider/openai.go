@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -16,29 +17,102 @@ import (
 )
 
 // OpenAI streams from any OpenAI-compatible chat completions endpoint:
-// OpenAI itself, LM Studio, vLLM, llama.cpp server, OpenRouter, …
+// OpenAI itself, LM Studio, vLLM, llama.cpp server, OpenRouter, and — through
+// the flavours below — Azure and Gemini, which speak the same protocol behind
+// different URLs and a different auth header.
 type OpenAI struct {
-	name    string
-	baseURL string
-	apiKey  string
-	client  *http.Client
+	name       string
+	baseURL    string
+	apiKey     string
+	flavor     string // "", flavorAzure, flavorGemini
+	apiVersion string // azure only
+	client     *http.Client
 }
+
+const (
+	flavorAzure  = "azure"
+	flavorGemini = "gemini"
+
+	geminiBase       = "https://generativelanguage.googleapis.com/v1beta/openai"
+	azureAPIVersion  = "2024-10-21"
+	openAIDefaultURL = "https://api.openai.com"
+)
 
 // NewOpenAI builds the provider. The API key is optional (local servers).
 func NewOpenAI(name string, cfg config.ProviderConfig) *OpenAI {
+	return newOpenAILike(name, cfg, "", openAIDefaultURL, "OPENAI_API_KEY")
+}
+
+// NewAzure targets Azure OpenAI, where the model name is a deployment, the key
+// travels in its own header, and the API version is part of the URL.
+func NewAzure(name string, cfg config.ProviderConfig) (*OpenAI, error) {
+	if strings.TrimSpace(cfg.BaseURL) == "" {
+		return nil, fmt.Errorf("provider %q: azure needs base_url (https://<resource>.openai.azure.com)", name)
+	}
+	o := newOpenAILike(name, cfg, flavorAzure, "", "AZURE_OPENAI_API_KEY")
+	o.apiVersion = cfg.APIVersion
+	if o.apiVersion == "" {
+		o.apiVersion = azureAPIVersion
+	}
+	return o, nil
+}
+
+// NewGemini targets Google's OpenAI-compatible endpoint, so Gemini works
+// without a second protocol implementation.
+func NewGemini(name string, cfg config.ProviderConfig) *OpenAI {
+	return newOpenAILike(name, cfg, flavorGemini, geminiBase, "GEMINI_API_KEY")
+}
+
+func newOpenAILike(name string, cfg config.ProviderConfig, flavor, defaultBase, defaultEnv string) *OpenAI {
 	key := cfg.APIKey
 	if key == "" {
 		env := cfg.APIKeyEnv
 		if env == "" {
-			env = "OPENAI_API_KEY"
+			env = defaultEnv
 		}
 		key = os.Getenv(env)
 	}
 	base := strings.TrimSuffix(cfg.BaseURL, "/")
 	if base == "" {
-		base = "https://api.openai.com"
+		base = defaultBase
 	}
-	return &OpenAI{name: name, baseURL: base, apiKey: key, client: httpClient}
+	return &OpenAI{name: name, baseURL: base, apiKey: key, flavor: flavor, client: httpClient}
+}
+
+// chatURL builds the completions endpoint for this flavour.
+func (o *OpenAI) chatURL(model string) string {
+	switch o.flavor {
+	case flavorAzure:
+		return fmt.Sprintf("%s/openai/deployments/%s/chat/completions?api-version=%s",
+			o.baseURL, url.PathEscape(model), url.QueryEscape(o.apiVersion))
+	case flavorGemini:
+		return o.baseURL + "/chat/completions" // base already ends in /openai
+	default:
+		return o.baseURL + "/v1/chat/completions"
+	}
+}
+
+func (o *OpenAI) modelsURL() string {
+	switch o.flavor {
+	case flavorAzure:
+		return o.baseURL + "/openai/models?api-version=" + url.QueryEscape(o.apiVersion)
+	case flavorGemini:
+		return o.baseURL + "/models"
+	default:
+		return o.baseURL + "/v1/models"
+	}
+}
+
+// setAuth attaches the key the way this flavour expects.
+func (o *OpenAI) setAuth(r *http.Request) {
+	if o.apiKey == "" {
+		return
+	}
+	if o.flavor == flavorAzure {
+		r.Header.Set("api-key", o.apiKey)
+		return
+	}
+	r.Header.Set("Authorization", "Bearer "+o.apiKey)
 }
 
 func (o *OpenAI) Name() string { return o.name }
@@ -205,14 +279,12 @@ func (o *OpenAI) Stream(ctx context.Context, req Request, out chan<- Event) (Mes
 	if err != nil {
 		return Message{}, err
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", o.baseURL+"/v1/chat/completions", bytes.NewReader(payload))
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", o.chatURL(req.Model), bytes.NewReader(payload))
 	if err != nil {
 		return Message{}, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	if o.apiKey != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+o.apiKey)
-	}
+	o.setAuth(httpReq)
 	resp, err := o.client.Do(httpReq)
 	if err != nil {
 		return Message{}, fmt.Errorf("%s: %w", o.name, err)
@@ -340,13 +412,11 @@ func (o *OpenAI) Stream(ctx context.Context, req Request, out chan<- Event) (Mes
 
 // ListModels implements Provider.
 func (o *OpenAI) ListModels(ctx context.Context) ([]string, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", o.baseURL+"/v1/models", nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", o.modelsURL(), nil)
 	if err != nil {
 		return nil, err
 	}
-	if o.apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+o.apiKey)
-	}
+	o.setAuth(req)
 	resp, err := o.client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", o.name, err)

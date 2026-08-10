@@ -53,8 +53,10 @@ permission prompt.
   read-only and **`$HOME` replaced by an empty tmpfs**, so `.ssh`/`.aws`
   aren't merely gated, they're absent. Missing `bwrap` fails loudly instead
   of quietly running unconfined.
-- **Providers** — Ollama, Anthropic, and any **OpenAI-compatible** server
-  (LM Studio, vLLM, llama.cpp, OpenRouter, OpenAI) via `type = "openai"`.
+- **Providers** — Ollama, Anthropic, **Azure OpenAI** (`type = "azure"`),
+  **Gemini** (`type = "gemini"`, via Google's OpenAI-compatible endpoint), and
+  any other **OpenAI-compatible** server (LM Studio, vLLM, llama.cpp,
+  OpenRouter, OpenAI) via `type = "openai"`.
   All stream, all support tool calls and thinking where the backend does.
 - **MCP** — stdio servers *and* remote **streamable HTTP** servers (with
   auth headers; `${VAR}` expands so tokens stay out of the config file);
