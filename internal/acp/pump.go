@@ -3,6 +3,7 @@ package acp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"tapioca/internal/agent"
@@ -119,6 +120,14 @@ func (s *Server) pump(ctx context.Context, sess *acpSession) string {
 			case agent.EvPermission:
 				if ev.Perm != nil {
 					s.askPermission(ctx, sess, ev.Perm)
+				}
+			case agent.EvSpawn:
+				// ACP has no place to put a second agent's tabs, and an
+				// unanswered request would block the turn forever.
+				if ev.Spawn != nil {
+					ev.Spawn.Reply <- agent.SpawnResult{
+						Err: errors.New("delegation is not available over ACP; do the work in this session"),
+					}
 				}
 			case agent.EvUsage:
 				if ev.Usage != nil {

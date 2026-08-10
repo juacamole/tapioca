@@ -81,11 +81,11 @@ func Refresh() {
 	if len(m) == 0 {
 		return
 	}
-	if err := os.MkdirAll(filepath.Dir(file()), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(file()), 0o700); err != nil {
 		return
 	}
 	tmp := file() + ".tmp"
-	if os.WriteFile(tmp, data, 0o644) == nil {
+	if os.WriteFile(tmp, data, 0o600) == nil {
 		_ = os.Rename(tmp, file())
 	}
 	mu.Lock()

@@ -67,6 +67,9 @@ type Meta struct {
 	Blob      string
 }
 
+// searchBlobMax caps the per-session text kept for the /resume filter.
+const searchBlobMax = 20_000
+
 // Dir returns the session storage directory.
 func Dir() string { return filepath.Join(config.DataDir(), "sessions") }
 
@@ -152,10 +155,15 @@ func List() ([]Meta, error) {
 		}
 		msgs := 0
 		var blob strings.Builder
+		// The cap is for the whole session, so it has to stop the outer loop
+		// too; breaking only the inner one restarted it for every agent.
 		for _, a := range s.Agents {
 			msgs += len(a.Messages)
+			if blob.Len() > searchBlobMax {
+				continue // still count messages, just stop collecting text
+			}
 			for _, m := range a.Messages {
-				if blob.Len() > 20_000 {
+				if blob.Len() > searchBlobMax {
 					break
 				}
 				if !m.IsToolResult() {

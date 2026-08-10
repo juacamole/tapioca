@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -117,6 +118,14 @@ loop:
 			if ev.Perm != nil {
 				fmt.Fprintf(os.Stderr, "[denied] %s — use --permission-mode auto|bypass for non-interactive tool runs\n", ev.Perm.Tool)
 				ev.Perm.Reply <- tools.Decision{}
+			}
+		case agent.EvSpawn:
+			// Subagents need a frontend to run them; without an answer here
+			// the delegating agent would block forever.
+			if ev.Spawn != nil {
+				ev.Spawn.Reply <- agent.SpawnResult{
+					Err: errors.New("delegation is not available in headless mode; do the work yourself"),
+				}
 			}
 		case agent.EvError:
 			if ev.Err != nil {

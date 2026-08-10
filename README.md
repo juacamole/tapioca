@@ -225,7 +225,7 @@ To use it from Zed, point an ACP agent server at the binary:
 Without an editor, `sh scripts/acp-probe.sh "your prompt"` drives the protocol
 from a shell and prints the updates an editor would have rendered.
 
-Requires Go 1.22+ to build. `go run .`/`go build` must run inside the repo
+Requires Go 1.26+ to build. `go run .`/`go build` must run inside the repo
 (Go needs `go.mod`); the compiled binary has no such requirement — install
 it on your PATH and start it from any project directory, which becomes the
 agent's working directory.

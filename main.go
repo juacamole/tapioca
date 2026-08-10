@@ -267,6 +267,9 @@ func main() {
 	reg := mcp.NewRegistry()
 	defer reg.CloseAll()
 	mgr := agent.NewManager(cfg, reg, exec)
+	// Only the TUI can run a subagent (it owns the tabs and their event
+	// pumps), so only it advertises the tool. Headless runs below never do.
+	mgr.AllowSpawn = args.printPrompt == ""
 
 	sessID := session.NewID()
 	sessName := ""

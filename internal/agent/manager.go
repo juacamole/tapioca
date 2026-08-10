@@ -16,6 +16,10 @@ type Manager struct {
 	Agents []*Agent
 	Active int
 
+	// AllowSpawn advertises spawn_agent to models. Only a frontend that can
+	// actually drive a second agent sets it.
+	AllowSpawn bool
+
 	cfg    *config.Config
 	MCP    *mcp.Registry
 	Exec   *tools.Executor
@@ -76,6 +80,7 @@ func (m *Manager) NewAgent() *Agent {
 		Thinking:       m.cfg.Thinking,
 		ThinkingBudget: m.cfg.ThinkingBudget,
 		ToolsEnabled:   true,
+		CanSpawn:       m.AllowSpawn,
 		Events:         make(chan Event, 512),
 		MCP:            m.MCP,
 		Exec:           m.Exec,
@@ -107,6 +112,7 @@ func (m *Manager) Fork(src *Agent) *Agent {
 		Thinking:       src.Thinking,
 		ThinkingBudget: src.ThinkingBudget,
 		ToolsEnabled:   src.ToolsEnabled,
+		CanSpawn:       m.AllowSpawn,
 		CtxTokens:      src.CtxTokens,
 		Events:         make(chan Event, 512),
 		MCP:            m.MCP,
@@ -138,6 +144,7 @@ func (m *Manager) Spawn(parent *Agent, name string) *Agent {
 		Thinking:       parent.Thinking,
 		ThinkingBudget: parent.ThinkingBudget,
 		ToolsEnabled:   parent.ToolsEnabled,
+		CanSpawn:       m.AllowSpawn,
 		Depth:          parent.Depth + 1,
 		Events:         make(chan Event, 512),
 		MCP:            m.MCP,
@@ -256,6 +263,7 @@ func (m *Manager) LoadSession(s *session.Session) {
 			Thinking:       st.Thinking,
 			ThinkingBudget: st.ThinkingBudget,
 			ToolsEnabled:   st.ToolsEnabled,
+			CanSpawn:       m.AllowSpawn,
 			CtxTokens:      st.CtxTokens,
 			Messages:       RepairHistory(st.Messages),
 			Queue:          st.Queue,
