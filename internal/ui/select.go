@@ -41,11 +41,12 @@ func (m *App) mouseToChat(x, y int) (selPoint, bool) {
 		return selPoint{}, false
 	}
 	line := m.vp.YOffset + innerY
-	if line < 0 || line >= len(m.chatPlain) {
+	plain := m.plainLines()
+	if line < 0 || line >= len(plain) {
 		return selPoint{}, false
 	}
 	col := innerX
-	if n := len([]rune(m.chatPlain[line])); col > n {
+	if n := len([]rune(plain[line])); col > n {
 		col = n
 	}
 	return selPoint{line: line, col: col}, true
@@ -226,8 +227,9 @@ func (m *App) selectionText() string {
 		return ""
 	}
 	var parts []string
-	for l := a.line; l <= b.line && l < len(m.chatPlain); l++ {
-		runes := []rune(m.chatPlain[l])
+	plain := m.plainLines()
+	for l := a.line; l <= b.line && l < len(plain); l++ {
+		runes := []rune(plain[l])
 		start, end := 0, len(runes)
 		if l == a.line {
 			start = min(a.col, len(runes))
@@ -250,8 +252,9 @@ func (m *App) applySelection() {
 	a, b := m.selBounds()
 	lines := make([]string, len(m.chatStyled))
 	copy(lines, m.chatStyled)
-	for l := a.line; l <= b.line && l < len(m.chatPlain); l++ {
-		runes := []rune(m.chatPlain[l])
+	plain := m.plainLines()
+	for l := a.line; l <= b.line && l < len(plain); l++ {
+		runes := []rune(plain[l])
 		start, end := 0, len(runes)
 		if l == a.line {
 			start = min(a.col, len(runes))
@@ -278,4 +281,17 @@ func (m *App) clearSelection() {
 	off := m.vp.YOffset
 	m.vp.SetContent(strings.Join(m.chatStyled, "\n"))
 	m.vp.SetYOffset(off)
+}
+
+// plainLines returns the transcript with styling removed, computing it the
+// first time it is needed after a refresh. Selection and click targeting are
+// the only things that want it, and neither happens on a spinner tick.
+func (m *App) plainLines() []string {
+	if m.chatPlain == nil {
+		m.chatPlain = make([]string, len(m.chatStyled))
+		for i, l := range m.chatStyled {
+			m.chatPlain[i] = stripAnsi(l)
+		}
+	}
+	return m.chatPlain
 }

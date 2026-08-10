@@ -1664,15 +1664,15 @@ func (m *App) refreshChat(force bool) {
 	// streaming tail needs the overflow hard-wrap here.
 	content := wrap.String(renderConversation(a, max(10, m.vp.Width-1), m.spin.View(), m.cfg.Verbose, m.thinkingOpen), max(10, m.vp.Width))
 	m.chatStyled = strings.Split(content, "\n")
-	m.chatPlain = make([]string, len(m.chatStyled))
-	for i, l := range m.chatStyled {
-		m.chatPlain[i] = stripAnsi(l)
-	}
-	m.mapThinkLines(a)
+	// Stripping ANSI from the whole transcript costs milliseconds and this
+	// runs on every spinner tick, so it is deferred until something actually
+	// needs plain text — a click, a drag, or a copy.
+	m.chatPlain = nil
+	m.thinkAt = nil
 	// A drag or persistent mark survives streaming refreshes: existing line
 	// indices are stable because content only appends.
 	if m.selActive || m.selStart != m.selEnd {
-		last := len(m.chatPlain) - 1
+		last := len(m.plainLines()) - 1
 		if m.selStart.line > last {
 			m.selStart.line = last
 		}

@@ -76,7 +76,7 @@ func (m *App) mapThinkLines(a *agent.Agent) {
 		}
 	}
 	n := 0
-	for line, plain := range m.chatPlain {
+	for line, plain := range m.plainLines() {
 		if !isThinkHeader(plain) {
 			continue
 		}
@@ -88,8 +88,12 @@ func (m *App) mapThinkLines(a *agent.Agent) {
 }
 
 // toggleThinkingAt expands or collapses the block whose header is on this
-// line, reporting whether the line was a header at all.
+// line, reporting whether the line was a header at all. The line map is built
+// here rather than on every refresh: only a click needs it.
 func (m *App) toggleThinkingAt(line int) bool {
+	if m.thinkAt == nil {
+		m.mapThinkLines(m.mgr.ActiveAgent())
+	}
 	key, ok := m.thinkAt[line]
 	if !ok {
 		return false
