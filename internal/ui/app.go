@@ -785,6 +785,12 @@ func (m *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.saveCfg()
 		m.recalcLayout()
 		m.refreshChat(false)
+		// Showing an empty dashboard now changes nothing on screen, so say
+		// why rather than letting the keypress look broken.
+		if m.cfg.Dashboard.Visible && len(m.activePanelDefs()) == 0 {
+			m.setFlash("no panels configured — /panels adds some", false)
+			return m, m.flashCmd()
+		}
 		return m, nil
 
 	case m.keys.Is(msg, "models"):
@@ -1580,6 +1586,11 @@ func (m *App) dashDims() (int, int) {
 	if !m.cfg.Dashboard.Visible || m.w < 60 || m.h < 16 {
 		return 0, 0
 	}
+	// With nothing to show, the dashboard reserves no space at all: an empty
+	// bordered column is worse than none, and the chat can have the width.
+	if len(m.activePanelDefs()) == 0 {
+		return 0, 0
+	}
 	switch m.cfg.Dashboard.Position {
 	case "top", "bottom":
 		bodyH := m.h - 3
@@ -1642,6 +1653,8 @@ func (m *App) refreshChat(force bool) {
 	if a == nil || !m.ready {
 		return
 	}
+	dw, dh := m.dashDims()
+	dashActive = dw > 0 || dh > 0
 	atBottom := m.vp.AtBottom()
 	// Finalized messages arrive pre-wrapped from the message cache; only the
 	// streaming tail needs the overflow hard-wrap here.
