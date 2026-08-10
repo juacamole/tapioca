@@ -53,7 +53,9 @@ permission prompt.
   read-only and **`$HOME` replaced by an empty tmpfs**, so `.ssh`/`.aws`
   aren't merely gated, they're absent. Missing `bwrap` fails loudly instead
   of quietly running unconfined.
-- **Providers** — Ollama, Anthropic, **Azure OpenAI** (`type = "azure"`),
+- **Providers** — Ollama, Anthropic, **Bedrock** (`type = "bedrock"`) and
+  **Vertex AI** (`type = "vertex"`) for Anthropic models on AWS/GCP,
+  **Azure OpenAI** (`type = "azure"`),
   **Gemini** (`type = "gemini"`, via Google's OpenAI-compatible endpoint), and
   any other **OpenAI-compatible** server (LM Studio, vLLM, llama.cpp,
   OpenRouter, OpenAI) via `type = "openai"`.

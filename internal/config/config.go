@@ -12,12 +12,16 @@ import (
 
 // ProviderConfig describes one LLM backend.
 type ProviderConfig struct {
-	Type          string `toml:"type"`           // "ollama" | "anthropic" | "openai"
-	BaseURL       string `toml:"base_url"`       // optional override
-	APIKey        string `toml:"api_key"`        // literal key (discouraged; prefer env)
-	APIKeyEnv     string `toml:"api_key_env"`    // env var holding the key
-	ContextWindow int    `toml:"context_window"` // tokens; 0 = per-type default
-	APIVersion    string `toml:"api_version"`    // azure only; defaults to a known-good one
+	Type            string `toml:"type"`             // "ollama" | "anthropic" | "openai"
+	BaseURL         string `toml:"base_url"`         // optional override
+	APIKey          string `toml:"api_key"`          // literal key (discouraged; prefer env)
+	APIKeyEnv       string `toml:"api_key_env"`      // env var holding the key
+	ContextWindow   int    `toml:"context_window"`   // tokens; 0 = per-type default
+	APIVersion      string `toml:"api_version"`      // azure only; defaults to a known-good one
+	Region          string `toml:"region"`           // bedrock, vertex
+	Profile         string `toml:"profile"`          // bedrock: AWS shared-credentials profile
+	Project         string `toml:"project"`          // vertex: GCP project
+	CredentialsFile string `toml:"credentials_file"` // vertex: service account JSON
 }
 
 // Cost is the price per million tokens for a model prefix.
@@ -331,6 +335,21 @@ type = "anthropic"
 api_key_env = "ANTHROPIC_API_KEY"
 # api_key = "sk-ant-..."        # or put the key inline (not recommended)
 # base_url = "https://api.anthropic.com"
+
+# Anthropic models on AWS Bedrock. Credentials come from the usual AWS
+# environment variables or ~/.aws/credentials; the model is a Bedrock id.
+# [providers.bedrock]
+# type = "bedrock"
+# region = "us-east-1"
+# profile = "default"           # optional: which ~/.aws/credentials profile
+
+# Anthropic models on Google Vertex AI. Auth is a service account key, a
+# GOOGLE_ACCESS_TOKEN, or whatever gcloud is logged in as.
+# [providers.vertex]
+# type = "vertex"
+# project = "my-gcp-project"
+# region = "us-east5"
+# credentials_file = "/path/to/service-account.json"
 
 # Google Gemini via its OpenAI-compatible endpoint.
 # [providers.gemini]

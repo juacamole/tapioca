@@ -179,6 +179,10 @@ func New(name string, cfg config.ProviderConfig) (Provider, error) {
 		return NewAzure(name, cfg)
 	case "gemini", "google":
 		return NewGemini(name, cfg), nil
+	case "bedrock":
+		return NewBedrock(name, cfg)
+	case "vertex":
+		return NewVertex(name, cfg)
 	default:
 		return nil, fmt.Errorf("provider %q: unknown type %q", name, cfg.Type)
 	}
