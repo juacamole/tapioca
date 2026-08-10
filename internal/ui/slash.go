@@ -706,20 +706,38 @@ func (m *App) openSessionPicker() tea.Cmd {
 		m.setFlash("no saved sessions yet", true)
 		return m.flashCmd()
 	}
-	var items []pickerItem
-	for _, meta := range metas {
+	// This project's sessions first: resuming almost always means "what I was
+	// doing here", and a flat list of every session ever is unreadable.
+	here, elsewhere := session.ForProject(metas, m.cwd())
+	item := func(meta session.Meta, other bool) pickerItem {
 		label := meta.Name
 		if label == "" {
 			label = meta.ID
 		}
-		items = append(items, pickerItem{
-			label:  label,
-			desc:   fmt.Sprintf("%d agents"+gl.sep+"%d msgs"+gl.sep+"%s", meta.Agents, meta.Messages, ago(meta.UpdatedAt)),
-			value:  meta.ID,
-			search: meta.Blob,
-		})
+		desc := fmt.Sprintf("%d agents"+gl.sep+"%d msgs"+gl.sep+"%s", meta.Agents, meta.Messages, ago(meta.UpdatedAt))
+		if other {
+			// Sessions saved before directories were recorded have none.
+			where := "another project"
+			if meta.Cwd != "" {
+				where = shortPath(meta.Cwd)
+			}
+			desc += gl.sep + where
+			label = styDim.Render(label)
+		}
+		return pickerItem{label: label, desc: desc, value: meta.ID, search: meta.Blob}
 	}
-	m.pick = newPicker(pickSession, "resume session (type to search all messages)", items)
+	var items []pickerItem
+	for _, meta := range here {
+		items = append(items, item(meta, false))
+	}
+	for _, meta := range elsewhere {
+		items = append(items, item(meta, true))
+	}
+	title := "resume session (type to search all messages)"
+	if len(here) > 0 && len(elsewhere) > 0 {
+		title = fmt.Sprintf("resume session%s%d here, %d elsewhere", gl.sep, len(here), len(elsewhere))
+	}
+	m.pick = newPicker(pickSession, title, items)
 	m.overlay = overlayPicker
 	return nil
 }

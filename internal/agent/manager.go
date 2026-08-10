@@ -215,7 +215,11 @@ func (m *Manager) Close(i int) {
 
 // ToSession snapshots the workspace.
 func (m *Manager) ToSession(id, name string, createdAt time.Time) *session.Session {
-	s := &session.Session{ID: id, Name: name, CreatedAt: createdAt, Active: m.Active}
+	cwd := ""
+	if m.Exec != nil {
+		cwd = m.Exec.Cwd()
+	}
+	s := &session.Session{ID: id, Name: name, Cwd: cwd, CreatedAt: createdAt, Active: m.Active}
 	for _, a := range m.Agents {
 		msgs := a.Messages
 		if len(a.PendingNotes) > 0 {

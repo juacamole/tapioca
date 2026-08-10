@@ -190,8 +190,12 @@ func main() {
 			if name == "" {
 				name = "(unnamed)"
 			}
-			fmt.Printf("%s  %-40s  %d agents  %d msgs  %s\n",
-				m.ID, name, m.Agents, m.Messages, m.UpdatedAt.Format("2006-01-02 15:04"))
+			where := m.Cwd
+			if where == "" {
+				where = "(no project recorded)"
+			}
+			fmt.Printf("%s  %-32s  %d agents  %d msgs  %s  %s\n",
+				m.ID, name, m.Agents, m.Messages, m.UpdatedAt.Format("2006-01-02 15:04"), where)
 		}
 		return
 	}
@@ -282,7 +286,7 @@ func main() {
 
 	resumeID := args.resumeID
 	if args.continueLatest {
-		id, err := session.LatestID()
+		id, err := session.LatestID(cwd)
 		if err != nil {
 			fail(err)
 		}
