@@ -169,6 +169,11 @@ func (m *App) handleChatMouse(msg tea.MouseMsg) (bool, tea.Cmd) {
 			if !ok {
 				return true, cmd
 			}
+			// A click on a collapsed thought expands it rather than starting
+			// a selection nobody wanted.
+			if m.toggleThinkingAt(p.line) {
+				return true, cmd
+			}
 			m.selActive = true
 			m.selStart, m.selEnd = p, p
 			m.applySelection()

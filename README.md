@@ -148,12 +148,18 @@ Type `/` for the completion popup:
 | cancel / close overlay | `esc` | | toggle dashboards | `ctrl+b` |
 | cycle permission mode | `shift+tab` | | cycle focus | `tab` (or click) |
 | verbose chat | `ctrl+o` | | move focused panel | `shift+arrows` |
+| scroll output | `pgup` / `pgdown` | | | |
 | edit prompt in vim | `ctrl+g` | | help | `f1` |
 | toggle thinking | `ctrl+t` | | |
 
 Sessions, model picking, the system prompt and panel management live in
 slash commands: `/new`, `/save`, `/resume`, `/model`, `/panels`,
 `/systemprompt`, `/settings`.
+
+`pgup`/`pgdown` and the mouse wheel scroll the transcript **whatever has
+focus**, so you can read back while a prompt is half-typed. Thoughts collapse
+to `› thought (210 tok)`; **click that line to expand just that one**, click
+again to fold it back (`ctrl+o` still expands everything at once).
 
 **Marking text in the chat copies it automatically** — drag with the mouse,
 and the moment you let go it is on the clipboard (the mark stays highlighted
