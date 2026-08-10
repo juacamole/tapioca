@@ -218,7 +218,8 @@ func (c *Config) Path() string {
 
 // Save writes the current configuration back to the file it was loaded from.
 // In-app settings changes call this, so users never have to edit the file by
-// hand. (Hand-written comments in the file are not preserved.)
+// hand — and comments in the existing file are carried across, since a toggle
+// should not cost you the documentation or your own notes.
 func (c *Config) Save() error {
 	path := c.path
 	if path == "" {
@@ -232,14 +233,19 @@ func (c *Config) Save() error {
 		c.presave(&tosave)
 	}
 	var buf bytes.Buffer
-	buf.WriteString("# Tapioca configuration.\n")
-	buf.WriteString("# Managed by the app (settings dashboard writes here); manual edits are\n")
-	buf.WriteString("# fine too and are picked up on next start.\n\n")
 	if err := toml.NewEncoder(&buf).Encode(&tosave); err != nil {
 		return err
 	}
+	text := buf.String()
+	if existing, err := os.ReadFile(path); err == nil {
+		text = applyComments(text, harvestComments(string(existing)))
+	} else {
+		text = "# Tapioca configuration.\n" +
+			"# Managed by the app (settings dashboard writes here); manual edits are\n" +
+			"# fine too and are picked up on next start.\n\n" + text
+	}
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, buf.Bytes(), 0o600); err != nil {
+	if err := os.WriteFile(tmp, []byte(text), 0o600); err != nil {
 		return err
 	}
 	return os.Rename(tmp, path)
