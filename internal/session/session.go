@@ -9,8 +9,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -134,51 +132,6 @@ func Load(id string) (*Session, error) {
 	// it was loaded from, not clobber the original via its embedded id.
 	s.ID = id
 	return &s, nil
-}
-
-// List returns stored sessions, newest first.
-func List() ([]Meta, error) {
-	entries, err := os.ReadDir(Dir())
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	var metas []Meta
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
-			continue
-		}
-		id := strings.TrimSuffix(e.Name(), ".json")
-		s, err := Load(id)
-		if err != nil {
-			continue
-		}
-		msgs := 0
-		var blob strings.Builder
-		// The cap is for the whole session, so it has to stop the outer loop
-		// too; breaking only the inner one restarted it for every agent.
-		for _, a := range s.Agents {
-			msgs += len(a.Messages)
-			if blob.Len() > searchBlobMax {
-				continue // still count messages, just stop collecting text
-			}
-			for _, m := range a.Messages {
-				if blob.Len() > searchBlobMax {
-					break
-				}
-				if !m.IsToolResult() {
-					blob.WriteString(strings.ToLower(m.Text()))
-					blob.WriteString("\n")
-				}
-			}
-		}
-		metas = append(metas, Meta{ID: s.ID, Name: s.Name, Cwd: s.Cwd, UpdatedAt: s.UpdatedAt,
-			Agents: len(s.Agents), Messages: msgs, Blob: blob.String()})
-	}
-	sort.Slice(metas, func(i, j int) bool { return metas[i].UpdatedAt.After(metas[j].UpdatedAt) })
-	return metas, nil
 }
 
 // ForProject splits sessions into those belonging to cwd and the rest. Older
