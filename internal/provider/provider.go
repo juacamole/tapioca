@@ -175,6 +175,10 @@ func New(name string, cfg config.ProviderConfig) (Provider, error) {
 		return NewAnthropic(name, cfg)
 	case "openai", "openai-compatible":
 		return NewOpenAI(name, cfg), nil
+	case "azure":
+		return NewAzure(name, cfg)
+	case "gemini", "google":
+		return NewGemini(name, cfg), nil
 	default:
 		return nil, fmt.Errorf("provider %q: unknown type %q", name, cfg.Type)
 	}
