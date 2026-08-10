@@ -115,6 +115,8 @@ type App struct {
 	probedCtx  map[string]bool
 	compacting map[int]context.CancelFunc
 	spawns     map[int]*agent.SpawnReq // subagent id -> the parent awaiting it
+	thinkOpen  map[string]bool         // explicit expand/collapse per thinking block
+	thinkAt    map[int]string          // transcript line -> thinking block key
 
 	// Chat transcript caches for mouse selection.
 	chatStyled []string
@@ -174,6 +176,8 @@ func NewApp(cfg *config.Config, mgr *agent.Manager, sessID, sessName string, cre
 		probedCtx:   map[string]bool{},
 		compacting:  map[int]context.CancelFunc{},
 		spawns:      map[int]*agent.SpawnReq{},
+		thinkOpen:   map[string]bool{},
+		thinkAt:     map[int]string{},
 		sessID:      sessID,
 		sessName:    sessName,
 		sessTitled:  sessName != "",
@@ -861,6 +865,16 @@ func (m *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			sys = a.SystemPrompt
 		}
 		return m, openEditorCmd(m.cfg.Editor, editTargetSystem, sys)
+
+	// Scrolling the transcript must not depend on focus: clicking the chat
+	// puts you in write mode, so the focus-scoped scroll keys were never
+	// reachable while typing.
+	case m.keys.Is(msg, "output_up"):
+		m.vp.SetYOffset(m.vp.YOffset - m.vp.Height/2)
+		return m, nil
+	case m.keys.Is(msg, "output_down"):
+		m.vp.SetYOffset(m.vp.YOffset + m.vp.Height/2)
+		return m, nil
 	}
 
 	switch m.focus {
@@ -1631,12 +1645,13 @@ func (m *App) refreshChat(force bool) {
 	atBottom := m.vp.AtBottom()
 	// Finalized messages arrive pre-wrapped from the message cache; only the
 	// streaming tail needs the overflow hard-wrap here.
-	content := wrap.String(renderConversation(a, max(10, m.vp.Width-1), m.spin.View(), m.cfg.Verbose), max(10, m.vp.Width))
+	content := wrap.String(renderConversation(a, max(10, m.vp.Width-1), m.spin.View(), m.cfg.Verbose, m.thinkingOpen), max(10, m.vp.Width))
 	m.chatStyled = strings.Split(content, "\n")
 	m.chatPlain = make([]string, len(m.chatStyled))
 	for i, l := range m.chatStyled {
 		m.chatPlain[i] = stripAnsi(l)
 	}
+	m.mapThinkLines(a)
 	// A drag or persistent mark survives streaming refreshes: existing line
 	// indices are stable because content only appends.
 	if m.selActive || m.selStart != m.selEnd {

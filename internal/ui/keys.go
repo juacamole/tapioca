@@ -54,6 +54,8 @@ var actions = []Action{
 	{"scroll_down", "scroll down / select down", "down,j", "scroll"},
 	{"page_up", "page up (chat focus)", "pgup,u", "scroll"},
 	{"page_down", "page down (chat focus)", "pgdown,d", "scroll"},
+	{"output_up", "scroll output up (any focus)", "pgup", "scroll"},
+	{"output_down", "scroll output down (any focus)", "pgdown", "scroll"},
 	{"scroll_top", "go to top (chat focus)", "home,g", "scroll"},
 	{"scroll_bottom", "go to bottom (chat focus)", "end,G", "scroll"},
 	{"copy_last", "copy last response (chat focus)", "y", "scroll"},

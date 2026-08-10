@@ -36,7 +36,7 @@ func sanitizeText(s string) string {
 // including any in-flight streaming output. In verbose mode thoughts, tool
 // arguments and tool results are shown in full; otherwise they collapse to
 // short summaries.
-func renderConversation(a *agent.Agent, w int, spin string, verbose bool) string {
+func renderConversation(a *agent.Agent, w int, spin string, verbose bool, open func(string) bool) string {
 	if w < 10 {
 		w = 10
 	}
@@ -50,7 +50,7 @@ func renderConversation(a *agent.Agent, w int, spin string, verbose bool) string
 		if m.Hidden {
 			continue
 		}
-		parts = append(parts, renderMessageCached(&m, a, w, verbose))
+		parts = append(parts, renderMessageCached(&m, a, w, verbose, open))
 	}
 
 	if a.Status.Busy() || a.StreamText != "" || a.StreamThinking != "" {
@@ -90,16 +90,23 @@ var msgCache = map[string]string{}
 
 const msgCacheMax = 2000
 
-func renderMessageCached(m *provider.Message, a *agent.Agent, w int, verbose bool) string {
+func renderMessageCached(m *provider.Message, a *agent.Agent, w int, verbose bool, open func(string) bool) string {
 	size := 0
 	for _, b := range m.Blocks {
 		size += len(b.Text) + len(b.Content) + len(b.Input)
 	}
-	key := fmt.Sprintf("%d|%d|%t|%s|%d|%d|%d", a.ID, w, verbose, m.Role, m.Time.UnixNano(), len(m.Blocks), size)
+	// Expanded thoughts change the rendering, so they belong in the cache key.
+	thoughts := ""
+	for bi, b := range m.Blocks {
+		if b.Type == "thinking" {
+			thoughts += fmt.Sprintf("%d%t", bi, open(thinkKey(m, bi)))
+		}
+	}
+	key := fmt.Sprintf("%d|%d|%t|%s|%d|%d|%d|%s", a.ID, w, verbose, m.Role, m.Time.UnixNano(), len(m.Blocks), size, thoughts)
 	if s, ok := msgCache[key]; ok {
 		return s
 	}
-	s := wrap.String(renderMessage(m, a, w, verbose), w)
+	s := wrap.String(renderMessage(m, a, w, verbose, open), w)
 	if len(msgCache) >= msgCacheMax {
 		msgCache = map[string]string{}
 	}
@@ -107,7 +114,7 @@ func renderMessageCached(m *provider.Message, a *agent.Agent, w int, verbose boo
 	return s
 }
 
-func renderMessage(m *provider.Message, a *agent.Agent, w int, verbose bool) string {
+func renderMessage(m *provider.Message, a *agent.Agent, w int, verbose bool, open func(string) bool) string {
 	ts := styDim.Render(m.Time.Format("15:04"))
 	var b strings.Builder
 
@@ -141,10 +148,10 @@ func renderMessage(m *provider.Message, a *agent.Agent, w int, verbose bool) str
 	col := lipgloss.NewStyle().Bold(true).Foreground(agentColor(a.ID))
 	head := col.Render(gl.bar+" "+a.Name) + styDim.Render(""+gl.sep+""+m.Model+""+gl.sep+"") + ts
 	b.WriteString(head)
-	for _, bl := range m.Blocks {
+	for i, bl := range m.Blocks {
 		switch bl.Type {
 		case "thinking":
-			b.WriteString("\n" + renderThinking(bl.Text, w, verbose))
+			b.WriteString("\n" + renderThinking(bl.Text, w, open(thinkKey(m, i))))
 		case "redacted_thinking":
 			b.WriteString("\n" + styThink.Render("thought (redacted by the provider)"))
 		case "text":
@@ -161,14 +168,15 @@ func renderMessage(m *provider.Message, a *agent.Agent, w int, verbose bool) str
 	return b.String()
 }
 
-// renderThinking renders a finished thinking block.
-func renderThinking(text string, w int, verbose bool) string {
+// renderThinking renders a finished thinking block, collapsed to its header
+// unless expanded.
+func renderThinking(text string, w int, open bool) string {
 	text = sanitizeText(text)
-	if !verbose {
-		return styThink.Render(fmt.Sprintf("thought (%s)", humanTokens(len(text))))
+	if !open {
+		return styThink.Render(thinkHeader(text, false))
 	}
 	var b strings.Builder
-	b.WriteString(styThink.Render(fmt.Sprintf("thinking (%s)", humanTokens(len(text)))))
+	b.WriteString(styThink.Render(thinkHeader(text, true)))
 	for _, l := range strings.Split(wrapPlain(text, w-2), "\n") {
 		b.WriteString("\n" + styThink.Render("  "+l))
 	}
