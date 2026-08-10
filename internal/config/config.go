@@ -157,7 +157,8 @@ func Load(path string) (*Config, error) {
 		_ = WriteDefault(path) // best effort; the app works without a file
 		return cfg, nil
 	}
-	if _, err := toml.DecodeFile(path, cfg); err != nil {
+	md, err := toml.DecodeFile(path, cfg)
+	if err != nil {
 		return nil, fmt.Errorf("parsing %s: %w", path, err)
 	}
 	def := Default()
@@ -170,7 +171,9 @@ func Load(path string) (*Config, error) {
 	if cfg.Providers == nil {
 		cfg.Providers = def.Providers
 	}
-	if len(cfg.Dashboard.Panels) == 0 {
+	// An explicit "panels = []" means the user turned them all off, which is
+	// different from never having mentioned panels at all.
+	if !md.IsDefined("dashboard", "panels") {
 		cfg.Dashboard.Panels = def.Dashboard.Panels
 	}
 	if cfg.Dashboard.Width < 0.2 || cfg.Dashboard.Width > 0.5 {
