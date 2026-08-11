@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"os/exec"
@@ -674,6 +675,32 @@ func (e *Executor) sensitivePath(path string) bool {
 	return !e.inWorkArea(clean) && looksSecret(strings.ToLower(clean))
 }
 
+// maxReadBytes caps one read_file. The tool needs no approval in any mode, so
+// os.ReadFile on /dev/zero or /proc/kcore grew a buffer until the process died
+// — the TUI is killed and everything since the last save goes with it. A
+// character device reports no size, so the cap has to bound the read itself
+// rather than trust a stat.
+const maxReadBytes = 16 << 20
+
+func readCapped(path string) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	if info, err := f.Stat(); err == nil && info.IsDir() {
+		return nil, fmt.Errorf("%s is a directory", path)
+	}
+	data, err := io.ReadAll(io.LimitReader(f, maxReadBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxReadBytes {
+		return data[:maxReadBytes], nil
+	}
+	return data, nil
+}
+
 // under reports whether a resolved path is dir or inside it.
 func under(clean, dir string) bool {
 	return clean == dir || strings.HasPrefix(clean, dir+string(filepath.Separator))
@@ -908,7 +935,7 @@ func (e *Executor) readFile(raw json.RawMessage) (string, bool, error) {
 		return "invalid arguments: need {\"path\": \"...\"}", true, nil
 	}
 	path := e.resolve(a.Path)
-	data, err := os.ReadFile(path)
+	data, err := readCapped(path)
 	if err != nil {
 		return err.Error(), true, nil
 	}

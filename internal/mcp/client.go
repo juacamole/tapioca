@@ -26,6 +26,10 @@ var protocolVersions = []string{"2025-06-18", "2025-03-26", "2024-11-05"}
 
 const protocolVersion = "2025-06-18"
 
+// maxToolOutput caps what one tool call may return. The transport's line cap
+// bounds a single message, not the text assembled out of one.
+const maxToolOutput = 8 << 20
+
 func supportedVersion(v string) bool {
 	for _, known := range protocolVersions {
 		if v == known {
@@ -72,12 +76,14 @@ type Client struct {
 
 	// Tools can be replaced while the agent is running, when the server sends
 	// notifications/tools/list_changed.
-	toolsMu   sync.Mutex
-	tools     []Tool
-	prompts   []Prompt
-	resources []Resource
-	version   string // the revision the handshake settled on
-	onTools   func()
+	toolsMu        sync.Mutex
+	refreshing     map[string]bool
+	pendingRefresh map[string]bool
+	tools          []Tool
+	prompts        []Prompt
+	resources      []Resource
+	version        string // the revision the handshake settled on
+	onTools        func()
 
 	pendingMu sync.Mutex
 	pending   map[int64]chan *rpcMsg
@@ -91,9 +97,11 @@ type Client struct {
 // child process over stdio — then performs the handshake and lists its tools.
 func Start(ctx context.Context, cfg config.MCPServerConfig) (*Client, error) {
 	c := &Client{
-		Name:    cfg.Name,
-		pending: map[int64]chan *rpcMsg{},
-		closed:  make(chan struct{}),
+		Name:           cfg.Name,
+		pending:        map[int64]chan *rpcMsg{},
+		refreshing:     map[string]bool{},
+		pendingRefresh: map[string]bool{},
+		closed:         make(chan struct{}),
 	}
 	var err error
 	if strings.TrimSpace(cfg.URL) != "" {
@@ -214,7 +222,7 @@ func (c *Client) OnToolsChanged(fn func()) {
 
 // refreshTools re-lists after a tools/list_changed notification. It runs on
 // the read loop's goroutine, so it cannot block waiting for its own response.
-func (c *Client) refreshTools() { c.refreshList(c.listTools) }
+func (c *Client) refreshTools() { c.refreshList("tools", c.listTools) }
 
 func (c *Client) startStdio(cfg config.MCPServerConfig) error {
 	cmd := exec.Command(cfg.Command, cfg.Args...)
@@ -295,14 +303,21 @@ func (c *Client) handle(line []byte) {
 	}
 	switch {
 	case msg.Method != "" && msg.ID != nil:
-		// Server-initiated request: answer ping, reject the rest.
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
+		// Server-initiated request: answer ping, reject the rest. The reply
+		// goes out on its own goroutine on purpose. Sending it inline meant
+		// the HTTP transport re-entered Send from inside Send — a server that
+		// answered every POST with a request recursed to a stack overflow —
+		// and on stdio it blocked the read loop on a pipe the server had
+		// stopped draining.
+		reply := rpcMsg{JSONRPC: "2.0", ID: msg.ID, Error: &rpcError{Code: -32601, Message: "method not supported"}}
 		if msg.Method == "ping" {
-			_ = c.send(ctx, rpcMsg{JSONRPC: "2.0", ID: msg.ID, Result: json.RawMessage("{}")})
-		} else {
-			_ = c.send(ctx, rpcMsg{JSONRPC: "2.0", ID: msg.ID, Error: &rpcError{Code: -32601, Message: "method not supported"}})
+			reply = rpcMsg{JSONRPC: "2.0", ID: msg.ID, Result: json.RawMessage("{}")}
 		}
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			_ = c.send(ctx, reply)
+		}()
 	case msg.Method != "":
 		// A server whose tools change mid-session (a gateway that connects to
 		// another backend, say) would otherwise keep offering the old list
@@ -400,22 +415,25 @@ func (c *Client) CallTool(ctx context.Context, name string, args json.RawMessage
 	if err := json.Unmarshal(res, &out); err != nil {
 		return string(res), false, nil
 	}
-	var parts []string
-	for _, item := range out.Content {
-		if item.Type == "text" {
-			parts = append(parts, item.Text)
-		} else {
-			parts = append(parts, fmt.Sprintf("[%s content omitted]", item.Type))
-		}
-	}
-	text := ""
-	for i, p := range parts {
+	// Built with a Builder rather than += in a loop: a server returning tens
+	// of thousands of small content parts made the join itself take longer
+	// than the call, and nothing downstream bounds it.
+	var b strings.Builder
+	for i, item := range out.Content {
 		if i > 0 {
-			text += "\n"
+			b.WriteString("\n")
 		}
-		text += p
+		if item.Type == "text" {
+			b.WriteString(item.Text)
+		} else {
+			fmt.Fprintf(&b, "[%s content omitted]", item.Type)
+		}
+		if b.Len() > maxToolOutput {
+			b.WriteString("\n[truncated]")
+			break
+		}
 	}
-	return text, out.IsError, nil
+	return b.String(), out.IsError, nil
 }
 
 // Alive reports whether the connection is still usable.

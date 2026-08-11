@@ -344,11 +344,22 @@ func (c *Client) Close() {
 	})
 }
 
+// A language server is a subprocess that can be wrong or hostile, and both
+// look the same from here. Content-Length went straight from Atoi into a
+// make(): "Content-Length: 9223372036854775807" panicked in makeslice on a
+// goroutine with no recover, which killed Tapioca outright, and a smaller
+// absurd value allocated that many bytes for real. Header lines were read with
+// no bound either, so one line with no newline in it could be swallowed whole.
+const (
+	maxFrameBytes  = 32 << 20
+	maxHeaderBytes = 8 << 10
+)
+
 // readFrame reads one Content-Length framed message.
 func readFrame(r *bufio.Reader) ([]byte, error) {
 	length := 0
 	for {
-		line, err := r.ReadString('\n')
+		line, err := readHeaderLine(r)
 		if err != nil {
 			return nil, err
 		}
@@ -367,11 +378,33 @@ func readFrame(r *bufio.Reader) ([]byte, error) {
 	if length <= 0 {
 		return nil, fmt.Errorf("message with no Content-Length")
 	}
+	if length > maxFrameBytes {
+		return nil, fmt.Errorf("Content-Length %d exceeds the %d byte limit", length, maxFrameBytes)
+	}
 	body := make([]byte, length)
 	if _, err := io.ReadFull(r, body); err != nil {
 		return nil, err
 	}
 	return body, nil
+}
+
+// readHeaderLine is ReadString('\n') with a ceiling, so a server that never
+// sends one cannot make us buffer without end.
+func readHeaderLine(r *bufio.Reader) (string, error) {
+	var b strings.Builder
+	for {
+		chunk, err := r.ReadString('\n')
+		b.WriteString(chunk)
+		if err == nil {
+			return b.String(), nil
+		}
+		if err != bufio.ErrBufferFull {
+			return b.String(), err
+		}
+		if b.Len() > maxHeaderBytes {
+			return "", fmt.Errorf("header line exceeds %d bytes", maxHeaderBytes)
+		}
+	}
 }
 
 func pathToURI(path string) string {

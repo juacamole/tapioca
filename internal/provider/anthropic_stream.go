@@ -11,6 +11,15 @@ import (
 	"time"
 )
 
+// maxResponseBytes caps one streamed response. Nothing else did: the
+// scanner's line cap bounds a single line, not the answer assembled from
+// thousands of them, and the turn carries no deadline — so a provider that
+// keeps sending deltas, broken or hostile, grew the heap by gigabytes in
+// seconds until the process died.
+const maxResponseBytes = 32 << 20
+
+func overLimit(n int) bool { return n > maxResponseBytes }
+
 // streamAnthropicSSE turns an Anthropic-format event stream into events and
 // a finished message. Bedrock and Vertex serve the same protocol behind
 // different transports, so they feed their decoded stream through here
@@ -62,6 +71,7 @@ func (a *Anthropic) streamAnthropicSSE(ctx context.Context, model string, r io.R
 		return msg
 	}
 
+	streamed := 0
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
 	for scanner.Scan() {
@@ -96,6 +106,10 @@ func (a *Anthropic) streamAnthropicSSE(ctx context.Context, model string, r io.R
 			b := builders[ev.Index]
 			if b == nil || ev.Delta == nil {
 				continue
+			}
+			streamed += len(ev.Delta.Text) + len(ev.Delta.Thinking) + len(ev.Delta.PartialJSON)
+			if overLimit(streamed) {
+				return finish(), fmt.Errorf("response exceeded %d bytes; stopping", maxResponseBytes)
 			}
 			switch ev.Delta.Type {
 			case "text_delta":

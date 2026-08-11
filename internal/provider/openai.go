@@ -333,6 +333,7 @@ func (o *OpenAI) Stream(ctx context.Context, req Request, out chan<- Event) (Mes
 		return msg
 	}
 
+	streamed := 0
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
 	for scanner.Scan() {
@@ -361,6 +362,10 @@ func (o *OpenAI) Stream(ctx context.Context, req Request, out chan<- Event) (Mes
 			usage.OutputTokens = ch.Usage.CompletionTokens
 		}
 		for _, c := range ch.Choices {
+			streamed += len(c.Delta.Content) + len(c.Delta.ReasoningContent) + len(c.Delta.Reasoning)
+			if overLimit(streamed) {
+				return finish(), fmt.Errorf("response exceeded %d bytes; stopping", maxResponseBytes)
+			}
 			if r := c.Delta.ReasoningContent + c.Delta.Reasoning; r != "" {
 				thinking.WriteString(r)
 				out <- Event{Type: EventThinkingDelta, Text: r}

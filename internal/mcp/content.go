@@ -202,22 +202,47 @@ func (c *Client) ReadResource(ctx context.Context, uri string) (string, error) {
 
 // refreshPrompts and refreshResources handle the list_changed notifications
 // for their kind, the same way refreshTools does.
-func (c *Client) refreshPrompts() { c.refreshList(c.listPrompts) }
+func (c *Client) refreshPrompts() { c.refreshList("prompts", c.listPrompts) }
 
-func (c *Client) refreshResources() { c.refreshList(c.listResources) }
+func (c *Client) refreshResources() { c.refreshList("resources", c.listResources) }
 
-func (c *Client) refreshList(list func(context.Context) error) {
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if list(ctx) != nil {
-			return
-		}
-		c.toolsMu.Lock()
-		fn := c.onTools
+// refreshList re-lists in the background, coalescing: a server that floods
+// list_changed notifications spawned one goroutine and one pending request per
+// notification, which reached 50,000 of each in four seconds. At most one
+// refresh per kind runs at a time, and one more is queued behind it so a
+// change arriving mid-refresh is not missed.
+func (c *Client) refreshList(kind string, list func(context.Context) error) {
+	c.toolsMu.Lock()
+	if c.refreshing == nil {
+		c.refreshing = map[string]bool{}
+	}
+	if c.refreshing[kind] {
+		c.pendingRefresh[kind] = true
 		c.toolsMu.Unlock()
-		if fn != nil {
-			fn()
+		return
+	}
+	c.refreshing[kind] = true
+	c.toolsMu.Unlock()
+
+	go func() {
+		for {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			err := list(ctx)
+			cancel()
+			c.toolsMu.Lock()
+			fn := c.onTools
+			again := c.pendingRefresh[kind]
+			delete(c.pendingRefresh, kind)
+			if !again {
+				delete(c.refreshing, kind)
+			}
+			c.toolsMu.Unlock()
+			if err == nil && fn != nil {
+				fn()
+			}
+			if !again {
+				return
+			}
 		}
 	}()
 }
