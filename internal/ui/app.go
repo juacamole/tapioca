@@ -1839,7 +1839,7 @@ func (m *App) renderPerm(w, h int) string {
 	}
 	var b strings.Builder
 	b.WriteString(styPanelTitle.Render("permission required") + styDim.Render("  ("+name+")") + "\n\n")
-	b.WriteString(styTool.Render("tool: "+e.req.Tool) + "\n")
+	b.WriteString(styTool.Render("tool: "+sanitizeLabel(e.req.Tool)) + "\n")
 	summary := sanitizeText(e.req.Summary)
 	lines := strings.Split(wrapPlain(summary, min(80, w-16)), "\n")
 	if len(lines) > 10 {

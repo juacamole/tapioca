@@ -29,9 +29,9 @@ func (m *App) mcpPromptCmds() []slashCmd {
 	out := make([]slashCmd, 0, len(prompts))
 	for _, p := range prompts {
 		p := p
-		desc := p.Description
+		desc := sanitizeLabel(p.Description)
 		if desc == "" {
-			desc = "prompt from " + p.Server
+			desc = "prompt from " + sanitizeLabel(p.Server)
 		}
 		args := ""
 		for _, a := range p.Arguments {
@@ -42,7 +42,7 @@ func (m *App) mcpPromptCmds() []slashCmd {
 			args += name + " "
 		}
 		out = append(out, slashCmd{
-			name: mcp.FullName(p.Server, p.Name),
+			name: sanitizeLabel(mcp.FullName(p.Server, p.Name)),
 			args: strings.TrimSpace(args),
 			help: desc,
 			run:  func(m *App, arg string) tea.Cmd { return m.runMCPPrompt(p, arg) },
@@ -132,7 +132,7 @@ func (m *App) mcpResourceMatches(tok string) []string {
 	}
 	var out []string
 	for _, r := range m.mgr.MCP.AllResources() {
-		label := mcp.Sanitize(r.Server) + ":" + r.URI
+		label := sanitizeLabel(mcp.Sanitize(r.Server) + ":" + r.URI)
 		if tok == "" || strings.Contains(strings.ToLower(label), strings.ToLower(tok)) {
 			out = append(out, label)
 		}

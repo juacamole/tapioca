@@ -16,17 +16,23 @@ import (
 // point at a dashboard that is not there. Set by refreshChat.
 var dashActive bool
 
-// Model output and tool results can carry raw terminal control sequences
-// (colors, \r progress bars, cursor movement) that would corrupt the TUI if
-// rendered verbatim.
+// Model output, tool results and file contents can carry raw terminal control
+// sequences. Rendering them verbatim does more than corrupt the layout: OSC 52
+// writes the user's clipboard, and a cursor-move plus clear can forge UI —
+// including a fake permission prompt over the real one. Everything reaching
+// the screen from outside this program goes through sanitizeText.
+//
+// C1 is stripped along with C0 because textenc's Latin-1 fallback turns bytes
+// 0x80-0x9f into exactly those code points, and terminals in 8-bit mode act on
+// them: U+009B is CSI, U+009D is OSC.
 var (
 	csiRe  = regexp.MustCompile("\x1b\\[[0-9;?]*[ -/]*[@-~]")
 	oscRe  = regexp.MustCompile("\x1b\\][^\x07\x1b]*(\x07|\x1b\\\\)?")
-	ctrlRe = regexp.MustCompile("[\x00-\x09\x0b-\x1f\x7f]")
+	ctrlRe = regexp.MustCompile("[\x00-\x09\x0b-\x1f\x7f" + "\\x{0080}-\\x{009f}]")
 )
 
 func sanitizeText(s string) string {
-	if strings.IndexFunc(s, func(r rune) bool { return (r < 0x20 && r != '\n') || r == 0x7f }) < 0 {
+	if strings.IndexFunc(s, unsafeRune) < 0 {
 		return s
 	}
 	s = strings.ReplaceAll(s, "\t", "    ")
@@ -34,6 +40,16 @@ func sanitizeText(s string) string {
 	s = oscRe.ReplaceAllString(s, "")
 	s = ctrlRe.ReplaceAllString(s, "")
 	return s
+}
+
+func unsafeRune(r rune) bool {
+	return (r < 0x20 && r != '\n') || r == 0x7f || (r >= 0x80 && r <= 0x9f)
+}
+
+// sanitizeLabel is sanitizeText for a one-line label: newlines would let a
+// name draw extra rows and push the real content off screen.
+func sanitizeLabel(s string) string {
+	return strings.ReplaceAll(sanitizeText(s), "\n", " ")
 }
 
 // renderConversation renders an agent's full transcript at the given width,
@@ -193,13 +209,14 @@ func renderThinking(text string, w int, open bool) string {
 
 // renderToolUse renders a tool invocation by the model.
 func renderToolUse(bl *provider.Block, w int, verbose bool) string {
-	head := styTool.Render("tool: " + bl.Name)
+	name := sanitizeLabel(bl.Name)
+	head := styTool.Render("tool: " + name)
 	args := sanitizeText(strings.TrimSpace(string(bl.Input)))
 	if args == "" || args == "{}" {
 		return head
 	}
 	if !verbose {
-		return head + " " + styDim.Render(truncate(args, max(10, w-lipgloss.Width(bl.Name)-8)))
+		return head + " " + styDim.Render(truncate(args, max(10, w-lipgloss.Width(name)-8)))
 	}
 	var b strings.Builder
 	b.WriteString(head)
@@ -227,9 +244,11 @@ func diffLine(l string, w int) string {
 	}
 }
 
-// renderChange shows a file edit as a header plus colored +/- lines.
+// renderChange shows a file edit as a header plus colored +/- lines. The rows
+// carry file contents, so a checked-in escape sequence would otherwise reach
+// the terminal through a diff of a file nobody chose to display.
 func renderChange(display string, w int) string {
-	lines := strings.Split(display, "\n")
+	lines := strings.Split(sanitizeText(display), "\n")
 	out := []string{styTool.Render(truncate(lines[0], w))}
 	for _, l := range lines[1:] {
 		out = append(out, "  "+diffLine(l, w-2))
@@ -246,7 +265,7 @@ func renderToolResult(bl *provider.Block, w int, verbose bool) string {
 	if bl.IsError {
 		icon = styErr.Render("err")
 	}
-	head := styTool.Render(bl.Name) + styDim.Render(" -> ") + icon
+	head := styTool.Render(sanitizeLabel(bl.Name)) + styDim.Render(" -> ") + icon
 	body := sanitizeText(strings.TrimRight(bl.Content, "\n"))
 	if strings.TrimSpace(body) == "" {
 		return head
