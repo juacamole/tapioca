@@ -245,7 +245,7 @@ func connectMCPCmd(reg *mcp.Registry, sc config.MCPServerConfig) tea.Cmd {
 			return mcpConnectedMsg{name: sc.Name, err: err}
 		}
 		reg.Add(c)
-		return mcpConnectedMsg{name: sc.Name, tools: len(c.Tools)}
+		return mcpConnectedMsg{name: sc.Name, tools: len(c.Tools())}
 	}
 }
 
@@ -308,6 +308,9 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.setFlash(fmt.Sprintf("mcp %s connected (%d tools)", msg.name, msg.tools), false)
 		}
 		return m, m.flashCmd()
+
+	case mcpPromptMsg:
+		return m, m.handleMCPPrompt(msg)
 
 	case modelsLoadedMsg:
 		if len(msg.items) == 0 {

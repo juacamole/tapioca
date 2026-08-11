@@ -26,6 +26,13 @@ type httpTransport struct {
 
 	mu      sync.Mutex
 	session string // Mcp-Session-Id, issued at initialize
+	version string // negotiated revision, sent from the next request on
+}
+
+func (h *httpTransport) setVersion(v string) {
+	h.mu.Lock()
+	h.version = v
+	h.mu.Unlock()
 }
 
 func (c *Client) startHTTP(cfg config.MCPServerConfig) error {
@@ -61,10 +68,15 @@ func (h *httpTransport) Send(ctx context.Context, data []byte) error {
 		req.Header.Set(k, v)
 	}
 	h.mu.Lock()
-	session := h.session
+	session, version := h.session, h.version
 	h.mu.Unlock()
 	if session != "" {
 		req.Header.Set("Mcp-Session-Id", session)
+	}
+	// Required from revision 2025-06-18 on every request after initialize;
+	// harmless to a server on an older revision.
+	if version != "" {
+		req.Header.Set("MCP-Protocol-Version", version)
 	}
 
 	resp, err := h.client.Do(req)

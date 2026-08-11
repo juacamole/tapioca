@@ -52,8 +52,8 @@ func TestStdioTransportStillWorks(t *testing.T) {
 	}
 	defer c.Close()
 
-	if len(c.Tools) != 1 || c.Tools[0].Name != "local_echo" {
-		t.Fatalf("tools not listed over stdio: %+v", c.Tools)
+	if len(c.Tools()) != 1 || c.Tools()[0].Name != "local_echo" {
+		t.Fatalf("tools not listed over stdio: %+v", c.Tools())
 	}
 	out, isErr, err := c.CallTool(context.Background(), "local_echo", nil)
 	if err != nil || isErr || out != "from stdio" {

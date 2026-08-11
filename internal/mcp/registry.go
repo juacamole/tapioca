@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 
@@ -57,6 +58,9 @@ func (r *Registry) Errors() map[string]string {
 	return out
 }
 
+// Sanitize exposes the namespacing rule so the UI can build the same names.
+func Sanitize(s string) string { return sanitize(s) }
+
 func sanitize(s string) string {
 	var b strings.Builder
 	for _, r := range s {
@@ -82,7 +86,7 @@ func (r *Registry) AllTools() []provider.ToolDef {
 		if !c.Alive() {
 			continue
 		}
-		for _, t := range c.Tools {
+		for _, t := range c.Tools() {
 			defs = append(defs, provider.ToolDef{
 				Name:        FullName(c.Name, t.Name),
 				Description: fmt.Sprintf("[%s] %s", c.Name, t.Description),
@@ -91,6 +95,72 @@ func (r *Registry) AllTools() []provider.ToolDef {
 		}
 	}
 	return defs
+}
+
+// AllPrompts returns every prompt on every live server.
+func (r *Registry) AllPrompts() []Prompt {
+	var out []Prompt
+	for _, c := range r.Clients() {
+		if c.Alive() {
+			out = append(out, c.Prompts()...)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Server != out[j].Server {
+			return out[i].Server < out[j].Server
+		}
+		return out[i].Name < out[j].Name
+	})
+	return out
+}
+
+// AllResources returns every resource on every live server.
+func (r *Registry) AllResources() []Resource {
+	var out []Resource
+	for _, c := range r.Clients() {
+		if c.Alive() {
+			out = append(out, c.Resources()...)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Server != out[j].Server {
+			return out[i].Server < out[j].Server
+		}
+		return out[i].URI < out[j].URI
+	})
+	return out
+}
+
+// client finds a live client by its sanitized name.
+func (r *Registry) client(server string) (*Client, error) {
+	for _, c := range r.Clients() {
+		if sanitize(c.Name) != server {
+			continue
+		}
+		if !c.Alive() {
+			return nil, fmt.Errorf("mcp server %s is not running", c.Name)
+		}
+		return c, nil
+	}
+	return nil, fmt.Errorf("no mcp server named %q", server)
+}
+
+// GetPrompt renders a prompt on the named server.
+func (r *Registry) GetPrompt(ctx context.Context, server, name string, args map[string]string) (string, error) {
+	c, err := r.client(server)
+	if err != nil {
+		return "", err
+	}
+	return c.GetPrompt(ctx, name, args)
+}
+
+// ReadResource reads a resource from the named server.
+func (r *Registry) ReadResource(ctx context.Context, server, uri string) (string, error) {
+	c, err := r.client(server)
+	if err != nil {
+		return "", err
+	}
+	return c.ReadResource(ctx, uri)
 }
 
 // Call routes a namespaced tool call to the owning server.

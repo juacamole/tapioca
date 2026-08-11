@@ -96,8 +96,8 @@ func TestHTTPTransport(t *testing.T) {
 			}
 			defer c.Close()
 
-			if len(c.Tools) != 1 || c.Tools[0].Name != "echo" {
-				t.Fatalf("tools not listed: %+v", c.Tools)
+			if len(c.Tools()) != 1 || c.Tools()[0].Name != "echo" {
+				t.Fatalf("tools not listed: %+v", c.Tools())
 			}
 			out, isErr, err := c.CallTool(context.Background(), "echo", json.RawMessage(`{"x":1}`))
 			if err != nil || isErr || out != "pong" {

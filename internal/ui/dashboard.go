@@ -443,14 +443,23 @@ func renderMCPPanel(m *App, a *agent.Agent, w, h int) []string {
 		if !c.Alive() {
 			dot = styErr.Render(gl.dot)
 		}
-		lines = append(lines, fmt.Sprintf("%s %s %s", dot, c.Name,
-			styDim.Render(fmt.Sprintf("(%d tools)", len(c.Tools)))))
+		counts := fmt.Sprintf("(%d tools", len(c.Tools()))
+		if n := len(c.Prompts()); n > 0 {
+			counts += fmt.Sprintf(", %d prompts", n)
+		}
+		if n := len(c.Resources()); n > 0 {
+			counts += fmt.Sprintf(", %d resources", n)
+		}
+		lines = append(lines, fmt.Sprintf("%s %s %s", dot, c.Name, styDim.Render(counts+")")))
 		var names []string
-		for _, t := range c.Tools {
+		for _, t := range c.Tools() {
 			names = append(names, t.Name)
 		}
 		if len(names) > 0 {
 			lines = append(lines, styDim.Render("  "+truncate(strings.Join(names, ", "), w-3)))
+		}
+		if v := c.Version(); v != "" {
+			lines = append(lines, styDim.Render("  protocol "+v))
 		}
 	}
 	for name, e := range errs {
