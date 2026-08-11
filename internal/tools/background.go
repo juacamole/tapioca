@@ -54,13 +54,13 @@ func (j *job) Write(p []byte) (int, error) {
 }
 
 // drain returns output not yet shown, and the job's current state.
-func (j *job) drain() (text string, done bool, err error, dropped int) {
+func (j *job) drain() (text string, done bool, dropped int, err error) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	text = string(j.output[j.read:])
 	j.read = len(j.output)
 	dropped, j.dropped = j.dropped, 0
-	return text, j.done, j.exitErr, dropped
+	return text, j.done, dropped, j.exitErr
 }
 
 func (j *job) finish(err error) {
@@ -158,7 +158,7 @@ func (e *Executor) jobOutput(raw json.RawMessage) (string, bool, error) {
 	if j == nil {
 		return "no such job " + a.ID + "\n" + e.jobList(), true, nil
 	}
-	text, done, exitErr, dropped := j.drain()
+	text, done, dropped, exitErr := j.drain()
 
 	var b strings.Builder
 	status := "running"

@@ -180,7 +180,7 @@ func TestJobOutputIsCapped(t *testing.T) {
 	j := &job{}
 	big := strings.Repeat("x", maxJobOutput+5000)
 	j.Write([]byte(big))
-	text, _, _, dropped := j.drain()
+	text, _, dropped, _ := j.drain()
 	if len(text) > maxJobOutput {
 		t.Errorf("kept %d bytes, cap is %d", len(text), maxJobOutput)
 	}

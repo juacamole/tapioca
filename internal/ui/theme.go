@@ -88,7 +88,6 @@ var (
 	active = themes[defaultTheme]
 
 	colAccent = active.accent
-	colDim    = active.dim
 	colBorder = active.border
 
 	styAppTitle   lipgloss.Style
@@ -189,7 +188,7 @@ func applyOverride(p *palette, key, val string) {
 }
 
 func applyPalette(p palette) {
-	colAccent, colDim, colBorder = p.accent, p.dim, p.border
+	colAccent, colBorder = p.accent, p.border
 
 	fg := func(c lipgloss.AdaptiveColor) lipgloss.Style {
 		if p.mono {

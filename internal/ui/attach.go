@@ -35,10 +35,6 @@ var imageExts = map[string]string{
 
 // clipboardImage grabs an image from the system clipboard, if there is one.
 func clipboardImage() (attachment, error) {
-	type grabber struct {
-		listCmd, listArgs, getCmd string
-		getArgs                   []string
-	}
 	if _, err := exec.LookPath("wl-paste"); err == nil {
 		out, err := exec.Command("wl-paste", "--list-types").Output()
 		if err == nil {
