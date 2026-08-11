@@ -41,13 +41,7 @@ func saveSearchText(m map[string]string) {
 	if err != nil {
 		return
 	}
-	tmp := searchPath() + ".tmp"
-	if os.WriteFile(tmp, data, 0o600) != nil {
-		return
-	}
-	if os.Rename(tmp, searchPath()) != nil {
-		os.Remove(tmp)
-	}
+	_ = writeAtomic(searchPath(), data)
 }
 
 // ListWithText is List plus the per-session text the picker filters on.
@@ -102,13 +96,7 @@ func (idx sessionIndex) save() {
 	if err != nil {
 		return
 	}
-	tmp := indexPath() + ".tmp"
-	if os.WriteFile(tmp, data, 0o600) != nil {
-		return
-	}
-	if os.Rename(tmp, indexPath()) != nil {
-		os.Remove(tmp)
-	}
+	_ = writeAtomic(indexPath(), data)
 }
 
 // journalStamp returns the journal's size and mtime, zero when there is none.

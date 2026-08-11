@@ -49,6 +49,11 @@ type journalRec struct {
 	Active    int                  `json:"active"`
 	Added     [][]provider.Message `json:"added"`
 	Tails     []agentTail          `json:"tails"`
+	// Base is each agent's message count before this record applies. Replay
+	// checks it, which is what lets the snapshot be published before the
+	// journal is deleted: a record the snapshot already contains no longer
+	// lines up and is skipped instead of duplicating turns.
+	Base []int `json:"base,omitempty"`
 }
 
 // agentMark is what the last write left on disk for one agent, enough to tell
@@ -93,10 +98,15 @@ func cfgHash(a AgentState) uint64 {
 	return hashJSON(a)
 }
 
-// msgShape fingerprints a message without marshalling it. Comparing the whole
-// prefix this way is what makes an append safe to assume: a message rewritten
-// in place changes its timestamp or the size of something in it, and walking
-// blocks costs nothing next to serialising megabytes of history.
+// msgShape fingerprints a message. Comparing the whole prefix this way is what
+// makes an append safe to assume.
+//
+// It hashed lengths rather than contents at first, on the reasoning that a
+// rewritten message changes its timestamp or the size of something in it. That
+// is an assumption, not a guarantee: an in-place edit of the same length at
+// the same timestamp read as "nothing changed", so the save was skipped and
+// the edit never reached disk. Hashing the bytes costs about a millisecond on
+// the largest session here, against the ten that rewriting it costs.
 func msgShape(m *provider.Message) uint64 {
 	h := fnv.New64a()
 	var buf [8]byte
@@ -107,18 +117,18 @@ func msgShape(m *provider.Message) uint64 {
 	h.Write([]byte(m.Role))
 	h.Write([]byte(m.Model))
 	num(m.Time.UnixNano())
-	num(int64(len(m.Typed)))
+	h.Write([]byte(m.Typed))
 	num(int64(len(m.Blocks)))
 	for i := range m.Blocks {
 		b := &m.Blocks[i]
 		h.Write([]byte(b.Type))
 		h.Write([]byte(b.ID))
 		h.Write([]byte(b.Name))
-		num(int64(len(b.Text)))
-		num(int64(len(b.Content)))
-		num(int64(len(b.Input)))
-		num(int64(len(b.Data)))
-		num(int64(len(b.Display)))
+		h.Write([]byte(b.Text))
+		h.Write([]byte(b.Content))
+		h.Write(b.Input)
+		h.Write([]byte(b.Data))
+		h.Write([]byte(b.Display))
 	}
 	return h.Sum64()
 }
@@ -172,7 +182,7 @@ func (st *savedState) delta(s *Session) (rec *journalRec, marks []agentMark, ok 
 		return nil, nil, false
 	}
 	rec = &journalRec{Name: s.Name, Active: s.Active, Added: make([][]provider.Message, len(s.Agents)),
-		Tails: make([]agentTail, len(s.Agents))}
+		Tails: make([]agentTail, len(s.Agents)), Base: make([]int, len(s.Agents))}
 	marks = make([]agentMark, len(s.Agents))
 	changed := s.Active != st.active
 
@@ -188,6 +198,7 @@ func (st *savedState) delta(s *Session) (rec *journalRec, marks []agentMark, ok 
 		if mark.tail == 0 {
 			return nil, nil, false
 		}
+		rec.Base[i] = len(old.shapes)
 		if len(shapes) > len(old.shapes) {
 			rec.Added[i] = a.Messages[len(old.shapes):]
 			changed = true
@@ -263,6 +274,15 @@ func markSnapshot(s *Session, info os.FileInfo) {
 // applyJournal replays the journal onto a freshly loaded snapshot. Anything
 // unreadable ends the replay instead of failing the load: losing the tail of a
 // session beats not opening it.
+func baseMatches(s *Session, base []int) bool {
+	for i := range s.Agents {
+		if len(s.Agents[i].Messages) != base[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func applyJournal(s *Session, id string) {
 	f, err := os.Open(journalPath(id))
 	if err != nil {
@@ -278,6 +298,13 @@ func applyJournal(s *Session, id string) {
 		}
 		if len(rec.Added) != len(s.Agents) || len(rec.Tails) != len(s.Agents) {
 			return
+		}
+		// A record whose base no longer matches describes a session state this
+		// snapshot has moved past — it was published between the rename and
+		// the journal being removed. Skipping it is what keeps replay from
+		// appending turns the snapshot already holds.
+		if len(rec.Base) == len(s.Agents) && !baseMatches(s, rec.Base) {
+			continue
 		}
 		for i := range s.Agents {
 			a := &s.Agents[i]

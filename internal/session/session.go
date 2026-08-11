@@ -128,23 +128,22 @@ func (s *Session) Save() error {
 }
 
 // writeSnapshot writes the whole session atomically and drops the journal.
-// The journal goes first: a crash between the two loses the last few turns,
-// where the other order would replay them onto a snapshot that already has
-// them.
+//
+// The snapshot is published first. Removing the journal first meant a crash in
+// between silently lost every turn since the last snapshot — no error, no
+// marker, the session simply reloaded shorter. This order can only leave a
+// journal the snapshot already contains, and replay recognises that from the
+// records' base counts and skips them.
 func (s *Session) writeSnapshot() error {
 	s.UpdatedAt = time.Now()
 	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return err
 	}
-	tmp := pathFor(s.ID) + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+	if err := writeAtomic(pathFor(s.ID), data); err != nil {
 		return err
 	}
 	if err := os.Remove(journalPath(s.ID)); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	if err := os.Rename(tmp, pathFor(s.ID)); err != nil {
 		return err
 	}
 	info, err := os.Stat(pathFor(s.ID))
@@ -153,6 +152,31 @@ func (s *Session) writeSnapshot() error {
 	}
 	markSnapshot(s, info)
 	return nil
+}
+
+// writeAtomic writes data and renames it into place. The temp file is unique
+// and created exclusively: a fixed "<path>.tmp" let two Tapioca instances on
+// one session truncate each other's file and publish the half-written result,
+// and it inherited the mode of whatever was already sitting at that name.
+func writeAtomic(path string, data []byte) error {
+	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	defer os.Remove(tmp) // no-op once the rename has moved it
+	if err := f.Chmod(0o600); err != nil {
+		f.Close()
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 // Load reads a session by id.
