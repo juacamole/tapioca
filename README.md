@@ -48,6 +48,22 @@ permission prompt.
   Secrets outside the worktree and first-contact web hosts prompt even in
   `auto`, provider API keys are hidden from tool subprocesses, and stored
   sessions/memory/checkpoints are owner-only on disk.
+- **Per-tool permission rules** — the mode is the default; `[permissions]`
+  is where the exceptions go, each rule a tool and what the call is about:
+
+  ```toml
+  [permissions]
+  allow = ["bash(go test*)", "edit_file(internal/**)"]
+  ask   = ["bash(git push*)"]
+  deny  = ["read_file(**/.env)", "bash(rm -rf*)", "mcp:*__delete_*"]
+  ```
+
+  Paths glob with `**` across directories, everything else with `*`. A
+  **deny** holds in every mode, `bypass` included, and covers the read-only
+  tools that never prompt; an **ask** forces a prompt `auto` would have
+  skipped and outranks an earlier "always allow"; an **allow** skips one,
+  except in plan mode. Compound bash commands are matched segment by segment,
+  so `bash(go test*)` cannot be ridden in on by `go test ./... && curl …`.
 - **Sandboxed bash** (`sandbox = true` or `--sandbox`) — runs shell commands
   under bubblewrap with the worktree writable, the rest of the filesystem
   read-only and **`$HOME` replaced by an empty tmpfs**, so `.ssh`/`.aws`

@@ -512,7 +512,22 @@ func cmdPermissions(m *App, _ string) tea.Cmd {
 			b.WriteString("  " + w + " *\n")
 		}
 	}
-	b.WriteString("\n" + styDim.Render("revoke: /settings edits bash_allow; session grants clear on restart"))
+	// Rules outrank both the mode and the session grants above, so a page
+	// about what runs without approval is wrong without them.
+	p := m.cfg.Permissions
+	if len(p.Allow)+len(p.Ask)+len(p.Deny) > 0 {
+		b.WriteString("\n" + styPanelTitle.Render("rules") + styDim.Render("  ([permissions] in config)") + "\n")
+		for _, r := range p.Deny {
+			b.WriteString("  " + styErr.Render("deny  ") + r + "\n")
+		}
+		for _, r := range p.Ask {
+			b.WriteString("  " + styWarn.Render("ask   ") + r + "\n")
+		}
+		for _, r := range p.Allow {
+			b.WriteString("  " + styOK.Render("allow ") + r + "\n")
+		}
+	}
+	b.WriteString("\n" + styDim.Render("revoke: /settings edits bash_allow and [permissions]; session grants clear on restart"))
 	m.openTextOverlay("permissions", b.String())
 	return nil
 }

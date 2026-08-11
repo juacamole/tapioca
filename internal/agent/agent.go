@@ -483,13 +483,24 @@ func (a *Agent) run(ctx context.Context, rs runSettings, history []provider.Mess
 				res, callErr = a.Exec.CallDetailed(ctx, tu.Name, tu.Input, ask)
 				text, isErr, change = res.Text, res.IsErr, res.Change
 			case a.MCP != nil:
-				// MCP tools go through the same permission gate as builtins.
+				// MCP tools go through the same permission gate as builtins,
+				// including the configured rules; theirs match on the tool
+				// name and the call's arguments.
 				key := "mcp:" + tu.Name
-				allowed := a.Exec == nil || a.Exec.ExternalAllowed(key)
+				act := ""
+				if a.Exec != nil {
+					act = a.Exec.RuleFor(key, string(tu.Input))
+				}
+				if act == tools.RuleDeny {
+					text, isErr = "denied: a permission rule in the config forbids "+tu.Name, true
+					break
+				}
+				// A rule that says ask outranks an earlier "always allow".
+				allowed := act != tools.RuleAsk && (a.Exec == nil || a.Exec.ExternalAllowed(key))
 				if !allowed {
 					d := ask(key, argsPreview)
 					allowed = d.Allow
-					if d.Always && a.Exec != nil {
+					if d.Always && a.Exec != nil && act != tools.RuleAsk {
 						a.Exec.GrantExternal(key)
 					}
 				}

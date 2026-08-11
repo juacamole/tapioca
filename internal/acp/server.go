@@ -141,6 +141,7 @@ func (s *Server) handleNewSession(msg *rpcMsg) {
 
 	exec := tools.NewExecutor(cwd, s.cfg.PermissionMode)
 	exec.SetBashPrefixes(s.cfg.BashAllow)
+	exec.SetRules(s.cfg.Permissions.Allow, s.cfg.Permissions.Ask, s.cfg.Permissions.Deny)
 	exec.SetSandbox(s.cfg.Sandbox)
 	exec.SetSandboxNetwork(s.cfg.SandboxNetwork)
 

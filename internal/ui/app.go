@@ -613,6 +613,7 @@ func (m *App) handleEditorDone(msg editorDoneMsg) (tea.Model, tea.Cmd) {
 		if m.mgr.Exec != nil {
 			m.mgr.Exec.SetMode(m.cfg.PermissionMode)
 			m.mgr.Exec.SetBashPrefixes(m.cfg.BashAllow)
+			m.mgr.Exec.SetRules(m.cfg.Permissions.Allow, m.cfg.Permissions.Ask, m.cfg.Permissions.Deny)
 			m.mgr.Exec.SetSandbox(m.cfg.Sandbox)
 			m.mgr.Exec.SetSandboxNetwork(m.cfg.SandboxNetwork)
 			m.mgr.Exec.SetTimeout(time.Duration(m.cfg.BashTimeout) * time.Second)
