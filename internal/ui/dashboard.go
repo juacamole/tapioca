@@ -453,7 +453,7 @@ func renderMCPPanel(m *App, a *agent.Agent, w, h int) []string {
 		lines = append(lines, fmt.Sprintf("%s %s %s", dot, c.Name, styDim.Render(counts+")")))
 		var names []string
 		for _, t := range c.Tools() {
-			names = append(names, t.Name)
+			names = append(names, sanitizeLabel(t.Name))
 		}
 		if len(names) > 0 {
 			lines = append(lines, styDim.Render("  "+truncate(strings.Join(names, ", "), w-3)))
