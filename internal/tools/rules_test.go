@@ -297,3 +297,37 @@ func TestRulesMatchMCPToolNames(t *testing.T) {
 		t.Fatalf("argument pattern matched the wrong team: %q", got)
 	}
 }
+
+// Testing #92 in bypass, deny = ["bash(rm -rf*)"] did not stop "rm -fr", and
+// in bypass a deny rule is the only line of defence left. Nothing textual can
+// cover flag order, but a path in front of the command should not evade one.
+func TestDenyRuleMatchesPathQualifiedCommands(t *testing.T) {
+	e := execIn(t, ModeBypass)
+	e.SetRules(nil, nil, []string{"bash(rm *)"})
+	for _, cmd := range []string{"rm -fr x", "rm -rf x", "/bin/rm -rf x", "/usr/bin/rm x"} {
+		if got := e.ruleFor("bash", cmd); got != RuleDeny {
+			t.Errorf("ruleFor(%q) = %q, want deny", cmd, got)
+		}
+	}
+	// Still only rm: the basename is compared, not any word in the line.
+	for _, cmd := range []string{"npm run build", "confirm the change", "go test ./..."} {
+		if got := e.ruleFor("bash", cmd); got != ruleNone {
+			t.Errorf("ruleFor(%q) = %q, want no rule", cmd, got)
+		}
+	}
+}
+
+// Widening an allow the same way would let ./echo or /tmp/evil/echo inherit
+// what was granted to echo.
+func TestAllowRuleDoesNotMatchPathQualifiedCommands(t *testing.T) {
+	e := execIn(t, ModeManual)
+	e.SetRules([]string{"bash(echo *)"}, nil, nil)
+	if got := e.ruleFor("bash", "echo hi"); got != RuleAllow {
+		t.Fatalf("plain echo: %q", got)
+	}
+	for _, cmd := range []string{"/tmp/evil/echo hi", "./echo hi"} {
+		if got := e.ruleFor("bash", cmd); got == RuleAllow {
+			t.Errorf("%q inherited the allow for echo", cmd)
+		}
+	}
+}

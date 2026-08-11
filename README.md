@@ -55,7 +55,7 @@ permission prompt.
   [permissions]
   allow = ["bash(go test*)", "edit_file(internal/**)"]
   ask   = ["bash(git push*)"]
-  deny  = ["read_file(**/.env)", "bash(rm -rf*)", "mcp:*__delete_*"]
+  deny  = ["read_file(**/.env)", "bash(rm *)", "mcp:*__delete_*"]
   ```
 
   Paths glob with `**` across directories, everything else with `*`. A
@@ -64,6 +64,9 @@ permission prompt.
   skipped and outranks an earlier "always allow"; an **allow** skips one,
   except in plan mode. Compound bash commands are matched segment by segment,
   so `bash(go test*)` cannot be ridden in on by `go test ./... && curl …`.
+  Match the command rather than one spelling of it — `bash(rm -rf*)` misses
+  `rm -fr` — and see [SECURITY.md](SECURITY.md) for what a rule does and does
+  not buy you.
 - **Sandboxed bash** (`sandbox = true` or `--sandbox`) — runs shell commands
   under bubblewrap with the worktree writable, the rest of the filesystem
   read-only and **`$HOME` replaced by an empty tmpfs**, so `.ssh`/`.aws`
