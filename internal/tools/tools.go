@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"tapioca/internal/config"
 	"tapioca/internal/diff"
 	"tapioca/internal/provider"
 	"tapioca/internal/secretenv"
@@ -632,6 +633,7 @@ func (e *Executor) CallDetailed(ctx context.Context, name string, raw json.RawMe
 var sensitiveNames = []string{
 	".env", "id_rsa", "id_ed25519", "id_ecdsa", "credentials",
 	".netrc", ".pgpass", "kubeconfig", "shadow",
+	".npmrc", ".pypirc", ".bash_history", ".zsh_history",
 }
 
 // sensitiveDirs are directories that never contain project source but do
@@ -639,7 +641,7 @@ var sensitiveNames = []string{
 var sensitiveDirs = []string{
 	".ssh", ".aws", ".gnupg", ".config/gh", ".config/gcloud", ".kube",
 	".docker", ".mozilla", ".config/google-chrome", ".password-store",
-	".local/share/keyrings",
+	".local/share/keyrings", ".config/rclone", ".config/containers", ".m2",
 }
 
 // sensitivePath reports whether reading path deserves a prompt even though
@@ -655,27 +657,36 @@ func (e *Executor) sensitivePath(path string) bool {
 	home, err := os.UserHomeDir()
 	if err == nil {
 		for _, d := range sensitiveDirs {
-			full := filepath.Join(home, d)
-			if clean == full || strings.HasPrefix(clean, full+string(filepath.Separator)) {
+			if under(clean, filepath.Join(home, d)) {
 				return true
 			}
+		}
+	}
+	// Tapioca's own config holds provider keys and MCP bearer tokens, and its
+	// data dir holds every conversation ever had. Reading either is precisely
+	// the exfiltration this gate exists to catch, and neither looked sensitive.
+	for _, d := range []string{config.Dir(), config.DataDir()} {
+		if under(clean, d) {
+			return true
 		}
 	}
 	// Anything under the worktree is fair game; secrets elsewhere are not.
 	return !e.inWorkArea(clean) && looksSecret(strings.ToLower(clean))
 }
 
+// under reports whether a resolved path is dir or inside it.
+func under(clean, dir string) bool {
+	return clean == dir || strings.HasPrefix(clean, dir+string(filepath.Separator))
+}
+
 // inWorkArea reports whether an absolute path lies in the working directory
 // or one of the directories announced with --add-dir.
 func (e *Executor) inWorkArea(clean string) bool {
-	under := func(dir string) bool {
-		return clean == dir || strings.HasPrefix(clean, dir+string(filepath.Separator))
-	}
-	if under(e.Cwd()) {
+	if under(clean, e.Cwd()) {
 		return true
 	}
 	for _, d := range e.ExtraDirs() {
-		if abs, err := filepath.Abs(d); err == nil && under(abs) {
+		if abs, err := filepath.Abs(d); err == nil && under(clean, abs) {
 			return true
 		}
 	}
