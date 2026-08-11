@@ -101,11 +101,37 @@ func NewID() string {
 
 func pathFor(id string) string { return filepath.Join(Dir(), id+".json") }
 
-// Save writes the session atomically.
+// Save persists the session, appending to its journal when the turn only added
+// messages and rewriting the whole snapshot otherwise. See journal.go.
 func (s *Session) Save() error {
 	if err := os.MkdirAll(Dir(), 0o700); err != nil {
 		return err
 	}
+	savedMu.Lock()
+	st := savedAll[s.ID]
+	savedMu.Unlock()
+	if st != nil && st.fresh(s.ID) {
+		rec, marks, ok := st.delta(s)
+		if ok {
+			if rec == nil {
+				return nil // nothing changed; the file on disk is already current
+			}
+			if done, err := st.appendRecord(s.ID, rec, marks); err != nil {
+				return err
+			} else if done {
+				s.UpdatedAt = rec.UpdatedAt
+				return nil
+			}
+		}
+	}
+	return s.writeSnapshot()
+}
+
+// writeSnapshot writes the whole session atomically and drops the journal.
+// The journal goes first: a crash between the two loses the last few turns,
+// where the other order would replay them onto a snapshot that already has
+// them.
+func (s *Session) writeSnapshot() error {
 	s.UpdatedAt = time.Now()
 	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
@@ -115,7 +141,18 @@ func (s *Session) Save() error {
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return err
 	}
-	return os.Rename(tmp, pathFor(s.ID))
+	if err := os.Remove(journalPath(s.ID)); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if err := os.Rename(tmp, pathFor(s.ID)); err != nil {
+		return err
+	}
+	info, err := os.Stat(pathFor(s.ID))
+	if err != nil {
+		return err
+	}
+	markSnapshot(s, info)
+	return nil
 }
 
 // Load reads a session by id.
@@ -131,6 +168,7 @@ func Load(id string) (*Session, error) {
 	// The filename is the identity: a copied file must save under the name
 	// it was loaded from, not clobber the original via its embedded id.
 	s.ID = id
+	applyJournal(&s, id)
 	return &s, nil
 }
 

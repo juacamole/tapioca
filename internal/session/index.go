@@ -63,10 +63,15 @@ func ListWithText() ([]Meta, error) {
 	return metas, nil
 }
 
+// A session's most recent turns live in its journal, and appending to one
+// leaves the snapshot untouched, so the journal's size and mtime are part of
+// the key too — otherwise the picker would keep showing yesterday's summary.
 type indexEntry struct {
-	Meta Meta  `json:"meta"`
-	Size int64 `json:"size"`
-	Mod  int64 `json:"mod"` // unix nanoseconds
+	Meta  Meta  `json:"meta"`
+	Size  int64 `json:"size"`
+	Mod   int64 `json:"mod"` // unix nanoseconds
+	JSize int64 `json:"jsize"`
+	JMod  int64 `json:"jmod"`
 }
 
 type sessionIndex struct {
@@ -74,7 +79,7 @@ type sessionIndex struct {
 	Entries map[string]indexEntry `json:"entries"`
 }
 
-const indexVersion = 2
+const indexVersion = 3
 
 func indexPath() string { return filepath.Join(Dir(), indexName) }
 
@@ -104,6 +109,15 @@ func (idx sessionIndex) save() {
 	if os.Rename(tmp, indexPath()) != nil {
 		os.Remove(tmp)
 	}
+}
+
+// journalStamp returns the journal's size and mtime, zero when there is none.
+func journalStamp(id string) (int64, int64) {
+	info, err := os.Stat(journalPath(id))
+	if err != nil {
+		return 0, 0
+	}
+	return info.Size(), info.ModTime().UnixNano()
 }
 
 // summarize builds the Meta for one session file.
@@ -151,7 +165,12 @@ func List() ([]Meta, error) {
 	var text map[string]string // loaded only if something needs re-summarizing
 
 	var metas []Meta
+	var journals []string
 	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".json.log") {
+			journals = append(journals, strings.TrimSuffix(e.Name(), ".json.log"))
+			continue
+		}
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") ||
 			e.Name() == indexName || e.Name() == searchName {
 			continue
@@ -163,8 +182,10 @@ func List() ([]Meta, error) {
 		if err != nil {
 			continue
 		}
+		jsize, jmod := journalStamp(id)
 		if cached, ok := idx.Entries[id]; ok &&
-			cached.Size == info.Size() && cached.Mod == info.ModTime().UnixNano() {
+			cached.Size == info.Size() && cached.Mod == info.ModTime().UnixNano() &&
+			cached.JSize == jsize && cached.JMod == jmod {
 			metas = append(metas, cached.Meta)
 			continue
 		}
@@ -177,11 +198,21 @@ func List() ([]Meta, error) {
 		}
 		text[id] = meta.Blob
 		meta.Blob = "" // kept in the search file, not the index
-		idx.Entries[id] = indexEntry{Meta: meta, Size: info.Size(), Mod: info.ModTime().UnixNano()}
+		idx.Entries[id] = indexEntry{
+			Meta: meta, Size: info.Size(), Mod: info.ModTime().UnixNano(),
+			JSize: jsize, JMod: jmod,
+		}
 		changed = true
 		metas = append(metas, meta)
 	}
 
+	// A journal without its snapshot is dead weight: nothing can load it, and
+	// its session was deleted or renamed out from under it.
+	for _, id := range journals {
+		if !present[id] {
+			os.Remove(journalPath(id))
+		}
+	}
 	for id := range idx.Entries {
 		if !present[id] {
 			delete(idx.Entries, id)
