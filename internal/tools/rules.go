@@ -167,20 +167,42 @@ func (e *Executor) cwdLocked() string {
 	return e.cwd
 }
 
-// basename reduces a command's first word to its base, so a rule written as
-// "rm *" also covers "/bin/rm *". Only denials and prompts are matched against
-// it: widening an allow the same way would let a stray executable named like a
-// trusted one inherit its permission.
-func basename(command string) string {
-	f := strings.Fields(command)
-	if len(f) == 0 || !strings.HasPrefix(command, f[0]) {
+// normalized rewrites a command into the form a rule is written in, so the
+// spellings a shell treats as identical are matched identically. A rule says
+// "rm *"; the shell also accepts "rm\t-rf", "\rm -rf", "'rm' -rf" and
+// "/bin/rm -rf", and every one of those walked past a deny rule matched on raw
+// text. Whitespace runs collapse to one space, the first word loses its
+// quoting and its directory, and the result is matched alongside the original.
+//
+// Only denials and prompts are matched against it. Widening an allow the same
+// way would let a stray executable named like a trusted one inherit its
+// permission.
+func normalized(command string) string {
+	fields := strings.Fields(command) // splits on any run of whitespace
+	if len(fields) == 0 {
 		return command
 	}
-	base := filepath.Base(f[0])
-	if base == f[0] {
-		return command
+	fields[0] = filepath.Base(unquoteWord(fields[0]))
+	return strings.Join(fields, " ")
+}
+
+// unquoteWord strips the quoting a shell removes before looking a command up:
+// \rm, 'rm' and "rm" all run rm.
+func unquoteWord(w string) string {
+	var b strings.Builder
+	for i := 0; i < len(w); i++ {
+		switch w[i] {
+		case '\\':
+			if i+1 < len(w) {
+				i++
+				b.WriteByte(w[i])
+			}
+		case '\'', '"':
+		default:
+			b.WriteByte(w[i])
+		}
 	}
-	return base + command[len(f[0]):]
+	return b.String()
 }
 
 // ruleFor returns the action configured for a call, or ruleNone.
@@ -196,7 +218,7 @@ func (e *Executor) ruleFor(tool, subject string) string {
 			return r.act
 		}
 		if tool == "bash" && (r.act == RuleDeny || r.act == RuleAsk) {
-			if norm := basename(subject); norm != subject && e.matchSubject(r, tool, norm) {
+			if norm := normalized(subject); norm != subject && e.matchSubject(r, tool, norm) {
 				return r.act
 			}
 		}

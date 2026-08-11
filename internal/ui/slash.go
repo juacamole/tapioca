@@ -4,7 +4,6 @@ import (
 	"encoding/base64"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -15,6 +14,7 @@ import (
 
 	"tapioca/internal/agent"
 	"tapioca/internal/checkpoint"
+	"tapioca/internal/gitcmd"
 	"tapioca/internal/project"
 	"tapioca/internal/provider"
 	"tapioca/internal/session"
@@ -422,8 +422,10 @@ func cmdDiff(m *App, _ string) tea.Cmd {
 	if m.mgr.Exec != nil {
 		cwd = m.mgr.Exec.Cwd()
 	}
-	unstaged, _ := exec.Command("git", "-C", cwd, "diff").CombinedOutput()
-	staged, _ := exec.Command("git", "-C", cwd, "diff", "--cached").CombinedOutput()
+	// --no-textconv matters as much as the hardening flags: .gitattributes can
+	// point a path at a textconv program, which git would run to render a diff.
+	unstaged, _ := gitcmd.In(cwd, "diff", "--no-textconv", "--no-ext-diff").CombinedOutput()
+	staged, _ := gitcmd.In(cwd, "diff", "--cached", "--no-textconv", "--no-ext-diff").CombinedOutput()
 	var parts []string
 	if len(staged) > 0 {
 		parts = append(parts, styPanelTitle.Render("staged")+"\n"+colorizeDiff(string(staged)))

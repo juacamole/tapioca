@@ -381,6 +381,10 @@ func (o *OpenAI) Stream(ctx context.Context, req Request, out chan<- Event) (Mes
 				}
 				b, ok := toolCalls[idx]
 				if !ok {
+					// idx comes from the server, so the map is bounded here.
+					if len(toolCalls) >= maxStreamBlocks {
+						return finish(), fmt.Errorf("response opened more than %d tool calls; stopping", maxStreamBlocks)
+					}
 					b = &tcBuild{}
 					toolCalls[idx] = b
 					order = append(order, idx)
@@ -393,6 +397,10 @@ func (o *OpenAI) Stream(ctx context.Context, req Request, out chan<- Event) (Mes
 						out <- Event{Type: EventToolUseStart, ToolID: tc.ID, ToolName: tc.Function.Name}
 					}
 					b.name = tc.Function.Name
+				}
+				streamed += len(tc.Function.Arguments) + len(tc.Function.Name)
+				if overLimit(streamed) {
+					return finish(), fmt.Errorf("response exceeded %d bytes; stopping", maxResponseBytes)
 				}
 				b.args.WriteString(tc.Function.Arguments)
 			}

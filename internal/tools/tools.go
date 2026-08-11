@@ -13,7 +13,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -95,17 +94,59 @@ func (e *Executor) SetBashPrefixes(ps []string) {
 	e.mu.Unlock()
 }
 
-var segSeps = regexp.MustCompile(`&&|\|\||[;|\n]`)
-
-// segments splits a compound command so each part can be approved on its
-// own: "ls || pwd" prompts for "ls", then for "pwd".
+// segments splits a compound command so each part can be approved on its own:
+// "ls || pwd" prompts for "ls", then for "pwd".
+//
+// The split has to respect quoting, because escapes() below tracks quote state
+// per segment. Splitting with a regex that ignored quotes meant a separator
+// inside a string cut the command in half and left each half with an
+// unbalanced quote, so escapes() believed it was inside a string exactly where
+// the shell was not: `echo "a|echo b" & touch x` became two segments that both
+// looked like a plain echo, and a grant on echo ran the touch.
 func segments(command string) []string {
 	var out []string
-	for _, seg := range segSeps.Split(command, -1) {
-		if seg = strings.TrimSpace(seg); seg != "" {
-			out = append(out, seg)
+	var cur strings.Builder
+	flush := func() {
+		if s := strings.TrimSpace(cur.String()); s != "" {
+			out = append(out, s)
 		}
+		cur.Reset()
 	}
+	inSingle, inDouble := false, false
+	for i := 0; i < len(command); i++ {
+		c := command[i]
+		switch {
+		case c == '\\' && !inSingle:
+			cur.WriteByte(c)
+			if i+1 < len(command) {
+				i++
+				cur.WriteByte(command[i])
+			}
+			continue
+		case c == '\'' && !inDouble:
+			inSingle = !inSingle
+		case c == '"' && !inSingle:
+			inDouble = !inDouble
+		case !inSingle && !inDouble:
+			if c == ';' || c == '\n' {
+				flush()
+				continue
+			}
+			if c == '|' || c == '&' {
+				// || and && are one separator; a single | is a pipe, and a
+				// single & is left in place for escapes() to flag.
+				if i+1 < len(command) && command[i+1] == c {
+					i++
+				} else if c == '&' {
+					break
+				}
+				flush()
+				continue
+			}
+		}
+		cur.WriteByte(c)
+	}
+	flush()
 	return out
 }
 
@@ -127,7 +168,10 @@ func (e *Executor) wordAllowed(word string) bool {
 // "echo x > main.go" or "echo hi & curl evil.com".
 func escapes(segment string) bool {
 	if strings.Contains(segment, "$(") || strings.Contains(segment, "`") ||
-		strings.Contains(segment, "${") || strings.Contains(segment, "<(") {
+		strings.Contains(segment, "${") || strings.Contains(segment, "<(") ||
+		// $'...' follows C escaping rules the scanner below does not model, so
+		// $'\'' closes the quote where the scanner thinks one opens.
+		strings.Contains(segment, "$'") {
 		return true
 	}
 	inSingle, inDouble := false, false
@@ -392,19 +436,36 @@ func (e *Executor) resolve(path string) string {
 // does not exist yet, so the deepest existing parent is resolved instead and
 // the remainder appended — writing a new file through a symlinked directory
 // still lands where the link points, and the check has to see that.
+//
+// EvalSymlinks fails for a path that does not exist *and* for a symlink whose
+// target does not exist, and treating those alike was a hole: a link committed
+// as notes.txt -> ~/.ssh/authorized_keys resolved to itself, read as in-tree,
+// and auto mode wrote through it without asking. Dangling links are followed
+// by hand for that reason. Most interesting targets — authorized_keys,
+// .bash_profile, a systemd unit — do not exist yet, so "the target is missing"
+// was barely a constraint at all.
 func realPath(clean string) string {
+	const maxLinks = 64
 	rest := ""
-	for dir := clean; ; {
-		if real, err := filepath.EvalSymlinks(dir); err == nil {
+	for i := 0; i < maxLinks; i++ {
+		if real, err := filepath.EvalSymlinks(clean); err == nil {
 			return filepath.Join(real, rest)
 		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return clean // nothing along the path exists; lexical form is all there is
+		if target, err := os.Readlink(clean); err == nil {
+			if !filepath.IsAbs(target) {
+				target = filepath.Join(filepath.Dir(clean), target)
+			}
+			clean = filepath.Clean(target)
+			continue
 		}
-		rest = filepath.Join(filepath.Base(dir), rest)
-		dir = parent
+		parent := filepath.Dir(clean)
+		if parent == clean {
+			return filepath.Join(clean, rest)
+		}
+		rest = filepath.Join(filepath.Base(clean), rest)
+		clean = parent
 	}
+	return filepath.Join(clean, rest) // a link cycle; the lexical form is all there is
 }
 
 // argPath pulls the "path" argument out of a tool call, or "" when there is
@@ -598,7 +659,9 @@ func (e *Executor) CallDetailed(ctx context.Context, name string, raw json.RawMe
 		cp := e.checkpoint
 		e.mu.Unlock()
 		if cp != nil {
-			cp(name + ": " + truncateLabel(e.summary(name, raw)))
+			// The label is the model's arguments, committed to git and read
+			// back for /rewind, so it is stripped before it is stored.
+			cp(name + ": " + truncateLabel(stripControls(e.summary(name, raw))))
 		}
 	}
 
@@ -699,6 +762,17 @@ func readCapped(path string) ([]byte, error) {
 		return data[:maxReadBytes], nil
 	}
 	return data, nil
+}
+
+// stripControls removes what a terminal would act on, for strings that are
+// stored and rendered later by something that cannot know where they came from.
+func stripControls(s string) string {
+	return strings.Map(func(r rune) rune {
+		if (r < 0x20 && r != '\n' && r != '\t') || r == 0x7f || (r >= 0x80 && r <= 0x9f) {
+			return -1
+		}
+		return r
+	}, s)
 }
 
 // under reports whether a resolved path is dir or inside it.

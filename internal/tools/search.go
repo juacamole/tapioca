@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 
+	"tapioca/internal/gitcmd"
 	"tapioca/internal/secretenv"
 	"tapioca/internal/textenc"
 )
@@ -39,14 +40,11 @@ var skipDirs = map[string]bool{
 // depending on whether rg happens to be installed. nil means "no opinion"
 // (not a repo, or no git), and the walk falls back to skipDirs alone.
 func trackedSet(root string) map[string]bool {
-	git, err := exec.LookPath("git")
-	if err != nil {
+	if _, err := exec.LookPath("git"); err != nil {
 		return nil
 	}
-	cmd := exec.Command(git, "-C", root, "ls-files", "--cached", "--others",
-		"--exclude-standard", "-z")
-	cmd.Env = secretenv.Scrubbed()
-	out, err := cmd.Output()
+	out, err := gitcmd.In(root, "ls-files", "--cached", "--others",
+		"--exclude-standard", "-z").Output()
 	if err != nil {
 		return nil
 	}

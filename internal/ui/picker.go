@@ -37,7 +37,14 @@ type picker struct {
 	filter string
 }
 
+// newPicker sanitizes every item once here rather than at each call site:
+// pickers list model-generated session titles, checkpoint labels built from
+// tool arguments, and file paths, and one missed site is an escape on screen.
 func newPicker(kind pickerKind, title string, items []pickerItem) picker {
+	for i := range items {
+		items[i].label = sanitizeLabel(items[i].label)
+		items[i].desc = sanitizeLabel(items[i].desc)
+	}
 	return picker{kind: kind, title: title, items: items}
 }
 

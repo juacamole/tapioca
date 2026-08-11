@@ -1,3 +1,12 @@
+# Build output
 /tapioca
-*.tmp
 /result
+*.tmp
+
+# nix-direnv's cache: machine-local, and it embeds absolute /nix/store paths
+/.direnv/
+
+# Editor and agent scratch
+/.claude/
+/.vscode/
+/.idea/

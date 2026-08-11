@@ -73,3 +73,46 @@ func TestImportStillWorksInsideTheProject(t *testing.T) {
 		t.Fatalf("config-dir import stopped working:\n%s", got)
 	}
 }
+
+// The config directory has to be an import root so personal instruction files
+// can compose — but it is also where the provider keys live, and read_file
+// gates that file. An import must not be the way round it.
+func TestImportCannotReachTheConfigFile(t *testing.T) {
+	work, cfgDir, _ := setupRepo(t)
+	write(t, filepath.Join(cfgDir, "config.toml"), "api_key = \"sk-CANARY\"\n")
+	for _, spec := range []string{"@" + filepath.Join(cfgDir, "config.toml"), "@~/.config/tapioca/config.toml"} {
+		write(t, filepath.Join(work, "AGENTS.md"), "# Notes\n"+spec+"\n")
+		if got := Instructions(work); strings.Contains(got, "CANARY") {
+			t.Fatalf("%s pulled the config into the system prompt:\n%s", spec, got)
+		}
+	}
+	// Markdown in the config dir still composes.
+	write(t, filepath.Join(cfgDir, "shared.md"), "PERSONAL-RULES")
+	write(t, filepath.Join(cfgDir, "AGENTS.md"), "# Personal\n@shared.md\n")
+	write(t, filepath.Join(work, "AGENTS.md"), "# Notes\n")
+	if got := Instructions(work); !strings.Contains(got, "PERSONAL-RULES") {
+		t.Fatalf("config-dir markdown import stopped working:\n%s", got)
+	}
+}
+
+// With no VCS marker above it — an extracted tarball, an unpacked module — the
+// ancestry walk ends at /home, and that used to become the import root.
+func TestImportRootIsNotTheHomeDirectory(t *testing.T) {
+	home := t.TempDir()
+	if real, err := filepath.EvalSymlinks(home); err == nil {
+		home = real
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("TAPIOCA_CONFIG_DIR", filepath.Join(home, ".config", "tapioca"))
+	// A directory tree with no .git anywhere above it.
+	work := filepath.Join(home, "downloads", "extracted-1.0")
+	write(t, filepath.Join(home, ".ssh", "id_rsa"), "PRIVATE-CANARY")
+	write(t, filepath.Join(work, "AGENTS.md"), "# Notes\n@../../.ssh/id_rsa\n")
+
+	if root := projectRoot(work); root != work {
+		t.Errorf("projectRoot = %q, want the directory itself when there is no repository", root)
+	}
+	if got := Instructions(work); strings.Contains(got, "PRIVATE-CANARY") {
+		t.Fatalf("import escaped to the home directory:\n%s", got)
+	}
+}

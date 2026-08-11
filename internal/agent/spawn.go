@@ -35,6 +35,25 @@ var SpawnTool = provider.ToolDef{
 }
 
 // spawnAgent blocks until the subagent finishes and returns its answer as the
+// maxAgentName bounds a model-chosen name. It is drawn in the tab bar, in
+// every chat header and in the permission prompt, so an unbounded one wrecks
+// the layout and a control character in one forges UI.
+const maxAgentName = 32
+
+func cleanAgentName(s string) string {
+	var b strings.Builder
+	for _, r := range strings.TrimSpace(s) {
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) {
+			continue
+		}
+		if b.Len() >= maxAgentName {
+			break
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
 // tool result. The parent's context cancels the wait, so ctrl+c still works.
 func (a *Agent) spawnAgent(ctx context.Context, raw json.RawMessage) (string, bool) {
 	var in struct {
@@ -50,7 +69,7 @@ func (a *Agent) spawnAgent(ctx context.Context, raw json.RawMessage) (string, bo
 
 	req := &SpawnReq{
 		Task:  strings.TrimSpace(in.Task),
-		Name:  strings.TrimSpace(in.Name),
+		Name:  cleanAgentName(in.Name),
 		Reply: make(chan SpawnResult, 1),
 	}
 	a.emit(Event{Kind: EvSpawn, Spawn: req})

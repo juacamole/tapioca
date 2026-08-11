@@ -271,7 +271,10 @@ func (m *App) dismissOverlay() {
 }
 
 // openTextOverlay shows scrollable text (used by /diff).
+// openTextOverlay shows read-only text. /diff puts repository contents here,
+// so it is sanitized like anything else from outside the program.
 func (m *App) openTextOverlay(title, content string) {
+	content = sanitizeText(content)
 	m.textTitle = title
 	w := min(m.w-8, 140)
 	h := max(5, m.h-9)
@@ -1576,7 +1579,8 @@ func (m *App) saveSession(announce bool) {
 }
 
 func (m *App) setFlash(text string, isErr bool) {
-	m.flash = text
+	// Flashes carry provider error bodies and MCP JSON-RPC messages verbatim.
+	m.flash = sanitizeLabel(text)
 	m.flashErr = isErr
 	m.flashSeq++
 }
@@ -1838,7 +1842,8 @@ func (m *App) renderPerm(w, h int) string {
 		name = a.Name
 	}
 	var b strings.Builder
-	b.WriteString(styPanelTitle.Render("permission required") + styDim.Render("  ("+name+")") + "\n\n")
+	b.WriteString(styPanelTitle.Render("permission required") +
+		styDim.Render("  ("+truncate(sanitizeLabel(name), 40)+")") + "\n\n")
 	b.WriteString(styTool.Render("tool: "+sanitizeLabel(e.req.Tool)) + "\n")
 	summary := sanitizeText(e.req.Summary)
 	lines := strings.Split(wrapPlain(summary, min(80, w-16)), "\n")
@@ -1863,7 +1868,7 @@ func (m *App) renderPerm(w, h int) string {
 		styWarn.Render("[a]") + " always allow " + always)
 	if e.req.Tool == "bash" && tools.PrefixGrantable(e.req.Summary) {
 		b.WriteString("   " + styAccent.Render("[p]") + " always allow " +
-			tools.PrefixSuggestion(e.req.Summary) + " *")
+			sanitizeLabel(tools.PrefixSuggestion(e.req.Summary)) + " *")
 	}
 	b.WriteString("   " + styErr.Render("[n]") + " deny")
 	box := borderStyle(true).Padding(1, 2).Render(b.String())

@@ -123,6 +123,11 @@ func eventStreamToSSE(r io.Reader, w io.Writer) error {
 		if total < 16 || uint64(headersLen)+16 > uint64(total) {
 			return fmt.Errorf("bedrock: malformed event frame")
 		}
+		// total is four bytes off the wire; without this it sized a make()
+		// directly, so 0xFFFFFFFF asked for 4GB on a goroutine with no recover.
+		if total > maxEventFrame {
+			return fmt.Errorf("bedrock: event frame of %d bytes exceeds the %d limit", total, maxEventFrame)
+		}
 		rest := make([]byte, total-12)
 		if _, err := io.ReadFull(r, rest); err != nil {
 			return err
