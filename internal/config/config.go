@@ -314,10 +314,12 @@ model_catalog = true            # fetch model prices/context sizes from
 # directories, everything else with * over any run of characters.
 # A deny holds in every mode, including bypass; an ask forces a prompt auto
 # would have skipped; an allow skips one, except in plan mode.
+# Matching is textual, so name the command, not one spelling of its flags:
+# "bash(rm -rf*)" does not stop "rm -fr". See SECURITY.md.
 # [permissions]
 # allow = ["bash(go test*)", "edit_file(internal/**)"]
 # ask   = ["bash(git push*)"]
-# deny  = ["read_file(**/.env)", "bash(rm -rf*)", "mcp:*__delete_*"]
+# deny  = ["read_file(**/.env)", "bash(rm *)", "mcp:*__delete_*"]
 # secret_env = ["MY_TOKEN"]     # extra env vars hidden from tools and MCP servers
                                 # (provider API keys are always hidden)
 editor = ""                     # prompt editor; falls back to $VISUAL, $EDITOR, nvim, vim

