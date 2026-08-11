@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"tapioca/internal/config"
+	"tapioca/internal/secretenv"
 )
 
 var mu sync.Mutex
@@ -40,7 +41,10 @@ func gitDir(workTree string) string {
 
 func run(workTree string, args ...string) (string, error) {
 	cmd := exec.Command("git", args...)
-	cmd.Env = append(os.Environ(),
+	// Its git dir is a predictable path under the data dir, so a planted
+	// pre-commit hook runs on the next mutating tool call. It gets the same
+	// filtered environment as every other child.
+	cmd.Env = append(secretenv.Scrubbed(),
 		"GIT_DIR="+gitDir(workTree),
 		"GIT_WORK_TREE="+workTree,
 		"GIT_AUTHOR_NAME=tapioca", "GIT_AUTHOR_EMAIL=checkpoint@tapioca",

@@ -67,6 +67,25 @@ func internalHost(host string) bool {
 	return isInternalIP(ip)
 }
 
+// linkLocalHost is internalHost narrowed to the addresses an agent has no
+// business fetching at all.
+func linkLocalHost(host string) bool {
+	ip := net.ParseIP(host)
+	if ip == nil {
+		addrs, err := net.LookupIP(host)
+		if err != nil {
+			return false
+		}
+		for _, a := range addrs {
+			if a.IsLinkLocalUnicast() || a.IsLinkLocalMulticast() {
+				return true
+			}
+		}
+		return false
+	}
+	return ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast()
+}
+
 func isInternalIP(ip net.IP) bool {
 	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
 		ip.IsLinkLocalMulticast() || ip.IsUnspecified()
@@ -167,6 +186,16 @@ func (e *Executor) webFetch(ctx context.Context, raw json.RawMessage) (string, b
 	req, err := http.NewRequestWithContext(ctx, "GET", target, nil)
 	if err != nil {
 		return err.Error(), true, nil
+	}
+	// Redirects were screened for internal addresses and the URL the model
+	// chose was not, so the cloud metadata endpoint was reachable by asking
+	// for it directly. Only link-local is refused here, not every internal
+	// address: fetching your own dev server on localhost is a real thing to
+	// want, and it goes through the per-host prompt like anything else.
+	// 169.254.169.254 is not, and no prompt describes it as what it is.
+	if linkLocalHost(req.URL.Hostname()) {
+		return "refusing to fetch the link-local address " + req.URL.Hostname() +
+			" (cloud metadata lives there)", true, nil
 	}
 	req.Header.Set("User-Agent", webUA)
 	resp, err := webClient.Do(req)
