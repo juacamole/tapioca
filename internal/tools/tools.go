@@ -16,7 +16,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"tapioca/internal/diff"
@@ -756,17 +755,12 @@ func (e *Executor) bashCommand(ctx context.Context, command string) (*exec.Cmd, 
 		}
 		cmd = exec.CommandContext(ctx, bwrap(), e.sandboxArgs(command)...)
 	} else {
-		cmd = exec.CommandContext(ctx, "sh", "-c", command)
+		name, args := shellFor(command)
+		cmd = exec.CommandContext(ctx, name, args...)
 	}
 	cmd.Dir = e.Cwd()
 	cmd.Env = secretenv.Scrubbed()
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error {
-		if cmd.Process == nil {
-			return nil
-		}
-		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-	}
+	isolateProcess(cmd)
 	cmd.WaitDelay = 10 * time.Second
 	return cmd, nil
 }

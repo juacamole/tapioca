@@ -16,7 +16,7 @@
           pname = "tapioca";
           version = "0.1.0";
           src = ./.;
-          vendorHash = "sha256-65pUwHJ6vbKrjcuki2l+1ma9x6u7EZ6YYkZsKtFNHUY=";
+          vendorHash = "sha256-oeW8Am7NCkHGlTj2M0gBQqQzxKAGqxgIWLaZFIpY+Pc=";
           subPackages = [ "." ];
           meta = {
             description = "Agentic coding TUI for local and hosted LLMs";

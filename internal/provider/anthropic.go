@@ -268,8 +268,7 @@ func apiErrorText(data []byte) string {
 // the same shape, so they build it here and adjust the few fields their
 // transports move into the URL.
 func (a *Anthropic) buildBody(req Request) anthReq {
-	var body anthReq
-	body = anthReq{
+	body := anthReq{
 		Model:     req.Model,
 		MaxTokens: req.MaxTokens,
 		Messages:  a.convertMessages(req.Model, req.Messages),

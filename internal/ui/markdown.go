@@ -14,7 +14,7 @@ import (
 var (
 	sloppyBold   = regexp.MustCompile(`\*\*[ \t]*([^*\n]+?)[ \t]*\*\*`)
 	sloppyBoldU  = regexp.MustCompile(`__[ \t]*([^_\n]+?)[ \t]*__`)
-	sloppyHeader = regexp.MustCompile("^(#{1,6})([^#\\s])")
+	sloppyHeader = regexp.MustCompile(`^(#{1,6})([^#\s])`)
 )
 
 func normalizeMarkdown(text string) string {
