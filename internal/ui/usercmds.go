@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -25,6 +26,15 @@ const (
 	argsToken      = "$ARGUMENTS"
 )
 
+func readCappedFile(path string, limit int64) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return io.ReadAll(io.LimitReader(f, limit))
+}
+
 type userCmd struct {
 	name    string
 	desc    string
@@ -40,11 +50,15 @@ func loadUserCmds(cwd string) []userCmd {
 		if err != nil {
 			return
 		}
+		real, err := filepath.EvalSymlinks(dir)
+		if err != nil {
+			return
+		}
 		for _, e := range entries {
 			if e.IsDir() || !strings.HasSuffix(strings.ToLower(e.Name()), ".md") {
 				continue
 			}
-			c, ok := parseUserCmd(filepath.Join(dir, e.Name()))
+			c, ok := parseUserCmd(real, filepath.Join(dir, e.Name()))
 			if !ok {
 				continue
 			}
@@ -65,8 +79,16 @@ func loadUserCmds(cwd string) []userCmd {
 
 // parseUserCmd reads one command file. A leading "# heading" line becomes the
 // description shown in completion, since a bare filename says little.
-func parseUserCmd(path string) (userCmd, bool) {
-	data, err := os.ReadFile(path)
+func parseUserCmd(dir, path string) (userCmd, bool) {
+	// A symlink named *.md is not a directory, so it passed the listing filter
+	// and os.ReadFile followed it: commands/review.md -> ~/.aws/credentials put
+	// the file into a prompt the user sent by typing /review. The body is not
+	// sanitized like name and desc are, because the body is the prompt.
+	real, err := filepath.EvalSymlinks(path)
+	if err != nil || filepath.Dir(real) != dir {
+		return userCmd{}, false
+	}
+	data, err := readCappedFile(real, maxUserCmdSize+1)
 	if err != nil || len(data) > maxUserCmdSize {
 		return userCmd{}, false
 	}

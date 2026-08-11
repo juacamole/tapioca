@@ -84,7 +84,7 @@ func Refresh() {
 	if err := os.MkdirAll(filepath.Dir(file()), 0o700); err != nil {
 		return
 	}
-	tmp := file() + ".tmp"
+	tmp := file() + ".tmp" //nolint // public data only; see session.writeAtomic
 	if os.WriteFile(tmp, data, 0o600) == nil {
 		_ = os.Rename(tmp, file())
 	}

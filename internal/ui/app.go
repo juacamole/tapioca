@@ -455,19 +455,20 @@ func (m *App) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 	switch ev.Kind {
 	case agent.EvStatus:
 		a.Status = ev.Status
-		a.StatusDetail = ev.Text
+		a.StatusDetail = sanitizeLabel(ev.Text)
 	case agent.EvTextDelta:
-		a.StreamText += ev.Text
+		a.StreamBuf.WriteString(ev.Text)
+		a.StreamText = a.StreamBuf.String()
 		a.Status = agent.StatusStreaming
 	case agent.EvThinkingDelta:
-		a.StreamThinking += ev.Text
+		a.ThinkBuf.WriteString(ev.Text)
+		a.StreamThinking = a.ThinkBuf.String()
 		a.Status = agent.StatusThinking
 	case agent.EvMessage:
 		if ev.Message != nil {
 			a.Messages = append(a.Messages, *ev.Message)
 			if ev.Message.Role == "assistant" {
-				a.StreamText = ""
-				a.StreamThinking = ""
+				a.ResetStream()
 				a.Stats.Turns++
 			}
 			m.dirty = true
@@ -504,8 +505,7 @@ func (m *App) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		m.setFlash(ev.Text, true)
 		cmds = append(cmds, m.flashCmd())
 	case agent.EvRetry:
-		a.StreamText = ""
-		a.StreamThinking = ""
+		a.ResetStream()
 		a.Status = agent.StatusWaiting
 		a.RetryAt = time.Now().Add(ev.Delay)
 		reason := ""
@@ -524,8 +524,7 @@ func (m *App) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, m.flashCmd())
 		}
 	case agent.EvDone:
-		a.StreamText = ""
-		a.StreamThinking = ""
+		a.ResetStream()
 		a.StatusDetail = ""
 		if a.Status != agent.StatusError {
 			a.Status = agent.StatusIdle
@@ -1857,7 +1856,7 @@ func (m *App) renderPerm(w, h int) string {
 		b.WriteString(styDim.Render(fmt.Sprintf("\n(+%d more requests waiting)", len(m.perms)-1)) + "\n")
 	}
 	// The read/fetch gates grant one path or host, not the whole tool; say so.
-	always := e.req.Tool
+	always := sanitizeLabel(e.req.Tool)
 	switch {
 	case strings.HasPrefix(e.req.Tool, "read_file"):
 		always = "this path"

@@ -108,3 +108,28 @@ func TestNoCommandDirectoryIsFine(t *testing.T) {
 		t.Errorf("expected none, got %+v", cmds)
 	}
 }
+
+// os.ReadDir reports a symlink as a non-directory, so a link named *.md passed
+// the listing filter and ReadFile followed it — and the body is not sanitized
+// like name and desc, because the body is the prompt that gets sent.
+func TestCommandFileCannotBeASymlinkOut(t *testing.T) {
+	cfgDir := t.TempDir()
+	work := t.TempDir()
+	t.Setenv("TAPIOCA_CONFIG_DIR", cfgDir)
+	secret := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(secret, []byte("api_key = \"sk-CANARY\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(work, ".tapioca", "commands")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(secret, filepath.Join(dir, "review.md")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	for _, c := range loadUserCmds(work) {
+		if strings.Contains(c.body, "CANARY") {
+			t.Fatalf("/%s would send a file from outside the commands directory: %q", c.name, c.body)
+		}
+	}
+}

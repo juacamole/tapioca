@@ -272,6 +272,11 @@ func (c *Client) handleDiagnostics(params json.RawMessage) {
 		})
 	}
 	c.mu.Lock()
+	// publishDiagnostics is unsolicited and its URI is the server's to choose,
+	// so the map is bounded here; nothing else deletes from it.
+	if len(c.diags) > maxTrackedFiles {
+		c.diags = map[string][]Diagnostic{}
+	}
 	c.diags[p.URI] = list
 	if ch, ok := c.fresh[p.URI]; ok && ch != nil {
 		close(ch)
@@ -353,6 +358,9 @@ func (c *Client) Close() {
 const (
 	maxFrameBytes  = 32 << 20
 	maxHeaderBytes = 8 << 10
+	// maxTrackedFiles bounds the diagnostics map, whose keys come from the
+	// server. Dropping the lot is fine: diagnostics are re-published per edit.
+	maxTrackedFiles = 4096
 )
 
 // readFrame reads one Content-Length framed message.
@@ -391,18 +399,22 @@ func readFrame(r *bufio.Reader) ([]byte, error) {
 // readHeaderLine is ReadString('\n') with a ceiling, so a server that never
 // sends one cannot make us buffer without end.
 func readHeaderLine(r *bufio.Reader) (string, error) {
+	// ReadSlice, not ReadString: ReadString handles a full buffer internally
+	// and never returns ErrBufferFull, so the ceiling below was unreachable
+	// and a server that never sends a newline buffered without end inside
+	// bufio, where nothing here could see it.
 	var b strings.Builder
 	for {
-		chunk, err := r.ReadString('\n')
-		b.WriteString(chunk)
+		chunk, err := r.ReadSlice('\n')
+		if b.Len()+len(chunk) > maxHeaderBytes {
+			return "", fmt.Errorf("header line exceeds %d bytes", maxHeaderBytes)
+		}
+		b.Write(chunk)
 		if err == nil {
 			return b.String(), nil
 		}
 		if err != bufio.ErrBufferFull {
 			return b.String(), err
-		}
-		if b.Len() > maxHeaderBytes {
-			return "", fmt.Errorf("header line exceeds %d bytes", maxHeaderBytes)
 		}
 	}
 }

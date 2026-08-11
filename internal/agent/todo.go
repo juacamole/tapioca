@@ -68,7 +68,7 @@ func (a *Agent) writeTodos(raw json.RawMessage) (string, bool) {
 			items = append(items, TodoItem{Content: content, Status: normalizeTodoStatus(t.Status)})
 		}
 	}
-	a.Todos = items
+	a.SetTodos(items)
 	if len(items) == 0 {
 		return "todo list cleared", false
 	}
@@ -90,10 +90,10 @@ func (a *Agent) writeTodos(raw json.RawMessage) (string, bool) {
 
 // TodoProgress reports finished and total items.
 func (a *Agent) TodoProgress() (done, total int) {
-	for _, t := range a.Todos {
+	for _, t := range a.TodoList() {
 		if t.Status == TodoDone {
 			done++
 		}
 	}
-	return done, len(a.Todos)
+	return done, len(a.TodoList())
 }

@@ -294,6 +294,10 @@ func main() {
 	created := time.Now()
 
 	resumeID := args.resumeID
+	// Both of these become a filename, so both get the same check.
+	if strings.ContainsAny(resumeID, "/\\") {
+		fail(fmt.Errorf("invalid session id %q", resumeID))
+	}
 	if args.continueLatest {
 		id, err := session.LatestID(cwd)
 		if err != nil {

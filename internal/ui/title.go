@@ -78,7 +78,10 @@ func (m *App) titleCmd(prompt string) tea.Cmd {
 // cleanTitle reduces a model's reply to a usable title, or "" when the reply
 // does not look like one.
 func cleanTitle(s string) string {
-	s = thinkBlock.ReplaceAllString(s, "")
+	// The title is model-authored and ends up in the window title, the session
+	// panel, the picker and --list-sessions, so it is stripped here rather than
+	// at each of those.
+	s = sanitizeText(thinkBlock.ReplaceAllString(s, ""))
 	// Models that narrate ("Title: x", "Sure! ...") put the real answer last.
 	lines := strings.Split(strings.TrimSpace(s), "\n")
 	best := ""

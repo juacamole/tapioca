@@ -152,7 +152,7 @@ func (s *Server) pump(ctx context.Context, sess *acpSession) string {
 
 // sendPlan mirrors the agent's todo list into ACP's plan view.
 func (s *Server) sendPlan(sess *acpSession) {
-	todos := sess.agent.Todos
+	todos := sess.agent.TodoList()
 	if len(todos) == 0 {
 		return
 	}
