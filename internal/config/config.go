@@ -30,6 +30,15 @@ type Cost struct {
 	Out float64 `toml:"out"`
 }
 
+// Permissions are per-tool rules, each written as "tool" or "tool(subject)".
+// They are checked before the permission mode: a deny holds even under bypass,
+// an ask forces a prompt auto would have skipped, an allow skips one.
+type Permissions struct {
+	Allow []string `toml:"allow"`
+	Ask   []string `toml:"ask"`
+	Deny  []string `toml:"deny"`
+}
+
 // MCPServerConfig describes one MCP server: a child process over stdio, or an
 // HTTP endpoint when URL is set.
 type MCPServerConfig struct {
@@ -81,15 +90,16 @@ type Config struct {
 	Glyphs          string  `toml:"glyphs"`          // unicode | ascii | nerd
 	PermissionMode  string  `toml:"permission_mode"` // plan | manual | auto | bypass
 
-	BashAllow []string                  `toml:"bash_allow"` // always-allowed bash command words
-	SecretEnv []string                  `toml:"secret_env"` // extra env vars hidden from tools
-	Providers map[string]ProviderConfig `toml:"providers"`
-	MCP       []MCPServerConfig         `toml:"mcp"`
-	LSP       []LSPServerConfig         `toml:"lsp"`
-	Dashboard DashboardConfig           `toml:"dashboard"`
-	Keys      map[string]string         `toml:"keys"`
-	Colors    map[string]string         `toml:"colors"` // theme overrides: "#hex" or "#light/#dark"
-	Costs     map[string]Cost           `toml:"costs"`  // model prefix -> $/Mtok
+	BashAllow   []string                  `toml:"bash_allow"`  // always-allowed bash command words
+	Permissions Permissions               `toml:"permissions"` // per-tool rules, checked before the mode
+	SecretEnv   []string                  `toml:"secret_env"`  // extra env vars hidden from tools
+	Providers   map[string]ProviderConfig `toml:"providers"`
+	MCP         []MCPServerConfig         `toml:"mcp"`
+	LSP         []LSPServerConfig         `toml:"lsp"`
+	Dashboard   DashboardConfig           `toml:"dashboard"`
+	Keys        map[string]string         `toml:"keys"`
+	Colors      map[string]string         `toml:"colors"` // theme overrides: "#hex" or "#light/#dark"
+	Costs       map[string]Cost           `toml:"costs"`  // model prefix -> $/Mtok
 
 	path    string // where this config was loaded from
 	presave func(*Config)
@@ -296,6 +306,18 @@ bash_timeout = 180              # seconds a tool call may run; a bash call can
 model_catalog = true            # fetch model prices/context sizes from
                                 # models.dev on startup; false = no network
 # bash_allow = ["git", "go"]    # bash commands that never prompt ([p] in the prompt adds here)
+
+# Per-tool permission rules, checked before the permission mode. Each is a
+# tool name and, in parentheses, what the call is about: the path for file
+# tools, the command for bash (per segment of a compound one), the URL for
+# web_fetch, the arguments for an MCP tool. Paths glob with ** across
+# directories, everything else with * over any run of characters.
+# A deny holds in every mode, including bypass; an ask forces a prompt auto
+# would have skipped; an allow skips one, except in plan mode.
+# [permissions]
+# allow = ["bash(go test*)", "edit_file(internal/**)"]
+# ask   = ["bash(git push*)"]
+# deny  = ["read_file(**/.env)", "bash(rm -rf*)", "mcp:*__delete_*"]
 # secret_env = ["MY_TOKEN"]     # extra env vars hidden from tools and MCP servers
                                 # (provider API keys are always hidden)
 editor = ""                     # prompt editor; falls back to $VISUAL, $EDITOR, nvim, vim

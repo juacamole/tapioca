@@ -63,3 +63,37 @@ func TestPanelsRoundTripThroughSave(t *testing.T) {
 		t.Errorf("save/load resurrected panels: %v", reloaded.Dashboard.Panels)
 	}
 }
+
+func TestPermissionsRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/config.toml"
+	cfg := Default()
+	cfg.path = path
+	cfg.Permissions = Permissions{
+		Allow: []string{"bash(go test*)"},
+		Ask:   []string{"bash(git push*)"},
+		Deny:  []string{"read_file(**/.env)"},
+	}
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Permissions.Allow) != 1 || got.Permissions.Allow[0] != "bash(go test*)" ||
+		len(got.Permissions.Ask) != 1 || len(got.Permissions.Deny) != 1 {
+		t.Fatalf("lost rules on the round trip: %+v", got.Permissions)
+	}
+	// Saving again must not drop what the first save wrote.
+	if err := got.Save(); err != nil {
+		t.Fatal(err)
+	}
+	again, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(again.Permissions.Deny) != 1 {
+		t.Fatalf("second save lost rules: %+v", again.Permissions)
+	}
+}

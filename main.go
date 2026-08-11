@@ -241,6 +241,7 @@ func main() {
 	exec := tools.NewExecutor(cwd, mode)
 	exec.SetExtraDirs(args.addDirs)
 	exec.SetBashPrefixes(cfg.BashAllow)
+	exec.SetRules(cfg.Permissions.Allow, cfg.Permissions.Ask, cfg.Permissions.Deny)
 	if args.sandbox && !cfg.Sandbox {
 		cfg.Sandbox = true
 		presaves = append(presaves, func(c *config.Config) { c.Sandbox = false })
