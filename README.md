@@ -83,7 +83,11 @@ permission prompt.
 - **MCP** — stdio servers *and* remote **streamable HTTP** servers (with
   auth headers; `${VAR}` expands so tokens stay out of the config file);
   their tools are namespaced `server__tool` and offered alongside the
-  built-ins.
+  built-ins, and a server that announces `tools/list_changed` is re-read
+  without a restart. A server's **prompts** become slash commands
+  (`/server__prompt`) and its **resources** attach like files
+  (`@server:uri`), so both arrive through the doors you already use.
+  Protocol revision is negotiated (2025-06-18 down to 2024-11-05).
 - **Multi-agent** — independent agents with their own provider, model,
   system prompt, goal, history and stats; they stream concurrently.
   `/fork` branches the current conversation into a new agent.

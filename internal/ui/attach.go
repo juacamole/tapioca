@@ -123,7 +123,9 @@ func (m *App) mentionMatches() []string {
 	if tok == "" && !strings.HasSuffix(m.ta.Value(), "@") {
 		return nil
 	}
-	var out []string
+	// MCP resources complete first: there are few of them next to a worktree,
+	// and they would never be seen at the bottom of fifty files.
+	out := m.mcpResourceMatches(tok)
 	for _, f := range listFiles(m.cwd()) {
 		if tok == "" || strings.Contains(strings.ToLower(f), strings.ToLower(tok)) {
 			out = append(out, f)
@@ -145,6 +147,10 @@ func (m *App) expandMentions(text string, atts *[]attachment) string {
 		rel := match[1]
 		if rel == "" {
 			rel = strings.TrimRight(match[2], ".,;:")
+		}
+		if text, ok := m.readMCPResource(rel); ok {
+			inlined = append(inlined, text)
+			continue
 		}
 		path := rel
 		if !filepath.IsAbs(path) {

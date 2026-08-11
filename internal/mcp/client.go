@@ -18,7 +18,22 @@ import (
 	"tapioca/internal/secretenv"
 )
 
-const protocolVersion = "2024-11-05"
+// Protocol revisions, newest first. The client offers the first one and the
+// server answers with the revision it will actually use, which is often an
+// older one — most servers in the wild still speak 2024-11-05, and dropping
+// them to chase the newest revision would be a regression, not an upgrade.
+var protocolVersions = []string{"2025-06-18", "2025-03-26", "2024-11-05"}
+
+const protocolVersion = "2025-06-18"
+
+func supportedVersion(v string) bool {
+	for _, known := range protocolVersions {
+		if v == known {
+			return true
+		}
+	}
+	return false
+}
 
 // Tool is one tool exposed by a server.
 type Tool struct {
@@ -51,10 +66,18 @@ type transport interface {
 
 // Client is a connected MCP server, over stdio or HTTP.
 type Client struct {
-	Name  string
-	Tools []Tool
+	Name string
 
 	tr transport
+
+	// Tools can be replaced while the agent is running, when the server sends
+	// notifications/tools/list_changed.
+	toolsMu   sync.Mutex
+	tools     []Tool
+	prompts   []Prompt
+	resources []Resource
+	version   string // the revision the handshake settled on
+	onTools   func()
 
 	pendingMu sync.Mutex
 	pending   map[int64]chan *rpcMsg
@@ -88,7 +111,8 @@ func Start(ctx context.Context, cfg config.MCPServerConfig) (*Client, error) {
 	return c, nil
 }
 
-// handshake performs initialize and caches the server's tool list.
+// handshake performs initialize, settles on a protocol revision and caches the
+// server's tool list.
 func (c *Client) handshake(ctx context.Context, name string) error {
 	initCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -97,15 +121,54 @@ func (c *Client) handshake(ctx context.Context, name string) error {
 		"capabilities":    map[string]any{},
 		"clientInfo":      map[string]any{"name": "tapioca", "version": "0.1.0"},
 	}
-	if _, err := c.call(initCtx, "initialize", initParams); err != nil {
+	res, err := c.call(initCtx, "initialize", initParams)
+	if err != nil {
 		return fmt.Errorf("mcp %s: initialize: %w", name, err)
+	}
+	var initRes struct {
+		ProtocolVersion string     `json:"protocolVersion"`
+		Capabilities    serverCaps `json:"capabilities"`
+	}
+	// A server that answers with nothing is taken at its word that it accepted
+	// what we offered; one that names a revision decides which is used.
+	agreed := protocolVersion
+	if json.Unmarshal(res, &initRes) == nil && initRes.ProtocolVersion != "" {
+		agreed = initRes.ProtocolVersion
+	}
+	if !supportedVersion(agreed) {
+		return fmt.Errorf("mcp %s: server speaks protocol %s, this client speaks %s",
+			name, agreed, strings.Join(protocolVersions, ", "))
+	}
+	c.toolsMu.Lock()
+	c.version = agreed
+	c.toolsMu.Unlock()
+	// From 2025-06-18 every later HTTP request has to carry the revision.
+	if h, ok := c.tr.(*httpTransport); ok {
+		h.setVersion(agreed)
 	}
 	if err := c.notify(initCtx, "notifications/initialized", map[string]any{}); err != nil {
 		return fmt.Errorf("mcp %s: %w", name, err)
 	}
-	res, err := c.call(initCtx, "tools/list", map[string]any{})
+	if err := c.listTools(initCtx); err != nil {
+		return fmt.Errorf("mcp %s: %w", name, err)
+	}
+	// Prompts and resources are optional, and a server offering neither answers
+	// "method not found" rather than an empty list — so they are asked for only
+	// when the server said it had them, and a refusal is not fatal.
+	if initRes.Capabilities.Prompts != nil {
+		_ = c.listPrompts(initCtx)
+	}
+	if initRes.Capabilities.Resources != nil {
+		_ = c.listResources(initCtx)
+	}
+	return nil
+}
+
+// listTools fetches the server's tools, replacing whatever was cached.
+func (c *Client) listTools(ctx context.Context) error {
+	res, err := c.call(ctx, "tools/list", map[string]any{})
 	if err != nil {
-		return fmt.Errorf("mcp %s: tools/list: %w", name, err)
+		return fmt.Errorf("tools/list: %w", err)
 	}
 	var list struct {
 		Tools []struct {
@@ -115,13 +178,43 @@ func (c *Client) handshake(ctx context.Context, name string) error {
 		} `json:"tools"`
 	}
 	if err := json.Unmarshal(res, &list); err != nil {
-		return fmt.Errorf("mcp %s: decoding tools: %w", name, err)
+		return fmt.Errorf("decoding tools: %w", err)
 	}
+	tools := make([]Tool, 0, len(list.Tools))
 	for _, t := range list.Tools {
-		c.Tools = append(c.Tools, Tool{Server: name, Name: t.Name, Description: t.Description, InputSchema: t.InputSchema})
+		tools = append(tools, Tool{Server: c.Name, Name: t.Name, Description: t.Description, InputSchema: t.InputSchema})
 	}
+	c.toolsMu.Lock()
+	c.tools = tools
+	c.toolsMu.Unlock()
 	return nil
 }
+
+// Tools returns the server's current tool list.
+func (c *Client) Tools() []Tool {
+	c.toolsMu.Lock()
+	defer c.toolsMu.Unlock()
+	return append([]Tool(nil), c.tools...)
+}
+
+// Version returns the protocol revision the handshake settled on.
+func (c *Client) Version() string {
+	c.toolsMu.Lock()
+	defer c.toolsMu.Unlock()
+	return c.version
+}
+
+// OnToolsChanged registers a callback for when the server's tool list changes,
+// so the UI can redraw its MCP panel without polling.
+func (c *Client) OnToolsChanged(fn func()) {
+	c.toolsMu.Lock()
+	c.onTools = fn
+	c.toolsMu.Unlock()
+}
+
+// refreshTools re-lists after a tools/list_changed notification. It runs on
+// the read loop's goroutine, so it cannot block waiting for its own response.
+func (c *Client) refreshTools() { c.refreshList(c.listTools) }
 
 func (c *Client) startStdio(cfg config.MCPServerConfig) error {
 	cmd := exec.Command(cfg.Command, cfg.Args...)
@@ -211,7 +304,17 @@ func (c *Client) handle(line []byte) {
 			_ = c.send(ctx, rpcMsg{JSONRPC: "2.0", ID: msg.ID, Error: &rpcError{Code: -32601, Message: "method not supported"}})
 		}
 	case msg.Method != "":
-		// Notification; nothing to do.
+		// A server whose tools change mid-session (a gateway that connects to
+		// another backend, say) would otherwise keep offering the old list
+		// until restart.
+		switch msg.Method {
+		case "notifications/tools/list_changed":
+			c.refreshTools()
+		case "notifications/prompts/list_changed":
+			c.refreshPrompts()
+		case "notifications/resources/list_changed":
+			c.refreshResources()
+		}
 	default:
 		var id int64
 		if json.Unmarshal(msg.ID, &id) != nil {

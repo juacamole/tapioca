@@ -179,6 +179,13 @@ func (m *App) slashMatches() []*slashCmd {
 		}
 		out = append(out, &slashCmd{name: uc.name, args: "[args]", help: label})
 	}
+	// So do the connected servers' prompts.
+	for _, pc := range m.mcpPromptCmds() {
+		if strings.HasPrefix(pc.name, pre) {
+			c := pc
+			out = append(out, &c)
+		}
+	}
 	return out
 }
 
@@ -192,6 +199,12 @@ func (m *App) runSlash(text string) tea.Cmd {
 		if uc, ok := m.findUserCmd(name); ok {
 			m.noteSlash(text)
 			cmd := m.runUserCmd(uc, arg)
+			m.refreshChat(true)
+			return cmd
+		}
+		if pc, ok := m.findMCPPrompt(name); ok {
+			m.noteSlash(text)
+			cmd := pc.run(m, arg)
 			m.refreshChat(true)
 			return cmd
 		}
