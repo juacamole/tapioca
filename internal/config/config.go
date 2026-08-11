@@ -268,8 +268,30 @@ func (c *Config) Save() error {
 			"# Managed by the app (settings dashboard writes here); manual edits are\n" +
 			"# fine too and are picked up on next start.\n\n" + text
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(text), 0o600); err != nil {
+	return writeAtomic(path, []byte(text))
+}
+
+// writeAtomic writes data and renames it into place. A fixed "<path>.tmp" let
+// two instances truncate each other's file and publish the result — and this
+// is the file holding the provider keys, which the app refuses to start
+// without. os.WriteFile also leaves an existing temp file's mode alone and
+// follows a symlink sitting at that name.
+func writeAtomic(path string, data []byte) error {
+	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	defer os.Remove(tmp) // a no-op once the rename has moved it
+	if err := f.Chmod(0o600); err != nil {
+		f.Close()
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
 		return err
 	}
 	return os.Rename(tmp, path)

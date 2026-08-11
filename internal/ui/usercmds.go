@@ -91,7 +91,9 @@ func parseUserCmd(path string) (userCmd, bool) {
 	if desc == "" {
 		desc = "custom command"
 	}
-	return userCmd{name: name, desc: desc, body: body}, true
+	// name and desc are rendered in the slash menu; the file is part of the
+	// repository, so its first line is not ours to trust.
+	return userCmd{name: sanitizeLabel(name), desc: sanitizeLabel(desc), body: body}, true
 }
 
 // render substitutes the arguments. A template with no $ARGUMENTS still gets

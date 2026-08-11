@@ -227,6 +227,10 @@ func (o *Ollama) Stream(ctx context.Context, req Request, out chan<- Event) (Mes
 			out <- Event{Type: EventTextDelta, Text: ch.Message.Content}
 		}
 		for _, tc := range ch.Message.ToolCalls {
+			streamed += len(tc.Function.Name) + len(tc.Function.Arguments)
+			if overLimit(streamed) || len(toolCalls) >= maxStreamBlocks {
+				return finish(), fmt.Errorf("response exceeded %d bytes; stopping", maxResponseBytes)
+			}
 			toolCalls = append(toolCalls, tc)
 			out <- Event{Type: EventToolUseStart, ToolName: tc.Function.Name}
 		}

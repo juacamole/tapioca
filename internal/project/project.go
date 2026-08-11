@@ -37,11 +37,7 @@ func Instructions(cwd string) string {
 	var parts []string
 	seen := map[string]bool{}
 	dirs := ancestry(cwd)
-	// dirs is outermost-first, so dirs[0] is the repository root.
-	roots := importRoots{GlobalDir()}
-	if len(dirs) > 0 {
-		roots = append(roots, dirs[0])
-	}
+	roots := importRoots{GlobalDir(), projectRoot(cwd)}
 
 	add := func(path string) {
 		abs, err := filepath.Abs(path)
@@ -74,6 +70,29 @@ func Instructions(cwd string) string {
 
 // GlobalDir is where instruction files that apply everywhere live.
 func GlobalDir() string { return config.Dir() }
+
+// projectRoot is the nearest enclosing repository, or cwd when there is none.
+//
+// It used to be the outermost directory ancestry() walked to, which is the
+// repository root only when there is a repository: in an extracted tarball or
+// an unpacked module with no VCS marker above it, that walk ends at /home, and
+// making /home an import root put every dotfile under it in reach.
+func projectRoot(cwd string) string {
+	abs, err := filepath.Abs(cwd)
+	if err != nil {
+		return cwd
+	}
+	for dir := abs; ; {
+		if isRepoRoot(dir) {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return abs // no repository anywhere above: trust only cwd itself
+		}
+		dir = parent
+	}
+}
 
 // ancestry lists cwd and its parents, outermost first, stopping at the
 // repository root so a stray file in /home or / never joins every prompt.
@@ -133,6 +152,19 @@ func (r importRoots) allows(abs string) bool {
 	return false
 }
 
+// importable restricts imports to markdown. The feature exists to split a long
+// instruction file up, and without this the config directory being an import
+// root — which it must be, so personal instruction files can compose — put
+// config.toml, and the provider keys in it, one line away from the system
+// prompt. read_file gates that same file; an import must not be the way round.
+func importable(abs string) bool {
+	switch strings.ToLower(filepath.Ext(abs)) {
+	case ".md", ".markdown", ".txt":
+		return true
+	}
+	return false
+}
+
 // resolveReal follows symlinks, so a link committed inside the project cannot
 // point an import outside it. A path that does not exist falls back to a
 // lexical clean; the read then fails on its own.
@@ -179,7 +211,7 @@ func expandImports(text, dir string, seen map[string]bool, depth int, roots impo
 			continue
 		}
 		seen[abs] = true
-		if !roots.allows(abs) {
+		if !importable(abs) || !roots.allows(abs) {
 			// Named rather than dropped: a silent refusal looks identical to a
 			// typo, and this one is worth noticing. The path is left out on
 			// purpose — it is attacker-chosen text.

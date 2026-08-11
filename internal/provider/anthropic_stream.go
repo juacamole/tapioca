@@ -20,6 +20,15 @@ const maxResponseBytes = 32 << 20
 
 func overLimit(n int) bool { return n > maxResponseBytes }
 
+// maxStreamBlocks bounds the per-response maps keyed by a server-chosen index.
+// Nothing legitimate opens thousands of content blocks or tool calls in one
+// answer, and the index is whatever the server sends.
+const maxStreamBlocks = 4096
+
+// maxEventFrame bounds one AWS event-stream frame, whose length prefix is four
+// bytes of unvalidated network input.
+const maxEventFrame = 32 << 20
+
 // streamAnthropicSSE turns an Anthropic-format event stream into events and
 // a finished message. Bedrock and Vertex serve the same protocol behind
 // different transports, so they feed their decoded stream through here
@@ -30,7 +39,7 @@ func (a *Anthropic) streamAnthropicSSE(ctx context.Context, model string, r io.R
 		id, name  string
 		data      string
 		text      strings.Builder
-		signature string
+		sig       strings.Builder
 		inputJSON strings.Builder
 	}
 	builders := map[int]*blockBuilder{}
@@ -50,7 +59,7 @@ func (a *Anthropic) streamAnthropicSSE(ctx context.Context, model string, r io.R
 			case "text":
 				msg.Blocks = append(msg.Blocks, Block{Type: "text", Text: b.text.String()})
 			case "thinking":
-				msg.Blocks = append(msg.Blocks, Block{Type: "thinking", Text: b.text.String(), Signature: b.signature})
+				msg.Blocks = append(msg.Blocks, Block{Type: "thinking", Text: b.text.String(), Signature: b.sig.String()})
 			case "redacted_thinking":
 				// Opaque, but must be replayed verbatim in tool exchanges.
 				msg.Blocks = append(msg.Blocks, Block{Type: "redacted_thinking", Data: b.data})
@@ -103,11 +112,15 @@ func (a *Anthropic) streamAnthropicSSE(ctx context.Context, model string, r io.R
 				}
 			}
 		case "content_block_delta":
+			if len(builders) > maxStreamBlocks {
+				return finish(), fmt.Errorf("response opened more than %d content blocks; stopping", maxStreamBlocks)
+			}
 			b := builders[ev.Index]
 			if b == nil || ev.Delta == nil {
 				continue
 			}
-			streamed += len(ev.Delta.Text) + len(ev.Delta.Thinking) + len(ev.Delta.PartialJSON)
+			streamed += len(ev.Delta.Text) + len(ev.Delta.Thinking) +
+				len(ev.Delta.PartialJSON) + len(ev.Delta.Signature)
 			if overLimit(streamed) {
 				return finish(), fmt.Errorf("response exceeded %d bytes; stopping", maxResponseBytes)
 			}
@@ -119,7 +132,7 @@ func (a *Anthropic) streamAnthropicSSE(ctx context.Context, model string, r io.R
 				b.text.WriteString(ev.Delta.Thinking)
 				out <- Event{Type: EventThinkingDelta, Text: ev.Delta.Thinking}
 			case "signature_delta":
-				b.signature += ev.Delta.Signature
+				b.sig.WriteString(ev.Delta.Signature) // a Builder: += here was quadratic
 			case "input_json_delta":
 				b.inputJSON.WriteString(ev.Delta.PartialJSON)
 				out <- Event{Type: EventToolInputDelta, Text: ev.Delta.PartialJSON, ToolID: b.id, ToolName: b.name}

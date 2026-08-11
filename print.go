@@ -39,6 +39,18 @@ type printResult struct {
 
 // runPrint executes one prompt headlessly: stream to stdout (text) or emit a
 // JSON summary, save the session, exit 0/1.
+// plain strips what a terminal would act on. --print writes provider and model
+// output straight to a terminal, so tool names, arguments and error bodies get
+// the same treatment the TUI gives them.
+func plain(s string) string {
+	return strings.Map(func(r rune) rune {
+		if (r < 0x20 && r != '\n' && r != '\t') || r == 0x7f || (r >= 0x80 && r <= 0x9f) {
+			return -1
+		}
+		return r
+	}, s)
+}
+
 func runPrint(cfg *config.Config, mgr *agent.Manager, reg *mcp.Registry, opts printOpts) int {
 	for _, sc := range cfg.MCP {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -112,7 +124,10 @@ loop:
 		case agent.EvToolStart:
 			res.ToolCalls++
 			if ev.Tool != nil && streaming {
-				fmt.Fprintf(os.Stderr, "[tool] %s %s\n", ev.Tool.Name, ev.Tool.Args)
+				// Names and arguments are the model's; -p usually runs in a
+				// terminal, so control sequences are stripped rather than
+				// handed to it.
+				fmt.Fprintf(os.Stderr, "[tool] %s %s\n", plain(ev.Tool.Name), plain(ev.Tool.Args))
 			}
 		case agent.EvPermission:
 			if ev.Perm != nil {
@@ -156,7 +171,7 @@ loop:
 	}
 	if res.Error != "" {
 		if opts.format == "text" {
-			fmt.Fprintln(os.Stderr, "error:", res.Error)
+			fmt.Fprintln(os.Stderr, "error:", plain(res.Error))
 		}
 		return 1
 	}

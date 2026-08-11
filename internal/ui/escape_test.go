@@ -93,3 +93,30 @@ func TestSanitizeLeavesOrdinaryTextAlone(t *testing.T) {
 		}
 	}
 }
+
+// Sanitizing at each render site meant one missed site was an escape on
+// screen, and the audit found eleven. These check the choke points instead.
+func TestFlashIsSanitized(t *testing.T) {
+	m := &App{}
+	m.setFlash("provider said: "+nasty, true)
+	if hasEscape(m.flash) {
+		t.Fatalf("flash kept an escape: %q", m.flash)
+	}
+}
+
+func TestPickerItemsAreSanitized(t *testing.T) {
+	p := newPicker(pickTheme, "t", []pickerItem{
+		{label: "session " + nasty, desc: "resumed " + nasty, value: "x"},
+	})
+	if hasEscape(p.items[0].label) || hasEscape(p.items[0].desc) {
+		t.Fatalf("picker kept an escape: %+v", p.items[0])
+	}
+}
+
+func TestTextOverlayIsSanitized(t *testing.T) {
+	m := &App{w: 80, h: 24}
+	m.openTextOverlay("diff", "a "+nasty+" b")
+	if hasEscape(m.textVP.View()) {
+		t.Fatalf("overlay kept an escape: %q", m.textVP.View())
+	}
+}

@@ -2,7 +2,6 @@ package ui
 
 import (
 	"fmt"
-	"os/exec"
 	"strconv"
 	"strings"
 	"time"
@@ -10,6 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"tapioca/internal/agent"
+	"tapioca/internal/gitcmd"
 )
 
 // gitInfo is a cached snapshot of the working directory's git state, shown by
@@ -51,7 +51,7 @@ func (m *App) gitPanelsVisible() bool {
 // fetchGitCmd gathers git status in the background.
 func fetchGitCmd(cwd string) tea.Cmd {
 	return func() tea.Msg {
-		out, err := exec.Command("git", "-C", cwd, "status", "--porcelain", "-b").Output()
+		out, err := gitcmd.In(cwd, "status", "--porcelain", "-b").Output()
 		if err != nil {
 			return gitStatusMsg{gitInfo{}}
 		}
@@ -86,8 +86,8 @@ func fetchGitCmd(cwd string) tea.Cmd {
 			}
 			info.files = append(info.files, gitFile{x: line[0], y: line[1], path: path})
 		}
-		if out, err := exec.Command("git", "-C", cwd, "log", "-1", "--format=%h %s").Output(); err == nil {
-			info.lastCommit = strings.TrimSpace(string(out))
+		if out, err := gitcmd.In(cwd, "log", "-1", "--format=%h %s").Output(); err == nil {
+			info.lastCommit = sanitizeLabel(strings.TrimSpace(string(out)))
 		}
 		return gitStatusMsg{info}
 	}

@@ -43,6 +43,16 @@ func normalizeTodoStatus(s string) string {
 
 // writeTodos replaces the agent's plan and reports it back so the model sees
 // the state it just set.
+// stripControls removes what a terminal would act on: C0, DEL and C1.
+func stripControls(s string) string {
+	return strings.Map(func(r rune) rune {
+		if (r < 0x20 && r != '\n' && r != '\t') || r == 0x7f || (r >= 0x80 && r <= 0x9f) {
+			return -1
+		}
+		return r
+	}, s)
+}
+
 func (a *Agent) writeTodos(raw json.RawMessage) (string, bool) {
 	var in struct {
 		Todos []TodoItem `json:"todos"`
@@ -52,7 +62,9 @@ func (a *Agent) writeTodos(raw json.RawMessage) (string, bool) {
 	}
 	items := make([]TodoItem, 0, len(in.Todos))
 	for _, t := range in.Todos {
-		if content := strings.TrimSpace(t.Content); content != "" {
+		// Drawn in the plan panel, so control characters are stripped here
+		// rather than at each place that renders one.
+		if content := stripControls(strings.TrimSpace(t.Content)); content != "" {
 			items = append(items, TodoItem{Content: content, Status: normalizeTodoStatus(t.Status)})
 		}
 	}
