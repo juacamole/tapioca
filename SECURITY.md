@@ -156,8 +156,9 @@ can still reach the network, so it bounds file damage, not exfiltration.
 
 ## Credentials
 
-Provider API keys are removed from the environment handed to shell tools and
-MCP servers, so a tool call cannot read them. Add your own variables with:
+Known provider API keys are removed from the environment handed to shell
+tools, MCP servers, language servers and every other subprocess, so a tool call
+cannot read them. Add your own with:
 
 ```toml
 secret_env = ["MY_COMPANY_TOKEN"]
@@ -165,6 +166,16 @@ secret_env = ["MY_COMPANY_TOKEN"]
 
 MCP servers still receive whatever you set explicitly in their `[mcp.env]`
 block.
+
+Two things this does **not** cover, both worth knowing:
+
+- A provider configured with a custom `api_key_env` name is not recognised
+  automatically. Put that variable in `secret_env` yourself.
+- Scrubbing removes the variable from the *child's* environment. It does not
+  hide Tapioca's own: on Linux an approved command can read
+  `/proc/<parent>/environ` and see everything you exported in the shell that
+  launched it. `sandbox = true` closes that (a fresh `/proc` in a new PID
+  namespace); nothing else does.
 
 ## Network calls Tapioca makes itself
 
@@ -181,9 +192,15 @@ Nothing else phones home; there is no telemetry.
 Sessions, project memory (`/remember`) and checkpoint snapshots contain
 everything the model saw, including anything you pasted. They are stored
 unencrypted under `~/.local/share/tapioca` with owner-only permissions
-(`0600`/`0700`), as is `config.toml` (which may hold an API key). Full-disk
-encryption is the answer if you need more; Tapioca does not encrypt them
-itself.
+(`0600`/`0700`), as is `config.toml` (which may hold an API key). Files are
+created at those modes rather than adjusted afterwards, so there is no window;
+a directory that already existed with looser permissions from an older version
+or a restored backup keeps them, and Tapioca does not tighten it for you.
+Full-disk encryption is the answer if you need more; Tapioca does not encrypt
+anything itself.
+
+Both directories are also treated as sensitive paths, so the agent reading
+your own config or transcripts prompts like any other secret.
 
 ## What is not protected
 
@@ -197,6 +214,12 @@ itself.
   `edit_file` are Go code inside Tapioca, so bubblewrap does not contain
   them; they rely on the gates above instead. In `bypass` they are bounded
   by nothing at all.
+- **Editor mode trusts its peer.** `--acp` speaks JSON-RPC on stdio, so the
+  peer is whatever process launched Tapioca — normally your editor. It may
+  supply its own MCP servers, which means commands to execute, and it chooses
+  the working directory. That is not an escalation (a process that can spawn
+  Tapioca can already run anything as you), but do not expose an `--acp`
+  process's stdin to anything you would not trust with a shell.
 - **Grants are coarse.** `[p]` grants a command word, not a subcommand:
   allowing `git` allows `git push`. Tools that can execute code through
   configuration (`git -c`, `make`, build scripts) inherit that power.
