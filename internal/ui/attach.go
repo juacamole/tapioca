@@ -137,6 +137,10 @@ func (m *App) mentionMatches() []string {
 	return out
 }
 
+// maxMentionBytes bounds one inlined mention. @/dev/zero read forever on the
+// update goroutine before this.
+const maxMentionBytes = 4 << 20
+
 var mentionRe = regexp.MustCompile(`@"([^"]+)"|@(\S+)`)
 
 // expandMentions resolves @path tokens (quoted for spaced paths): text files
@@ -156,8 +160,22 @@ func (m *App) expandMentions(text string, atts *[]attachment) string {
 		if !filepath.IsAbs(path) {
 			path = filepath.Join(m.cwd(), rel)
 		}
+		// read_file gates secrets and out-of-tree paths; a mention inlines the
+		// same bytes into the same outgoing prompt, so it gets the same gate.
+		// Symlinks are resolved first, since the check is on the resolved path.
+		if real, err := filepath.EvalSymlinks(path); err == nil {
+			path = real
+		}
+		if m.mgr.Exec != nil && m.mgr.Exec.MentionBlocked(path) {
+			inlined = append(inlined, fmt.Sprintf("[%s: outside the working directory or a secret — not attached]", rel))
+			continue
+		}
 		info, err := os.Stat(path)
 		if err != nil || info.IsDir() {
+			continue
+		}
+		if info.Size() > maxMentionBytes {
+			inlined = append(inlined, fmt.Sprintf("[file: %s — %d bytes, too large to inline]", rel, info.Size()))
 			continue
 		}
 		if mt, isImg := imageExts[strings.ToLower(filepath.Ext(path))]; isImg {

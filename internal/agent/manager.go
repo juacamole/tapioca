@@ -239,7 +239,7 @@ func (m *Manager) ToSession(id, name string, createdAt time.Time) *session.Sessi
 			CtxTokens:      a.CtxTokens,
 			Messages:       msgs,
 			Queue:          a.Queue,
-			Todos:          a.Todos,
+			Todos:          a.TodoList(),
 			Depth:          a.Depth,
 			Stats:          a.Stats,
 		})

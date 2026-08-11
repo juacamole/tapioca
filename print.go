@@ -105,7 +105,7 @@ loop:
 		case agent.EvTextDelta:
 			out.WriteString(ev.Text)
 			if streaming {
-				fmt.Print(ev.Text)
+				fmt.Print(plain(ev.Text))
 			}
 		case agent.EvMessage:
 			if ev.Message != nil {

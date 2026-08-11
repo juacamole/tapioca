@@ -178,12 +178,50 @@ func (e *Executor) cwdLocked() string {
 // way would let a stray executable named like a trusted one inherit its
 // permission.
 func normalized(command string) string {
+	// A line continuation is whitespace to the shell.
+	command = strings.ReplaceAll(command, "\\\n", " ")
 	fields := strings.Fields(command) // splits on any run of whitespace
+	// Quoting anywhere changes nothing about what runs, so every word is
+	// unquoted, not only the first: deny bash(git push*) has to see git "push".
+	for i := range fields {
+		fields[i] = unquoteWord(fields[i])
+	}
+	// Drop the prefixes a shell steps over before it reaches the command:
+	// environment assignments, a subshell or brace group, and negation.
+	for len(fields) > 0 {
+		w := fields[0]
+		if w == "(" || w == "{" || w == "!" {
+			fields = fields[1:]
+			continue
+		}
+		if i := strings.IndexByte(w, '='); i > 0 && isName(w[:i]) {
+			fields = fields[1:]
+			continue
+		}
+		if len(w) > 1 && (w[0] == '(' || w[0] == '{' || w[0] == '!') {
+			fields[0] = w[1:]
+			continue
+		}
+		break
+	}
 	if len(fields) == 0 {
 		return command
 	}
-	fields[0] = filepath.Base(unquoteWord(fields[0]))
+	fields[0] = filepath.Base(strings.TrimRight(fields[0], ")};"))
 	return strings.Join(fields, " ")
+}
+
+// isName reports whether s is a shell variable name, so that FOO=1 is
+// recognised as an assignment and ./x=y is not.
+func isName(s string) bool {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		ok := c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (i > 0 && c >= '0' && c <= '9')
+		if !ok {
+			return false
+		}
+	}
+	return s != ""
 }
 
 // unquoteWord strips the quoting a shell removes before looking a command up:

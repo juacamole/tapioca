@@ -116,3 +116,41 @@ func TestImportRootIsNotTheHomeDirectory(t *testing.T) {
 		t.Fatalf("import escaped to the home directory:\n%s", got)
 	}
 }
+
+// The import machinery was confined while the instruction file itself was read
+// unresolved, which left the shorter version of the same exploit: make
+// AGENTS.md a symlink and skip the import line entirely.
+func TestInstructionFileCannotBeASymlinkOut(t *testing.T) {
+	work, _, home := setupRepo(t)
+	write(t, filepath.Join(home, ".aws", "credentials"), "aws_secret_access_key = CANARY")
+	if err := os.Symlink(filepath.Join(home, ".aws", "credentials"), filepath.Join(work, "AGENTS.md")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if got := Instructions(work); strings.Contains(got, "CANARY") {
+		t.Fatalf("a symlinked AGENTS.md read a file outside the project:\n%s", got)
+	}
+}
+
+// maxInstructions truncates the joined result, which is no help when reading
+// one file is what costs the memory: a sparse file is tiny in a clone.
+func TestInstructionFileIsSizeCapped(t *testing.T) {
+	work, _, _ := setupRepo(t)
+	path := filepath.Join(work, "AGENTS.md")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Seek(200<<20, 0); err != nil {
+		f.Close()
+		t.Skip("cannot create a sparse file here")
+	}
+	if _, err := f.Write([]byte("x")); err != nil {
+		f.Close()
+		t.Fatal(err)
+	}
+	f.Close()
+	got := Instructions(work)
+	if len(got) > 4<<20 {
+		t.Fatalf("read %d bytes from a 200MB file", len(got))
+	}
+}

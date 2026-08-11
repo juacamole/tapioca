@@ -341,12 +341,13 @@ func renderTokensPanel(m *App, a *agent.Agent, w, h int) []string {
 }
 
 func renderTodoPanel(m *App, a *agent.Agent, w, h int) []string {
-	if len(a.Todos) == 0 {
+	todos := a.TodoList()
+	if len(todos) == 0 {
 		return []string{styDim.Render("no plan — the agent writes one for multi-step tasks")}
 	}
 	done, total := a.TodoProgress()
 	lines := []string{fmt.Sprintf("%d/%d done", done, total)}
-	for _, t := range a.Todos {
+	for _, t := range todos {
 		if len(lines) >= h {
 			lines = append(lines[:h-1], styDim.Render(fmt.Sprintf("… %d more", total-h+2)))
 			break

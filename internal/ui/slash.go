@@ -606,8 +606,7 @@ func cmdClear(m *App, _ string) tea.Cmd {
 	}
 	a.Messages = nil
 	a.Queue = nil
-	a.StreamText = ""
-	a.StreamThinking = ""
+	a.ResetStream()
 	a.LastErr = ""
 	a.CtxTokens = 0
 	m.dirty = true

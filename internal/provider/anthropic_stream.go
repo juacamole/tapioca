@@ -106,6 +106,15 @@ func (a *Anthropic) streamAnthropicSSE(ctx context.Context, model string, r io.R
 			}
 		case "content_block_start":
 			if ev.ContentBlock != nil {
+				// The delta branch was capped and this one was not, so a flood
+				// of block_start events allocated without limit.
+				streamed += len(ev.ContentBlock.Data) + len(ev.ContentBlock.Name)
+				if overLimit(streamed) {
+					return finish(), fmt.Errorf("response exceeded %d bytes; stopping", maxResponseBytes)
+				}
+				if len(builders) >= maxStreamBlocks {
+					return finish(), fmt.Errorf("response opened more than %d content blocks; stopping", maxStreamBlocks)
+				}
 				builders[ev.Index] = &blockBuilder{typ: ev.ContentBlock.Type, id: ev.ContentBlock.ID, name: ev.ContentBlock.Name, data: ev.ContentBlock.Data}
 				if ev.ContentBlock.Type == "tool_use" {
 					out <- Event{Type: EventToolUseStart, ToolID: ev.ContentBlock.ID, ToolName: ev.ContentBlock.Name}

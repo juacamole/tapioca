@@ -128,6 +128,18 @@ func segments(command string) []string {
 		case c == '"' && !inSingle:
 			inDouble = !inDouble
 		case !inSingle && !inDouble:
+			// A # at the start of a word comments out the rest of the line.
+			// sh ends that at the newline; a scanner that did not model it
+			// read a stray quote inside the comment as opening a string, so
+			// `echo hi #\'` swallowed the following line into one "quoted"
+			// segment that still looked like a plain echo.
+			if c == '#' && (cur.Len() == 0 || isSpace(cur.String()[cur.Len()-1])) {
+				for i < len(command) && command[i] != '\n' {
+					i++
+				}
+				flush()
+				continue
+			}
 			if c == ';' || c == '\n' {
 				flush()
 				continue
@@ -149,6 +161,8 @@ func segments(command string) []string {
 	flush()
 	return out
 }
+
+func isSpace(b byte) bool { return b == ' ' || b == '\t' }
 
 func (e *Executor) wordAllowed(word string) bool {
 	e.mu.Lock()
@@ -172,6 +186,11 @@ func escapes(segment string) bool {
 		// $'...' follows C escaping rules the scanner below does not model, so
 		// $'\'' closes the quote where the scanner thinks one opens.
 		strings.Contains(segment, "$'") {
+		return true
+	}
+	// An expansion in the first word means the first word is not the program:
+	// touch$IFS/x and $CMD both run something the summary does not name.
+	if f := strings.Fields(segment); len(f) > 0 && strings.Contains(f[0], "$") {
 		return true
 	}
 	inSingle, inDouble := false, false
@@ -445,7 +464,7 @@ func (e *Executor) resolve(path string) string {
 // .bash_profile, a systemd unit — do not exist yet, so "the target is missing"
 // was barely a constraint at all.
 func realPath(clean string) string {
-	const maxLinks = 64
+	const maxLinks = 40
 	rest := ""
 	for i := 0; i < maxLinks; i++ {
 		if real, err := filepath.EvalSymlinks(clean); err == nil {
@@ -465,8 +484,16 @@ func realPath(clean string) string {
 		rest = filepath.Join(filepath.Base(clean), rest)
 		clean = parent
 	}
-	return filepath.Join(clean, rest) // a link cycle; the lexical form is all there is
+	// Out of budget: a cycle, or a chain built to exhaust it. Returning the
+	// lexical path here approved a location the kernel would not have gone to,
+	// so it fails closed instead — unresolvable never lies inside a work area
+	// and never matches a rule.
+	return unresolvable
 }
+
+// unresolvable is the answer when a path cannot be resolved. It contains a NUL,
+// so no real path equals it and every containment check says no.
+const unresolvable = "\x00unresolvable"
 
 // argPath pulls the "path" argument out of a tool call, or "" when there is
 // none — an unparsable call resolves to the working directory and so counts as
@@ -773,6 +800,14 @@ func stripControls(s string) string {
 		}
 		return r
 	}, s)
+}
+
+// MentionBlocked reports whether inlining path into a prompt should be
+// refused. An @mention puts the same bytes in front of the model that read_file
+// would, so it answers to the same policy rather than a second one.
+func (e *Executor) MentionBlocked(path string) bool {
+	clean := e.resolve(path)
+	return clean == unresolvable || !e.inWorkArea(clean) || e.sensitivePath(clean)
 }
 
 // under reports whether a resolved path is dir or inside it.

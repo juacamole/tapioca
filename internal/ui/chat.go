@@ -84,7 +84,7 @@ func renderConversation(a *agent.Agent, w int, spin string, verbose bool, open f
 		parts = append(parts, styDim.Render("queued | "+truncate(label, max(10, w-10))))
 	}
 	if a.LastErr != "" {
-		parts = append(parts, styErr.Render("x "+wrapPlain(a.LastErr, w-2)))
+		parts = append(parts, styErr.Render("x "+wrapPlain(sanitizeText(a.LastErr), w-2)))
 	}
 	return strings.Join(parts, "\n\n")
 }

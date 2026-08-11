@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"tapioca/internal/mcp"
@@ -153,9 +154,18 @@ type Agent struct {
 	// Live streaming buffers for the in-flight assistant message.
 	StreamText     string
 	StreamThinking string
-	StreamStart    time.Time
-	RetryAt        time.Time // when the next retry attempt fires
-	RetryNote      string
+	// Builders behind the two strings above. Appending to a string on every
+	// delta is quadratic in the response length, and the chunk size is the
+	// server's choice, so no byte cap bounds the copying.
+	StreamBuf   strings.Builder
+	ThinkBuf    strings.Builder
+	StreamStart time.Time
+
+	// todoMu guards Todos, the one field below that the run goroutine writes
+	// directly instead of handing to the UI through emit().
+	todoMu    sync.Mutex
+	RetryAt   time.Time // when the next retry attempt fires
+	RetryNote string
 
 	Events chan Event
 	MCP    *mcp.Registry
@@ -252,6 +262,29 @@ func (a *Agent) Send(history []provider.Message) {
 	ctx, cancel := context.WithCancel(context.Background())
 	a.cancel = cancel
 	go a.run(ctx, rs, history)
+}
+
+// Todos is written by writeTodos on the run goroutine and read by the
+// dashboard on the Bubble Tea goroutine — the one Agent field not funnelled
+// through emit(). These two are the only way it should be touched.
+func (a *Agent) SetTodos(items []TodoItem) {
+	a.todoMu.Lock()
+	a.Todos = items
+	a.todoMu.Unlock()
+}
+
+// TodoList returns a snapshot safe to range over.
+func (a *Agent) TodoList() []TodoItem {
+	a.todoMu.Lock()
+	defer a.todoMu.Unlock()
+	return append([]TodoItem(nil), a.Todos...)
+}
+
+// ResetStream clears the in-flight response and the builders behind it.
+func (a *Agent) ResetStream() {
+	a.StreamText, a.StreamThinking = "", ""
+	a.StreamBuf.Reset()
+	a.ThinkBuf.Reset()
 }
 
 func (a *Agent) emit(ev Event) {

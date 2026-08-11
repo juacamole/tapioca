@@ -7,6 +7,7 @@ package project
 import (
 	"crypto/sha1"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -29,6 +30,23 @@ var instructionFiles = []string{
 
 const maxImportDepth = 3
 
+// maxInstructionFile bounds one file. maxInstructions caps the joined result,
+// which is no help when reading a single file is what costs the memory: a
+// sparse 200MB AGENTS.md is 4KB in a clone and allocated gigabytes here.
+const maxInstructionFile = 1 << 20
+
+func readCapped(path string, limit int64) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	if info, err := f.Stat(); err == nil && info.IsDir() {
+		return nil, fmt.Errorf("%s is a directory", path)
+	}
+	return io.ReadAll(io.LimitReader(f, limit))
+}
+
 // Instructions gathers project context for cwd: a global file first, then
 // every instruction file from the repository root down to cwd. Working in a
 // subdirectory has to pick up the repository's own instructions, and the
@@ -45,6 +63,12 @@ func Instructions(cwd string) string {
 			return
 		}
 		seen[abs] = true
+		// The file itself gets the check its imports get. Confining @import
+		// while reading AGENTS.md unresolved left the shorter version of the
+		// same exploit open: make AGENTS.md a symlink and skip the import.
+		if !roots.allows(abs) {
+			return
+		}
 		text, ok := readInstruction(abs, seen, 0, roots)
 		if !ok {
 			return
@@ -177,7 +201,7 @@ func resolveReal(p string) string {
 
 // readInstruction reads one file and resolves its @imports.
 func readInstruction(path string, seen map[string]bool, depth int, roots importRoots) (string, bool) {
-	data, err := os.ReadFile(path)
+	data, err := readCapped(path, maxInstructionFile)
 	if err != nil {
 		return "", false
 	}

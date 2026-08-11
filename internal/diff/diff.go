@@ -89,12 +89,24 @@ func middle(a, b []string, offset int) []Op {
 	return backtrack(a, b, trace(a, b), offset)
 }
 
+// maxDiffRounds bounds Myers' D, which is the number of differing lines. Past
+// this the diff is a rewrite, and a rewrite reads better as a summary anyway.
+const maxDiffRounds = 600
+
 // trace runs Myers' algorithm, keeping each round's furthest-reaching paths so
 // the edit script can be recovered afterwards.
 func trace(a, b []string) [][]int {
 	n, m := len(a), len(b)
 	maxD := n + m
-	v := make([]int, 2*maxD+1)
+	// Each round snapshots the whole v array and every round is kept, so the
+	// cost is O(D * (n+m)) memory. maxDiffLines bounds n+m but not D, and a
+	// file rewritten line-for-line sits just under it: 2000 lines replaced by
+	// 2000 others allocated ~300MB for a display-only diff. Bounding the work
+	// makes the caller fall back to a plain summary instead.
+	if maxD > maxDiffRounds {
+		maxD = maxDiffRounds
+	}
+	v := make([]int, 2*(n+m)+1)
 	var saved [][]int
 	for d := 0; d <= maxD; d++ {
 		snapshot := make([]int, len(v))
