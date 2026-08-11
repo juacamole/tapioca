@@ -136,13 +136,18 @@ func (h *httpTransport) readSSE(body io.ReadCloser) {
 	defer body.Close()
 	sc := bufio.NewScanner(body)
 	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+	// The scanner's cap bounds one line. An event is every line until a blank
+	// one, so a server that sends data: forever and never a blank line
+	// accumulated without limit — 5GB in five seconds.
+	const maxEventBytes = 16 << 20
 	var data []string
+	size := 0
 	flush := func() {
 		if len(data) == 0 {
 			return
 		}
 		h.dispatch([]byte(strings.Join(data, "\n")))
-		data = data[:0]
+		data, size = data[:0], 0
 	}
 	for sc.Scan() {
 		select {
@@ -157,7 +162,12 @@ func (h *httpTransport) readSSE(body io.ReadCloser) {
 		case strings.HasPrefix(line, ":"):
 			// comment / keep-alive
 		case strings.HasPrefix(line, "data:"):
-			data = append(data, strings.TrimPrefix(strings.TrimPrefix(line, "data:"), " "))
+			payload := strings.TrimPrefix(strings.TrimPrefix(line, "data:"), " ")
+			if size+len(payload) > maxEventBytes {
+				return // no event this large is real; the connection is done
+			}
+			data = append(data, payload)
+			size += len(payload)
 		}
 	}
 	flush()

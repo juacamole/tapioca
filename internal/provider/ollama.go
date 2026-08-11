@@ -199,6 +199,7 @@ func (o *Ollama) Stream(ctx context.Context, req Request, out chan<- Event) (Mes
 		return msg
 	}
 
+	streamed := 0
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
 	for scanner.Scan() {
@@ -212,6 +213,10 @@ func (o *Ollama) Stream(ctx context.Context, req Request, out chan<- Event) (Mes
 		}
 		if ch.Error != "" {
 			return finish(), fmt.Errorf("ollama: %s", ch.Error)
+		}
+		streamed += len(ch.Message.Content) + len(ch.Message.Thinking)
+		if overLimit(streamed) {
+			return finish(), fmt.Errorf("response exceeded %d bytes; stopping", maxResponseBytes)
 		}
 		if ch.Message.Thinking != "" {
 			thinking.WriteString(ch.Message.Thinking)

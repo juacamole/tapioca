@@ -4,7 +4,9 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"tapioca/internal/secretenv"
 )
@@ -133,5 +135,48 @@ func TestWebFetchStillAllowsLoopback(t *testing.T) {
 	// The redirect guard stays stricter: the user approved a different host.
 	if !internalHost("127.0.0.1") {
 		t.Fatal("the redirect guard stopped treating loopback as internal")
+	}
+}
+
+// read_file needs no approval in any mode and had no size cap, so os.ReadFile
+// on a character device grew a buffer until the process died — taking the TUI
+// and everything since the last save with it.
+func TestReadFileIsCapped(t *testing.T) {
+	e := execIn(t, ModeBypass)
+	if _, err := os.Stat("/dev/zero"); err != nil {
+		t.Skip("no /dev/zero here")
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		out, _, _ := e.Call(context.Background(), "read_file",
+			args(t, map[string]string{"path": "/dev/zero"}), asker(Decision{Allow: true}, new([]string)))
+		if len(out) > 32<<20 {
+			t.Errorf("read %d bytes from /dev/zero", len(out))
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("reading /dev/zero never returned")
+	}
+}
+
+// A real file must still come back whole.
+func TestReadFileStillReadsOrdinaryFiles(t *testing.T) {
+	e := execIn(t, ModeBypass)
+	p := filepath.Join(e.Cwd(), "hello.txt")
+	if err := os.WriteFile(p, []byte("line one\nline two\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, isErr, err := e.Call(context.Background(), "read_file",
+		args(t, map[string]string{"path": "hello.txt"}), asker(Decision{Allow: true}, new([]string)))
+	if err != nil || isErr {
+		t.Fatalf("read failed: %q %v", out, err)
+	}
+	for _, want := range []string{"line one", "line two"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("content missing %q: %q", want, out)
+		}
 	}
 }
