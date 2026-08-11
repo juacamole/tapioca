@@ -331,3 +331,53 @@ func TestAllowRuleDoesNotMatchPathQualifiedCommands(t *testing.T) {
 		}
 	}
 }
+
+// An allow rule is a standing grant, so it gets what an answered grant gets —
+// no more. Skipping the escape check let a matching segment carry a command
+// substitution: allow = ["bash(go test*)"] ran anything inside $().
+func TestAllowRuleStillChecksEscapes(t *testing.T) {
+	e := execIn(t, ModeManual)
+	e.SetRules([]string{"bash(go test*)", "bash(echo *)"}, nil, nil)
+	marker := filepath.Join(e.Cwd(), "pwned.txt")
+	for _, cmd := range []string{
+		"go test $(touch " + marker + ")",
+		"echo hi > " + marker,
+		"echo `touch " + marker + "`",
+	} {
+		var asked []string
+		if _, _, err := e.Call(context.Background(), "bash",
+			args(t, map[string]string{"command": cmd}), asker(Decision{Allow: false}, &asked)); err != nil {
+			t.Fatal(err)
+		}
+		if len(asked) == 0 {
+			t.Errorf("%q ran under an allow rule with no prompt", cmd)
+		}
+		if _, err := os.Stat(marker); !os.IsNotExist(err) {
+			t.Fatalf("%q executed despite the denial", cmd)
+			os.Remove(marker)
+		}
+	}
+	// The plain form the rule is actually for still runs unprompted.
+	var asked []string
+	if _, _, err := e.Call(context.Background(), "bash",
+		args(t, map[string]string{"command": "echo hello"}), asker(Decision{Allow: false}, &asked)); err != nil {
+		t.Fatal(err)
+	}
+	if len(asked) != 0 {
+		t.Fatalf("the allow rule stopped working for a plain command: %v", asked)
+	}
+}
+
+// Plan mode is a hard stop, and the non-bash path already guarded this.
+func TestAllowRuleDoesNotRunBashInPlanMode(t *testing.T) {
+	e := execIn(t, ModePlan)
+	e.SetRules([]string{"bash(echo *)"}, nil, nil)
+	var asked []string
+	if _, _, err := e.Call(context.Background(), "bash",
+		args(t, map[string]string{"command": "echo hi"}), asker(Decision{Allow: false}, &asked)); err != nil {
+		t.Fatal(err)
+	}
+	if len(asked) == 0 {
+		t.Fatal("plan mode ran bash unprompted because of an allow rule")
+	}
+}

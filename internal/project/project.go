@@ -36,6 +36,12 @@ const maxImportDepth = 3
 func Instructions(cwd string) string {
 	var parts []string
 	seen := map[string]bool{}
+	dirs := ancestry(cwd)
+	// dirs is outermost-first, so dirs[0] is the repository root.
+	roots := importRoots{GlobalDir()}
+	if len(dirs) > 0 {
+		roots = append(roots, dirs[0])
+	}
 
 	add := func(path string) {
 		abs, err := filepath.Abs(path)
@@ -43,7 +49,7 @@ func Instructions(cwd string) string {
 			return
 		}
 		seen[abs] = true
-		text, ok := readInstruction(abs, seen, 0)
+		text, ok := readInstruction(abs, seen, 0, roots)
 		if !ok {
 			return
 		}
@@ -53,7 +59,7 @@ func Instructions(cwd string) string {
 	for _, name := range instructionFiles {
 		add(filepath.Join(GlobalDir(), name))
 	}
-	for _, dir := range ancestry(cwd) {
+	for _, dir := range dirs {
 		for _, name := range instructionFiles {
 			add(filepath.Join(dir, name))
 		}
@@ -105,8 +111,40 @@ func isRepoRoot(dir string) bool {
 	return false
 }
 
+// importRoots are the only directories an @import may read from: the project
+// the instructions belong to, and the config directory where personal
+// instruction files live.
+//
+// Instruction files are committed, so a cloned repository chooses what they
+// say. Without this, "@~/.aws/credentials" in an AGENTS.md put the file into
+// the system prompt — sent to the provider on every turn, in every mode
+// including plan, saved into the session, with no tool call for the user to
+// decline. Cloning the repository was the whole exploit.
+type importRoots []string
+
+func (r importRoots) allows(abs string) bool {
+	real := resolveReal(abs)
+	for _, root := range r {
+		root = resolveReal(root)
+		if real == root || strings.HasPrefix(real, root+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
+}
+
+// resolveReal follows symlinks, so a link committed inside the project cannot
+// point an import outside it. A path that does not exist falls back to a
+// lexical clean; the read then fails on its own.
+func resolveReal(p string) string {
+	if r, err := filepath.EvalSymlinks(p); err == nil {
+		return r
+	}
+	return filepath.Clean(p)
+}
+
 // readInstruction reads one file and resolves its @imports.
-func readInstruction(path string, seen map[string]bool, depth int) (string, bool) {
+func readInstruction(path string, seen map[string]bool, depth int, roots importRoots) (string, bool) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return "", false
@@ -115,13 +153,13 @@ func readInstruction(path string, seen map[string]bool, depth int) (string, bool
 	if !ok || strings.TrimSpace(text) == "" {
 		return "", false
 	}
-	return strings.TrimSpace(expandImports(text, filepath.Dir(path), seen, depth)), true
+	return strings.TrimSpace(expandImports(text, filepath.Dir(path), seen, depth, roots)), true
 }
 
 // expandImports replaces a line that is exactly "@path" with that file's
 // contents, so a long instruction file can be split up. Cycles and runaway
-// nesting are bounded by seen and depth.
-func expandImports(text, dir string, seen map[string]bool, depth int) string {
+// nesting are bounded by seen and depth; roots bound where it may read.
+func expandImports(text, dir string, seen map[string]bool, depth int, roots importRoots) string {
 	if depth >= maxImportDepth || !strings.Contains(text, "@") {
 		return text
 	}
@@ -141,7 +179,14 @@ func expandImports(text, dir string, seen map[string]bool, depth int) string {
 			continue
 		}
 		seen[abs] = true
-		if body, ok := readInstruction(abs, seen, depth+1); ok {
+		if !roots.allows(abs) {
+			// Named rather than dropped: a silent refusal looks identical to a
+			// typo, and this one is worth noticing. The path is left out on
+			// purpose — it is attacker-chosen text.
+			lines[i] = "[import refused: outside the project]"
+			continue
+		}
+		if body, ok := readInstruction(abs, seen, depth+1, roots); ok {
 			lines[i] = body
 		} else {
 			lines[i] = ""

