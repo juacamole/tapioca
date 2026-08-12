@@ -101,8 +101,15 @@ func repoPins(dir string) []string {
 }
 
 func readPins(dir string) []string {
+	// Every scope, not --local. --local reads one file: it does not expand
+	// include.path, and it does not see .git/config.worktree when the repo
+	// turns on extensions.worktreeConfig — so a filter defined in either was
+	// invisible to the enumeration and fully live during status. Plain --list
+	// reads all scopes and follows includes. It also reports the user's own
+	// global keys, which are pinned too; that is the same neutering the static
+	// list already applies to them.
 	args := append([]string{"-C", dir}, staticPins...)
-	args = append(args, "config", "--local", "--list", "--name-only", "-z")
+	args = append(args, "config", "--list", "--name-only", "-z")
 	cmd := exec.Command("git", args...)
 	cmd.Env = secretenv.Scrubbed()
 	out, err := cmd.Output()

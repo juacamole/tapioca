@@ -112,7 +112,12 @@ func segments(command string) []string {
 		}
 		cur.Reset()
 	}
-	inSingle, inDouble := false, false
+	// atWordStart tracks what sh tracks: whether the next byte begins a word.
+	// Testing the last byte already in the buffer instead was wrong, because
+	// an escaped space (`a\ `) leaves a space there while sh is still mid-word
+	// — so `echo a\ #x; touch y` took the # for a comment, threw away the
+	// rest of the line, and never showed the touch to anyone.
+	inSingle, inDouble, atWordStart := false, false, true
 	for i := 0; i < len(command); i++ {
 		c := command[i]
 		switch {
@@ -122,26 +127,48 @@ func segments(command string) []string {
 				i++
 				cur.WriteByte(command[i])
 			}
+			atWordStart = false
+			continue
+		case c == '$' && !inSingle && i+1 < len(command) && command[i+1] == '\'':
+			// $'...' quotes with C escapes, where \' does not end the string.
+			// Scanning it as a plain single quote desynced everything after.
+			cur.WriteByte(c)
+			i++
+			cur.WriteByte(command[i])
+			for i+1 < len(command) {
+				i++
+				cur.WriteByte(command[i])
+				if command[i] == '\\' && i+1 < len(command) {
+					i++
+					cur.WriteByte(command[i])
+					continue
+				}
+				if command[i] == '\'' {
+					break
+				}
+			}
+			atWordStart = false
 			continue
 		case c == '\'' && !inDouble:
 			inSingle = !inSingle
+			atWordStart = false
 		case c == '"' && !inSingle:
 			inDouble = !inDouble
+			atWordStart = false
 		case !inSingle && !inDouble:
-			// A # at the start of a word comments out the rest of the line.
-			// sh ends that at the newline; a scanner that did not model it
-			// read a stray quote inside the comment as opening a string, so
-			// `echo hi #\'` swallowed the following line into one "quoted"
-			// segment that still looked like a plain echo.
-			if c == '#' && (cur.Len() == 0 || isSpace(cur.String()[cur.Len()-1])) {
+			// A # begins a comment only at the start of a word; sh ends it at
+			// the newline.
+			if c == '#' && atWordStart {
 				for i < len(command) && command[i] != '\n' {
 					i++
 				}
 				flush()
+				atWordStart = true
 				continue
 			}
 			if c == ';' || c == '\n' {
 				flush()
+				atWordStart = true
 				continue
 			}
 			if c == '|' || c == '&' {
@@ -153,9 +180,15 @@ func segments(command string) []string {
 					break
 				}
 				flush()
+				atWordStart = true
 				continue
 			}
+			// Unquoted whitespace is what actually ends a word.
+			atWordStart = isSpace(c)
+			cur.WriteByte(c)
+			continue
 		}
+		atWordStart = false
 		cur.WriteByte(c)
 	}
 	flush()

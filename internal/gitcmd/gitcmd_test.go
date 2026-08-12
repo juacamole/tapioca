@@ -168,3 +168,80 @@ func TestSignatureVerificationCannotExecute(t *testing.T) {
 		t.Error("hardened log ran the repository's gpg program")
 	}
 }
+
+// setupFilterRepo builds a repo whose clean filter is defined wherever the
+// caller puts it, and returns the marker path the filter touches.
+func setupFilterRepo(t *testing.T, defineIn func(dir, hook string)) (dir, marker string) {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	dir = t.TempDir()
+	marker = filepath.Join(dir, "RAN")
+	hook := filepath.Join(dir, "pwn.sh")
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\ntouch "+marker+"\ncat\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range [][2]string{{".gitattributes", "* filter=ev\n"}, {"f.txt", "hi\n"}} {
+		if err := os.WriteFile(filepath.Join(dir, f[0]), []byte(f[1]), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, args := range [][]string{
+		{"init", "-q", "."}, {"config", "user.email", "t@e.com"}, {"config", "user.name", "t"},
+		{"add", "-A"},
+	} {
+		if out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("setup %v: %v %s", args, err, out)
+		}
+	}
+	defineIn(dir, hook)
+	if err := os.Chtimes(filepath.Join(dir, "f.txt"), time.Unix(1, 0), time.Unix(1, 0)); err != nil {
+		t.Fatal(err)
+	}
+	return dir, marker
+}
+
+// git config --local reads one file: it does not expand include.path, so a
+// filter defined in the included file was invisible to the enumeration.
+func TestIncludedConfigCannotExecute(t *testing.T) {
+	dir, marker := setupFilterRepo(t, func(dir, hook string) {
+		extra := filepath.Join(dir, ".git", "extra.cfg")
+		if err := os.WriteFile(extra, []byte("[filter \"ev\"]\n\tclean = "+hook+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if out, err := exec.Command("git", "-C", dir, "config", "include.path", "extra.cfg").CombinedOutput(); err != nil {
+			t.Fatalf("%v %s", err, out)
+		}
+	})
+	if !runs(t, dir, marker, func() {
+		_ = exec.Command("git", "-C", dir, "status", "--porcelain", "-b").Run()
+	}) {
+		t.Skip("this git does not run the filter here")
+	}
+	if runs(t, dir, marker, func() { _ = In(dir, "status", "--porcelain", "-b").Run() }) {
+		t.Error("a filter defined through include.path still executed")
+	}
+}
+
+// Worktree scope is a second file --local never reads.
+func TestWorktreeConfigCannotExecute(t *testing.T) {
+	dir, marker := setupFilterRepo(t, func(dir, hook string) {
+		for _, args := range [][]string{
+			{"config", "extensions.worktreeConfig", "true"},
+			{"config", "--worktree", "filter.ev.clean", hook},
+		} {
+			if out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput(); err != nil {
+				t.Skipf("worktree config unsupported: %v %s", err, out)
+			}
+		}
+	})
+	if !runs(t, dir, marker, func() {
+		_ = exec.Command("git", "-C", dir, "status", "--porcelain", "-b").Run()
+	}) {
+		t.Skip("this git does not run the filter here")
+	}
+	if runs(t, dir, marker, func() { _ = In(dir, "status", "--porcelain", "-b").Run() }) {
+		t.Error("a filter defined in worktree scope still executed")
+	}
+}
