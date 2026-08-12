@@ -60,7 +60,7 @@ func fetchGitCmd(cwd string) tea.Cmd {
 			if strings.HasPrefix(line, "## ") {
 				head := strings.TrimPrefix(line, "## ")
 				if i := strings.Index(head, "..."); i >= 0 {
-					info.branch = head[:i]
+					info.branch = sanitizeLabel(head[:i])
 					if j := strings.Index(head, "["); j >= 0 {
 						for _, part := range strings.Split(strings.Trim(head[j:], "[]"), ",") {
 							part = strings.TrimSpace(part)
@@ -73,7 +73,7 @@ func fetchGitCmd(cwd string) tea.Cmd {
 						}
 					}
 				} else {
-					info.branch = strings.TrimSuffix(head, " (no branch)")
+					info.branch = sanitizeLabel(strings.TrimSuffix(head, " (no branch)"))
 				}
 				continue
 			}
@@ -84,7 +84,7 @@ func fetchGitCmd(cwd string) tea.Cmd {
 			if i := strings.Index(path, " -> "); i >= 0 { // renames: show target
 				path = path[i+4:]
 			}
-			info.files = append(info.files, gitFile{x: line[0], y: line[1], path: path})
+			info.files = append(info.files, gitFile{x: line[0], y: line[1], path: sanitizeLabel(path)})
 		}
 		if out, err := gitcmd.In(cwd, "log", "-1", "--format=%h %s").Output(); err == nil {
 			info.lastCommit = sanitizeLabel(strings.TrimSpace(string(out)))

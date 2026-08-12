@@ -16,6 +16,7 @@ import (
 	"tapioca/internal/provider"
 	"tapioca/internal/session"
 	"tapioca/internal/tools"
+	"tapioca/internal/version"
 )
 
 // Server serves one ACP connection. Each session/new gets its own agent,
@@ -118,7 +119,7 @@ func (s *Server) handleInitialize(msg *rpcMsg) {
 		"agentInfo": map[string]any{
 			"name":    "tapioca",
 			"title":   "Tapioca",
-			"version": "0.1.0",
+			"version": version.Version,
 		},
 		"authMethods": []any{}, // configured locally; nothing to log into
 	})

@@ -120,3 +120,29 @@ func TestTextOverlayIsSanitized(t *testing.T) {
 		t.Fatalf("overlay kept an escape: %q", m.textVP.View())
 	}
 }
+
+// The classes above match code points, so a lone 0x9b byte in a string that is
+// not valid UTF-8 decoded to U+FFFD and was never seen — while an 8-bit
+// terminal reads it as CSI. Raw bash output reaches the screen without going
+// through textenc.Decode, so this arrives as bytes, not runes.
+func TestSanitizeStripsRawC1Bytes(t *testing.T) {
+	raw := "out " + string([]byte{0x9b}) + "31mred" + string([]byte{0x9d}) + "52;c;x"
+	got := sanitizeText(raw)
+	for i := 0; i < len(got); i++ {
+		if got[i] >= 0x80 && got[i] <= 0x9f {
+			t.Fatalf("raw C1 byte survived at %d: %q", i, got)
+		}
+	}
+	if !strings.Contains(got, "out ") || !strings.Contains(got, "red") {
+		t.Fatalf("readable text was lost: %q", got)
+	}
+}
+
+// Valid multi-byte UTF-8 must survive: 0x9b is a legitimate continuation byte.
+func TestSanitizeKeepsMultibyteText(t *testing.T) {
+	for _, s := range []string{"café ☕ 日本語", "→ ± ½", "🇩🇪 flag"} {
+		if got := sanitizeText(s); got != s {
+			t.Errorf("sanitizeText(%q) = %q", s, got)
+		}
+	}
+}

@@ -477,7 +477,7 @@ func (m *App) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		if ev.Tool != nil {
 			a.Stats.StartToolCall(ev.Tool.Name, ev.Tool.Args)
 			a.Status = agent.StatusTool
-			a.StatusDetail = "running " + ev.Tool.Name
+			a.StatusDetail = "running " + sanitizeLabel(ev.Tool.Name)
 		}
 	case agent.EvToolEnd:
 		if ev.Tool != nil {

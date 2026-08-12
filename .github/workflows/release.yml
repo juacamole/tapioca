@@ -1,0 +1,87 @@
+name: release
+
+# Cutting a release is `git tag v1.0.0 && git push --tags`. Everything below
+# runs from the tag, so nothing is published by accident from a branch.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  # The version lives in Go and, unavoidably, a second time in flake.nix. Fail
+  # here rather than ship a binary whose --version disagrees with the tag.
+  check-version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: versions agree with the tag
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          go_ver=$(sed -n 's/.*Version = "\(.*\)".*/\1/p' internal/version/version.go)
+          nix_ver=$(sed -n 's/.*version = "\([0-9.]*\)".*/\1/p' flake.nix | head -1)
+          echo "tag=$tag go=$go_ver nix=$nix_ver"
+          test "$tag" = "$go_ver" || { echo "internal/version disagrees with the tag"; exit 1; }
+          test "$tag" = "$nix_ver" || { echo "flake.nix disagrees with the tag"; exit 1; }
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: "1.26" }
+      - run: go vet ./...
+      - run: go test -race ./...
+
+  build:
+    needs: [check-version, test]
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - { goos: linux, goarch: amd64 }
+          - { goos: linux, goarch: arm64 }
+          - { goos: darwin, goarch: amd64 }
+          - { goos: darwin, goarch: arm64 }
+          - { goos: windows, goarch: amd64 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: "1.26" }
+      - name: build both names
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          ext=""
+          [ "$GOOS" = "windows" ] && ext=".exe"
+          out="tapioca-${GITHUB_REF_NAME}-${GOOS}-${GOARCH}"
+          mkdir -p "dist/$out"
+          # Shopify's tapioca gem takes the same name, so both ship.
+          go build -trimpath -ldflags="-s -w" -o "dist/$out/tapioca$ext" .
+          go build -trimpath -ldflags="-s -w" -o "dist/$out/tapio$ext" ./cmd/tapio
+          cp README.md LICENSE SECURITY.md "dist/$out/"
+          cd dist
+          if [ "$GOOS" = "windows" ]; then zip -qr "$out.zip" "$out"; else tar czf "$out.tar.gz" "$out"; fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*.{tar.gz,zip}
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { path: dist, merge-multiple: true }
+      - name: checksums
+        run: cd dist && sha256sum * > SHA256SUMS
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          draft: true

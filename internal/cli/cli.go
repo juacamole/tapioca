@@ -25,9 +25,11 @@ import (
 	"tapioca/internal/session"
 	"tapioca/internal/tools"
 	"tapioca/internal/ui"
+	ver "tapioca/internal/version"
 )
 
-const version = "0.1.0"
+// version is re-exported so the flag handling reads naturally.
+const version = ver.Version
 
 type cliArgs struct {
 	settings     string

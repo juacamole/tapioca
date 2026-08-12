@@ -16,6 +16,7 @@ import (
 
 	"tapioca/internal/config"
 	"tapioca/internal/secretenv"
+	"tapioca/internal/version"
 )
 
 // Protocol revisions, newest first. The client offers the first one and the
@@ -127,7 +128,7 @@ func (c *Client) handshake(ctx context.Context, name string) error {
 	initParams := map[string]any{
 		"protocolVersion": protocolVersion,
 		"capabilities":    map[string]any{},
-		"clientInfo":      map[string]any{"name": "tapioca", "version": "0.1.0"},
+		"clientInfo":      map[string]any{"name": "tapioca", "version": version.Version},
 	}
 	res, err := c.call(initCtx, "initialize", initParams)
 	if err != nil {
