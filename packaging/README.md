@@ -182,8 +182,15 @@ still builds from the tag and prints the numbers that PR needs.
 
 ## Adding a new release
 
-Nothing beyond the existing flow: `git tag v1.2.3 && git push origin v1.2.3`
-builds the release as a draft, and publishing it triggers everything above.
+Merging to `main` publishes nothing. The chain is:
+
+```
+dev  →  main  →  git tag v1.2.3  →  draft release  →  you publish it  →  packages
+```
+
+`git tag v1.2.3 && git push origin v1.2.3` builds the release as a draft — the
+workflow refuses a tag that is not on `main` — and publishing that draft is
+what triggers everything above.
 
 If a publisher fails, re-run just that one with *Actions → publish packages →
 Run workflow* and the tag — every job is idempotent and will no-op if the
