@@ -1,0 +1,38 @@
+# Maintainer: Kuan <noreply@users.noreply.github.com>
+# Rendered by .github/workflows/publish.yml with envsubst.
+#
+# tapioca-bin, not tapioca: the AUR convention is that an unsuffixed name
+# builds from source and -bin installs a published binary, which is what this
+# does. A from-source PKGBUILD would need the Go toolchain and the vendored
+# module hash, and would rebuild what the release already produced.
+pkgname=tapioca-bin
+pkgver=${VERSION}
+pkgrel=1
+pkgdesc="Agentic coding TUI for local and hosted LLMs"
+arch=('x86_64' 'aarch64')
+url="https://github.com/${REPO}"
+license=('MIT')
+provides=('tapioca' 'tapio')
+conflicts=('tapioca' 'tapio')
+# The shell tools shell out to these; the agent is much less useful without.
+optdepends=('git: repository panels and checkpoints'
+            'ripgrep: faster grep tool'
+            'bubblewrap: sandboxed bash (sandbox = true)')
+
+source_x86_64=("tapioca-${TAG}-linux-amd64.tar.gz::https://github.com/${REPO}/releases/download/${TAG}/tapioca-${TAG}-linux-amd64.tar.gz")
+source_aarch64=("tapioca-${TAG}-linux-arm64.tar.gz::https://github.com/${REPO}/releases/download/${TAG}/tapioca-${TAG}-linux-arm64.tar.gz")
+sha256sums_x86_64=('${SHA_LINUX_AMD64}')
+sha256sums_aarch64=('${SHA_LINUX_ARM64}')
+
+package() {
+  local dir
+  case "$CARCH" in
+    x86_64)  dir="tapioca-${TAG}-linux-amd64" ;;
+    aarch64) dir="tapioca-${TAG}-linux-arm64" ;;
+  esac
+  install -Dm755 "$srcdir/$dir/tapioca" "$pkgdir/usr/bin/tapioca"
+  install -Dm755 "$srcdir/$dir/tapio"   "$pkgdir/usr/bin/tapio"
+  install -Dm644 "$srcdir/$dir/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 "$srcdir/$dir/README.md" "$pkgdir/usr/share/doc/$pkgname/README.md"
+  install -Dm644 "$srcdir/$dir/SECURITY.md" "$pkgdir/usr/share/doc/$pkgname/SECURITY.md"
+}
