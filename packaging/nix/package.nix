@@ -25,7 +25,8 @@ buildGoModule rec {
     repo = "tapioca";
     rev = "v${version}";
     # nix-prefetch-url --unpack https://github.com/juacamole/tapioca/archive/refs/tags/v1.0.0.tar.gz
-    hash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+    # then: nix hash convert --hash-algo sha256 --to sri <base32>
+    hash = "sha256-K7uAlHuLbcnvha76XfteG0IZxarNuIsU2bkeF5C6RsM=";
   };
 
   # Must match flake.nix; the publish workflow prints the current value.
