@@ -93,7 +93,8 @@ should never promise more than the code delivers.
 ## Layout
 
 ```
-main.go, print.go     entry point, flag parsing, headless mode
+main.go, cmd/tapio/   two names for one binary (see internal/cli)
+internal/cli/         entry point, flag parsing, headless mode
 internal/agent/       the agent loop, subagents, todo/plan handling
 internal/provider/    one file per backend (anthropic, openai, ollama, …)
 internal/tools/       built-in tools and the permission gate

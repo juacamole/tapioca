@@ -17,7 +17,9 @@
           version = "0.1.0";
           src = ./.;
           vendorHash = "sha256-oeW8Am7NCkHGlTj2M0gBQqQzxKAGqxgIWLaZFIpY+Pc=";
-          subPackages = [ "." ];
+          # Both names, one program: Shopify's tapioca gem installs a
+          # `tapioca` binary too, so `tapio` is there when that one wins PATH.
+          subPackages = [ "." "cmd/tapio" ];
           meta = {
             description = "Agentic coding TUI for local and hosted LLMs";
             mainProgram = "tapioca";
