@@ -186,11 +186,12 @@ func normalized(command string) string {
 	for i := range fields {
 		fields[i] = unquoteWord(fields[i])
 	}
-	// Drop the prefixes a shell steps over before it reaches the command:
-	// environment assignments, a subshell or brace group, and negation.
+	// Drop everything a shell steps over before it reaches the command:
+	// environment assignments, a subshell or brace group, negation,
+	// redirections, and wrappers that run their arguments.
 	for len(fields) > 0 {
 		w := fields[0]
-		if w == "(" || w == "{" || w == "!" {
+		if w == "(" || w == "{" || w == "!" || isRedirection(w) {
 			fields = fields[1:]
 			continue
 		}
@@ -200,6 +201,13 @@ func normalized(command string) string {
 		}
 		if len(w) > 1 && (w[0] == '(' || w[0] == '{' || w[0] == '!') {
 			fields[0] = w[1:]
+			continue
+		}
+		if len(fields) > 1 && transparentWrappers[filepath.Base(w)] {
+			fields = fields[1:]
+			for len(fields) > 1 && isWrapperArg(fields[0]) {
+				fields = fields[1:]
+			}
 			continue
 		}
 		break
@@ -225,7 +233,7 @@ func isName(s string) bool {
 }
 
 // unquoteWord strips the quoting a shell removes before looking a command up:
-// \rm, 'rm' and "rm" all run rm.
+// \rm, 'rm', "rm" and $'rm' all run rm.
 func unquoteWord(w string) string {
 	var b strings.Builder
 	for i := 0; i < len(w); i++ {
@@ -235,12 +243,52 @@ func unquoteWord(w string) string {
 				i++
 				b.WriteByte(w[i])
 			}
+		case '$':
+			// $'...' is ANSI-C quoting; the $ is not part of the word.
+			if i+1 >= len(w) || w[i+1] != '\'' {
+				b.WriteByte(w[i])
+			}
 		case '\'', '"':
 		default:
 			b.WriteByte(w[i])
 		}
 	}
 	return b.String()
+}
+
+// transparentWrappers run their arguments as a command, so the program that
+// ends up running is not the first word. They are dropped before matching, so
+// a deny rule for a program also covers `env <program>`.
+var transparentWrappers = map[string]bool{
+	"env": true, "command": true, "builtin": true, "exec": true,
+	"nohup": true, "setsid": true, "nice": true, "ionice": true,
+	"stdbuf": true, "time": true, "timeout": true, "xargs": true,
+	"sudo": true, "doas": true,
+}
+
+// isRedirection reports whether a word is a redirection rather than a command.
+// POSIX allows them before the command word: `>/dev/null rm x` runs rm.
+func isRedirection(w string) bool {
+	i := 0
+	for i < len(w) && w[i] >= '0' && w[i] <= '9' {
+		i++
+	}
+	return i < len(w) && (w[i] == '>' || w[i] == '<')
+}
+
+// isWrapperArg reports whether a word is an option or operand belonging to the
+// wrapper in front of it rather than the command being wrapped: the 5 in
+// `timeout 5 rm`, the -n 9 in `nice -n 9 rm`, the FOO=1 in `env FOO=1 rm`.
+func isWrapperArg(w string) bool {
+	if strings.HasPrefix(w, "-") || strings.Contains(w, "=") {
+		return true
+	}
+	for i := 0; i < len(w); i++ {
+		if w[i] < '0' || w[i] > '9' {
+			return false
+		}
+	}
+	return w != ""
 }
 
 // ruleFor returns the action configured for a call, or ruleNone.
