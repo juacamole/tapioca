@@ -1,9 +1,35 @@
 # Packaging
 
-`.github/workflows/publish.yml` runs when a release is **published** (not when
-a tag is pushed — `release.yml` creates a draft first, and packages should
-describe a release someone has looked at). `workflow_dispatch` re-runs one
-version by hand.
+`.github/workflows/publish.yml` packages a release that is **already
+published** — the formulas and PKGBUILDs it writes point at that release's
+assets, and a draft's assets return 404 to everyone.
+
+**You have to start it by hand**, and that is not a workaround for something
+temporary:
+
+> `release.yml` creates the release with `GITHUB_TOKEN`, so its author is
+> `github-actions[bot]`, and **GitHub does not start workflow runs from events
+> attributed to that token**. The `release: published` trigger therefore never
+> fires for a release this pipeline produced. It is kept in the file for a
+> release published by hand and for the day that changes.
+
+So after publishing a release:
+
+*Actions → publish packages → Run workflow →* enter the tag, e.g. `v1.0.0`.
+
+Or:
+
+```sh
+gh workflow run publish.yml --ref main -f tag=v1.0.0
+```
+
+The `plan` job refuses a tag that is still a draft, so a mistimed run fails
+immediately instead of publishing a formula that 404s.
+
+**To make it automatic**, have `release.yml` create the release with a personal
+access token instead of `GITHUB_TOKEN` — then the release is authored by you,
+the event fires, and this step disappears. That costs one more secret with
+`contents: write` on this repository, which is the trade.
 
 Each publisher needs a credential this repository may not have. The `plan` job
 turns each secret into a boolean and the rest skip cleanly, so you can connect

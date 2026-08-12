@@ -1,15 +1,25 @@
 name: publish packages
 
-# Runs when a release is *published*, not when a tag is pushed: release.yml
-# creates a draft, and packages should describe a release that exists and has
-# been looked at. workflow_dispatch re-runs one version by hand.
+# Packages a release that is already published: they point at its assets, and a
+# draft's assets return 404 to everyone.
+#
+# workflow_dispatch is the path that works, not a fallback. release.yml creates
+# the release with GITHUB_TOKEN, so its author is github-actions[bot], and
+# GitHub does not start workflow runs from events attributed to that token —
+# the `release: published` trigger below therefore never fires for a release
+# this pipeline produced. It is kept for a release published by hand, and for
+# the day that behaviour changes; the guard in `plan` catches the rest.
+#
+# To make the event fire on its own, have release.yml create the release with a
+# personal access token instead of GITHUB_TOKEN. That costs one more secret and
+# is the only thing that removes this step.
 on:
   release:
     types: [published]
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag to publish (e.g. v1.0.0)"
+        description: "Release tag to package (e.g. v1.0.0). Must already be published."
         required: true
 
 permissions:
@@ -31,8 +41,17 @@ jobs:
       aptrepo: ${{ steps.k.outputs.aptrepo }}
     steps:
       - id: v
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           tag="${{ github.event.inputs.tag || github.event.release.tag_name }}"
+          # Packaging a draft would publish formulas and PKGBUILDs pointing at
+          # asset URLs that 404 for everyone, and a formula in a tap is public
+          # the moment it lands. Refuse rather than ship that.
+          if [ "$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" != "false" ]; then
+            echo "::error::$tag is still a draft. Publish the release first, then re-run."
+            exit 1
+          fi
           echo "tag=$tag"            >> "$GITHUB_OUTPUT"
           echo "version=${tag#v}"    >> "$GITHUB_OUTPUT"
       - id: k
