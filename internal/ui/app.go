@@ -1375,6 +1375,9 @@ func (m *App) applyPick(it pickerItem) tea.Cmd {
 	case pickWordmark:
 		return m.applyWordmark(it.value)
 
+	case pickEffort:
+		return m.applyEffort(it.value)
+
 	case pickSession:
 		return m.loadSessionByID(it.value)
 
