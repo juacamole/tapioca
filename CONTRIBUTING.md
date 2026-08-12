@@ -23,6 +23,25 @@ On first run Tapioca writes a commented config to
 `~/.config/tapioca/config.toml` and points itself at a local Ollama. Any
 OpenAI-compatible server works too — see the README.
 
+## Branches
+
+`main` is always releasable and is what people see. `dev` is where work is
+integrated. Feature branches come off `dev` and merge back into it; `dev`
+merges into `main` when you want main to move.
+
+```
+feature/  →  dev  →  main  →  tag  →  draft release  →  publish  →  packages
+```
+
+Nothing after `main` happens on its own. Tagging builds a **draft** release,
+and only *publishing* that draft sends anything to Homebrew, the AUR or apt —
+three deliberate acts, none of them a side effect of merging. CI runs on both
+branches and on every pull request into either.
+
+A release must be tagged from `main`: the release workflow refuses a tag whose
+commit is not an ancestor of `main`, because a published release cannot be
+withdrawn from the package managers that have already copied it.
+
 ## Making a change
 
 **Start from an issue.** The issue list is the roadmap; if what you want to do
