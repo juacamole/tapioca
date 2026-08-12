@@ -16,6 +16,10 @@ import (
 type glyphSet struct {
 	desc string
 
+	// plainText marks a set that may use nothing outside ASCII, so drawings
+	// made of block characters have to be swapped rather than merely styled.
+	plainText bool
+
 	sep      string // padded separator between fields, e.g. " · "
 	sepTight string // unpadded separator, e.g. "1·agent"
 	ellipsis string
@@ -71,6 +75,7 @@ var glyphSets = map[string]glyphSet{
 	},
 	"ascii": {
 		desc:        "pure ASCII; renders in any terminal",
+		plainText:   true,
 		sep:         " | ",
 		sepTight:    "|",
 		ellipsis:    "...",
