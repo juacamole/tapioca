@@ -13,6 +13,10 @@ go build -o tapioca .   # or: nix run .
 tapioca                 # in any project directory
 ```
 
+It also installs as **`tapio`**, because Shopify's `tapioca` gem claims the same
+name and whichever is later on your PATH wins. Both are the same program:
+`go build -o tapio ./cmd/tapio`, or `nix build .` for both at once.
+
 With [Ollama](https://ollama.com) running it works out of the box — no key, no
 account, no network beyond localhost. Anthropic, Bedrock, Vertex AI, Azure
 OpenAI, Gemini and any OpenAI-compatible server also work; switching is one
