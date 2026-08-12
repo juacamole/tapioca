@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/reflow/wrap"
@@ -32,9 +33,13 @@ var (
 )
 
 func sanitizeText(s string) string {
-	if strings.IndexFunc(s, unsafeRune) < 0 {
+	if utf8.ValidString(s) && strings.IndexFunc(s, unsafeRune) < 0 {
 		return s
 	}
+	// Bytes that are not valid UTF-8 are dropped before anything else: a lone
+	// 0x9b is CSI to a terminal in 8-bit mode, but decodes to U+FFFD here, so
+	// neither the scan above nor the classes below would ever see it.
+	s = strings.ToValidUTF8(s, "")
 	s = strings.ReplaceAll(s, "\t", "    ")
 	s = csiRe.ReplaceAllString(s, "")
 	s = oscRe.ReplaceAllString(s, "")
