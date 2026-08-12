@@ -70,7 +70,7 @@ and `CRUSH.md`, so instructions written for other tools work unchanged.
 |---|---|
 | `/help` | keybinds and commands |
 | `/model [provider:]name` | switch model (no argument opens a picker) |
-| `/effort off\|low\|medium\|high` | thinking effort |
+| `/effort [level]` | thinking effort (no argument opens a picker) |
 | `/thinking` | toggle thinking |
 | `/tools` | toggle tools for this agent |
 | `/agent [name]` | new agent |
@@ -95,6 +95,7 @@ and `CRUSH.md`, so instructions written for other tools work unchanged.
 | `/panels` | choose and order dashboard panels |
 | `/theme [name]` | color theme |
 | `/glyphs [name]` | `unicode`, `ascii` or `nerd` |
+| `/wordmark [mode]` | welcome mark: `auto`, `compact`, `text` or `off` |
 | `/verbose` | full thoughts and tool output in chat |
 | `/zen` | hide keybind hints |
 | `/quit` | save and exit |

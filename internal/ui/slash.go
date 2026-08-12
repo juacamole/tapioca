@@ -64,6 +64,13 @@ func buildSlashCmds() []slashCmd {
 			}
 			return m.applyGlyphs(arg)
 		}},
+		{"wordmark", "[mode]", "welcome screen mark: auto|compact|text|off", func(m *App, arg string) tea.Cmd {
+			if arg == "" {
+				m.openWordmarkPicker()
+				return nil
+			}
+			return m.applyWordmark(arg)
+		}},
 		{"systemprompt", "", "edit the system prompt in your editor", func(m *App, _ string) tea.Cmd {
 			sys := ""
 			if a := m.mgr.ActiveAgent(); a != nil {
@@ -72,7 +79,7 @@ func buildSlashCmds() []slashCmd {
 			return openEditorCmd(m.cfg.Editor, editTargetSystem, sys)
 		}},
 		{"model", "[provider:]name", "switch model (no arg: picker)", cmdModel},
-		{"effort", "off|low|medium|high", "set thinking effort", cmdEffort},
+		{"effort", "[level]", "set thinking effort (no arg: picker)", cmdEffort},
 		{"goal", "text | clear", "set a session goal for the agent", cmdGoal},
 		{"remember", "fact | clear", "persist a project fact for the model", cmdRemember},
 		{"btw", "note", "add context without asking for a reply", cmdBtw},
@@ -273,19 +280,50 @@ func cmdModel(m *App, arg string) tea.Cmd {
 	return m.flashCmd()
 }
 
-var effortLevels = map[string]int{"off": 0, "low": 1024, "medium": 4096, "high": 16384}
+// effortLevels are the thinking budgets in order, so the picker can present
+// them as a scale. A map would have shown them in whichever order Go felt like
+// that run, which for a scale is worse than useless.
+var effortLevels = []struct {
+	Name   string
+	Budget int
+}{
+	{"off", 0},
+	{"low", 1024},
+	{"medium", 4096},
+	{"high", 16384},
+}
+
+func effortBudget(name string) (int, bool) {
+	name = strings.ToLower(strings.TrimSpace(name))
+	for _, l := range effortLevels {
+		if l.Name == name {
+			return l.Budget, true
+		}
+	}
+	return 0, false
+}
+
+func effortNames() string {
+	names := make([]string, 0, len(effortLevels))
+	for _, l := range effortLevels {
+		names = append(names, l.Name)
+	}
+	return strings.Join(names, "|")
+}
 
 func effortName(a *agent.Agent) string {
-	switch {
-	case !a.Thinking:
+	if !a.Thinking {
 		return "off"
-	case a.ThinkingBudget <= 1024:
-		return "low"
-	case a.ThinkingBudget <= 4096:
-		return "medium"
-	default:
-		return "high"
 	}
+	// The stored budget is a number, so the name is whichever level it reaches
+	// — a budget set by hand in the config lands on the nearest one below it.
+	name := effortLevels[1].Name
+	for _, l := range effortLevels {
+		if l.Budget > 0 && a.ThinkingBudget >= l.Budget {
+			name = l.Name
+		}
+	}
+	return name
 }
 
 func cmdEffort(m *App, arg string) tea.Cmd {
@@ -293,14 +331,30 @@ func cmdEffort(m *App, arg string) tea.Cmd {
 	if a == nil {
 		return nil
 	}
+	// No argument opens the picker, like /theme and /glyphs. Reporting the
+	// current level and making the user retype the whole command was one step
+	// too many for something changed this often.
 	if arg == "" {
-		m.setFlash("effort is "+effortName(a)+" — /effort off|low|medium|high", false)
+		m.openEffortPicker()
+		return nil
+	}
+	if _, ok := effortBudget(arg); !ok {
+		m.setFlash("usage: /effort "+effortNames(), true)
 		return m.flashCmd()
 	}
-	budget, ok := effortLevels[strings.ToLower(arg)]
+	return m.applyEffort(arg)
+}
+
+// applyEffort sets the level on the active agent, shared by the typed argument
+// and the picker.
+func (m *App) applyEffort(name string) tea.Cmd {
+	a := m.mgr.ActiveAgent()
+	if a == nil {
+		return nil
+	}
+	budget, ok := effortBudget(name)
 	if !ok {
-		m.setFlash("usage: /effort off|low|medium|high", true)
-		return m.flashCmd()
+		return nil
 	}
 	a.Thinking = budget > 0
 	m.cfg.Thinking = a.Thinking
@@ -310,8 +364,34 @@ func cmdEffort(m *App, arg string) tea.Cmd {
 	}
 	m.saveCfg()
 	m.dirty = true
-	m.setFlash("effort "+strings.ToLower(arg), false)
+	m.setFlash("effort "+strings.ToLower(name), false)
 	return m.flashCmd()
+}
+
+// openEffortPicker lists the levels with the budget each one spends, and starts
+// on the one in force so that confirming without moving changes nothing.
+func (m *App) openEffortPicker() {
+	a := m.mgr.ActiveAgent()
+	current := ""
+	if a != nil {
+		current = effortName(a)
+	}
+	items := make([]pickerItem, 0, len(effortLevels))
+	sel := 0
+	for i, l := range effortLevels {
+		desc := "no thinking"
+		if l.Budget > 0 {
+			desc = fmt.Sprintf("%s thinking tokens", humanInt(l.Budget))
+		}
+		if l.Name == current {
+			desc += gl.sep + "current"
+			sel = i
+		}
+		items = append(items, pickerItem{label: l.Name, desc: desc, value: l.Name})
+	}
+	m.pick = newPicker(pickEffort, "thinking effort", items)
+	m.pick.sel = sel
+	m.overlay = overlayPicker
 }
 
 func cmdGoal(m *App, arg string) tea.Cmd {

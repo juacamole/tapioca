@@ -613,6 +613,7 @@ func (m *App) handleEditorDone(msg editorDoneMsg) (tea.Model, tea.Cmd) {
 		secretenv.SetExtra(m.cfg.SecretEnv)
 		m.cfg.Theme = SetTheme(m.cfg.Theme, m.cfg.Colors)
 		m.cfg.Glyphs = SetGlyphs(m.cfg.Glyphs)
+		m.cfg.Wordmark = SetWordmark(m.cfg.Wordmark)
 		m.spin.Spinner = gl.spinner
 		m.repaint()
 		if m.mgr.Exec != nil {
@@ -1370,6 +1371,12 @@ func (m *App) applyPick(it pickerItem) tea.Cmd {
 
 	case pickGlyphs:
 		return m.applyGlyphs(it.value)
+
+	case pickWordmark:
+		return m.applyWordmark(it.value)
+
+	case pickEffort:
+		return m.applyEffort(it.value)
 
 	case pickSession:
 		return m.loadSessionByID(it.value)

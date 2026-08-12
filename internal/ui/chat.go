@@ -95,16 +95,24 @@ func renderConversation(a *agent.Agent, w int, spin string, verbose bool, open f
 }
 
 func welcomeText(w int) string {
+	// The mark is identity, not a hint, so zen mode keeps it and drops only
+	// the keybind lines below.
+	mark := renderWordmark(w)
 	if zenMode {
-		return styAppTitle.Render("tapioca")
+		if len(mark) == 0 {
+			return ""
+		}
+		return strings.Join(mark, "\n")
 	}
-	lines := []string{
-		styAppTitle.Render("tapioca"),
-		"",
+	lines := append([]string{}, mark...)
+	if len(lines) > 0 {
+		lines = append(lines, "")
+	}
+	lines = append(lines,
 		styDim.Render("type a prompt and press enter to chat"),
-		styDim.Render("f1 shows every keybind" + gl.sep + "/help lists commands"),
-		styDim.Render("ctrl+g writes the prompt in vim" + gl.sep + "ctrl+o toggles verbose chat"),
-	}
+		styDim.Render("f1 shows every keybind"+gl.sep+"/help lists commands"),
+		styDim.Render("ctrl+g writes the prompt in vim"+gl.sep+"ctrl+o toggles verbose chat"),
+	)
 	if dashActive {
 		lines = append(lines, styDim.Render("tab focuses the dashboard to change settings"))
 	} else {

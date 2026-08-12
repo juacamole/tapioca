@@ -396,6 +396,7 @@ func Main() {
 	ui.SetMarkdownDark(lipgloss.HasDarkBackground())
 	cfg.Theme = ui.SetTheme(cfg.Theme, cfg.Colors)
 	cfg.Glyphs = ui.SetGlyphs(cfg.Glyphs)
+	cfg.Wordmark = ui.SetWordmark(cfg.Wordmark)
 
 	app := ui.NewApp(cfg, mgr, sessID, sessName, created)
 	if args.resumePicker {

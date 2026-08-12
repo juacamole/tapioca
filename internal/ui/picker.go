@@ -18,6 +18,8 @@ const (
 	pickCheckpoint
 	pickTheme
 	pickGlyphs
+	pickWordmark
+	pickEffort
 )
 
 type pickerItem struct {
