@@ -20,6 +20,7 @@ const (
 	pickGlyphs
 	pickWordmark
 	pickEffort
+	pickConnect
 )
 
 type pickerItem struct {

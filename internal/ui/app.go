@@ -98,6 +98,7 @@ type App struct {
 	dashSel      int  // selected settings row while editing
 
 	overlay   overlayKind
+	conn      []connEntry // last provider probe, for the connect picker
 	pick      picker
 	perms     []permEntry
 	textTitle string
@@ -326,6 +327,10 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.pick = newPicker(pickModel, "switch model", msg.items)
 		m.overlay = overlayPicker
+		return m, nil
+
+	case connStatusMsg:
+		m.openConnectPicker(msg.entries)
 		return m, nil
 
 	case titleDoneMsg:
@@ -1377,6 +1382,9 @@ func (m *App) applyPick(it pickerItem) tea.Cmd {
 
 	case pickEffort:
 		return m.applyEffort(it.value)
+
+	case pickConnect:
+		return m.applyConnect(it.value)
 
 	case pickSession:
 		return m.loadSessionByID(it.value)
