@@ -1,0 +1,41 @@
+# Rendered by .github/workflows/publish.yml with envsubst and pushed to
+# <owner>/homebrew-tap. Do not edit the copy in the tap by hand; edit this.
+class Tapioca < Formula
+  desc "Agentic coding TUI for local and hosted LLMs"
+  homepage "https://github.com/${REPO}"
+  version "${VERSION}"
+  license "MIT"
+
+  on_macos do
+    on_arm do
+      url "https://github.com/${REPO}/releases/download/${TAG}/tapioca-${TAG}-darwin-arm64.tar.gz"
+      sha256 "${SHA_DARWIN_ARM64}"
+    end
+    on_intel do
+      url "https://github.com/${REPO}/releases/download/${TAG}/tapioca-${TAG}-darwin-amd64.tar.gz"
+      sha256 "${SHA_DARWIN_AMD64}"
+    end
+  end
+
+  on_linux do
+    on_arm do
+      url "https://github.com/${REPO}/releases/download/${TAG}/tapioca-${TAG}-linux-arm64.tar.gz"
+      sha256 "${SHA_LINUX_ARM64}"
+    end
+    on_intel do
+      url "https://github.com/${REPO}/releases/download/${TAG}/tapioca-${TAG}-linux-amd64.tar.gz"
+      sha256 "${SHA_LINUX_AMD64}"
+    end
+  end
+
+  def install
+    # Both names ship: Shopify's tapioca gem claims the first one too.
+    bin.install "tapioca"
+    bin.install "tapio"
+  end
+
+  test do
+    assert_match version.to_s, shell_output("#{bin}/tapioca --version")
+    assert_match version.to_s, shell_output("#{bin}/tapio --version")
+  end
+end
