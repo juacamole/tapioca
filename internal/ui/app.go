@@ -320,12 +320,13 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case modelsLoadedMsg:
 		if len(msg.items) == 0 {
-			e := "no models found"
-			if len(msg.errs) > 0 {
-				e = strings.Join(msg.errs, ""+gl.sep+"")
-			}
-			m.setFlash(e, true)
-			return m, m.flashCmd()
+			// Nothing reachable. This is the moment the user most needs a way
+			// in, and a flash naming whichever provider happened to be in the
+			// default config is the opposite of one: it expires, it reads as a
+			// guess, and it leaves nothing to act on. Open the connection
+			// manager, which shows each provider's own failure next to it.
+			m.setFlash("no models — checking providers…", false)
+			return m, tea.Batch(probeConnections(m.cfg), m.flashCmd())
 		}
 		m.pick = newPicker(pickModel, "switch model", msg.items)
 		m.overlay = overlayPicker
