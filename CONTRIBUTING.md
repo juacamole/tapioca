@@ -34,8 +34,10 @@ feature/  →  dev  →  main  →  tag  →  draft release  →  publish  →  
 ```
 
 Nothing after `main` happens on its own. Tagging builds a **draft** release,
-and only *publishing* that draft sends anything to Homebrew, the AUR or apt —
-three deliberate acts, none of them a side effect of merging. CI runs on both
+publishing that draft makes its assets public, and packaging is then started by
+hand (*Actions → publish packages*) — see [packaging](packaging/README.md) for
+why that last step cannot fire itself. None of them is a side effect of
+merging. CI runs on both
 branches and on every pull request into either.
 
 A release must be tagged from `main`: the release workflow refuses a tag whose
