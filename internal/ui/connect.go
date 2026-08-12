@@ -171,6 +171,12 @@ func (m *App) applyConnect(typ string) tea.Cmd {
 	case connFailing:
 		m.setFlash(e.kind.Label+gl.sep+e.detail, true)
 	default:
+		if len(e.kind.Fields) == 1 || singleSecret(e.kind) {
+			m.openCredentialEntry(e.kind)
+			return nil
+		}
+		// Providers needing several fields are #137; until then, say what they
+		// need rather than opening a form that can only ask for one of them.
 		m.setFlash(e.kind.Needs(), false)
 	}
 	return m.flashCmd()
@@ -194,6 +200,18 @@ func (m *App) useProvider(name string) tea.Cmd {
 	m.saveCfg()
 	m.setFlash("using "+name, false)
 	return m.flashCmd()
+}
+
+// singleSecret reports whether a provider needs exactly one required value,
+// which is the shape the entry flow handles.
+func singleSecret(k provider.Kind) bool {
+	n := 0
+	for _, f := range k.Fields {
+		if !f.Optional {
+			n++
+		}
+	}
+	return n == 1
 }
 
 // cmdConnect starts the probe. It reports progress first because the sweep
