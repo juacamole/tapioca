@@ -1,0 +1,40 @@
+# nfpm builds the .deb from the binaries the release already produced, so the
+# thing packaged is the thing that was tested, not a rebuild.
+# Rendered per architecture by .github/workflows/publish.yml:
+#   ARCH=amd64 BINDIR=dist/tapioca-v1.0.0-linux-amd64 nfpm pkg -f this -p deb
+name: tapioca
+arch: ${ARCH}
+platform: linux
+version: ${VERSION}
+section: devel
+priority: optional
+maintainer: Kuan <noreply@users.noreply.github.com>
+description: |
+  Agentic coding TUI for local and hosted LLMs.
+  A model reads, writes and runs things in your project, with every mutating
+  call behind a permission gate and the cost of the session on screen.
+vendor: juacamole
+homepage: https://github.com/juacamole/tapioca
+license: MIT
+
+contents:
+  - src: ${BINDIR}/tapioca
+    dst: /usr/bin/tapioca
+  # Shopify's tapioca gem installs a binary of the same name, so both ship.
+  - src: ${BINDIR}/tapio
+    dst: /usr/bin/tapio
+  - src: ${BINDIR}/LICENSE
+    dst: /usr/share/doc/tapioca/LICENSE
+  - src: ${BINDIR}/README.md
+    dst: /usr/share/doc/tapioca/README.md
+  - src: ${BINDIR}/SECURITY.md
+    dst: /usr/share/doc/tapioca/SECURITY.md
+
+# Suggested rather than depended on: the agent runs without them, it just has
+# fewer tools. A hard dependency would make the package harder to install than
+# it needs to be.
+recommends:
+  - git
+suggests:
+  - ripgrep
+  - bubblewrap

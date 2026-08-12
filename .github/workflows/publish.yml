@@ -1,0 +1,294 @@
+name: publish packages
+
+# Runs when a release is *published*, not when a tag is pushed: release.yml
+# creates a draft, and packages should describe a release that exists and has
+# been looked at. workflow_dispatch re-runs one version by hand.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish (e.g. v1.0.0)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  # Each publisher needs a credential this repository may not have yet. Secrets
+  # cannot be read in a job-level `if`, so they are turned into booleans here
+  # and the jobs below skip cleanly instead of failing red on a repo that has
+  # only set up some of them.
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.v.outputs.tag }}
+      version: ${{ steps.v.outputs.version }}
+      homebrew: ${{ steps.k.outputs.homebrew }}
+      aur: ${{ steps.k.outputs.aur }}
+      winget: ${{ steps.k.outputs.winget }}
+      aptrepo: ${{ steps.k.outputs.aptrepo }}
+    steps:
+      - id: v
+        run: |
+          tag="${{ github.event.inputs.tag || github.event.release.tag_name }}"
+          echo "tag=$tag"            >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}"    >> "$GITHUB_OUTPUT"
+      - id: k
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+        run: |
+          have() { [ -n "$1" ] && echo true || echo false; }
+          {
+            echo "homebrew=$(have "$HOMEBREW_TAP_TOKEN")"
+            echo "aur=$(have "$AUR_SSH_PRIVATE_KEY")"
+            echo "winget=$(have "$WINGET_TOKEN")"
+            echo "aptrepo=$(have "$GPG_PRIVATE_KEY")"
+          } >> "$GITHUB_OUTPUT"
+      - name: what will run
+        run: |
+          echo "tag ${{ steps.v.outputs.tag }}"
+          echo "homebrew ${{ steps.k.outputs.homebrew }} | aur ${{ steps.k.outputs.aur }} | winget ${{ steps.k.outputs.winget }} | apt repo ${{ steps.k.outputs.aptrepo }}"
+          echo "nixpkgs is a manual PR by design — see packaging/README.md"
+
+  # Every packager needs the same numbers, so they are computed once.
+  checksums:
+    needs: plan
+    runs-on: ubuntu-latest
+    outputs:
+      darwin_arm64: ${{ steps.s.outputs.darwin_arm64 }}
+      darwin_amd64: ${{ steps.s.outputs.darwin_amd64 }}
+      linux_arm64: ${{ steps.s.outputs.linux_arm64 }}
+      linux_amd64: ${{ steps.s.outputs.linux_amd64 }}
+      windows_amd64: ${{ steps.s.outputs.windows_amd64 }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: s
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.plan.outputs.tag }}
+        run: |
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern SHA256SUMS --dir .
+          get() { awk -v f="$1" '$2 == f || $2 == "*"f {print $1}' SHA256SUMS; }
+          {
+            echo "darwin_arm64=$(get tapioca-$TAG-darwin-arm64.tar.gz)"
+            echo "darwin_amd64=$(get tapioca-$TAG-darwin-amd64.tar.gz)"
+            echo "linux_arm64=$(get tapioca-$TAG-linux-arm64.tar.gz)"
+            echo "linux_amd64=$(get tapioca-$TAG-linux-amd64.tar.gz)"
+            echo "windows_amd64=$(get tapioca-$TAG-windows-amd64.zip)"
+          } >> "$GITHUB_OUTPUT"
+          cat SHA256SUMS
+
+  # A tap you own: no review queue, works the day you set it up. homebrew-core
+  # has notability requirements and is a manual PR — see packaging/README.md.
+  homebrew:
+    needs: [plan, checksums]
+    if: needs.plan.outputs.homebrew == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: render the formula
+        env:
+          TAG: ${{ needs.plan.outputs.tag }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          SHA_DARWIN_ARM64: ${{ needs.checksums.outputs.darwin_arm64 }}
+          SHA_DARWIN_AMD64: ${{ needs.checksums.outputs.darwin_amd64 }}
+          SHA_LINUX_ARM64: ${{ needs.checksums.outputs.linux_arm64 }}
+          SHA_LINUX_AMD64: ${{ needs.checksums.outputs.linux_amd64 }}
+          REPO: ${{ github.repository }}
+        run: |
+          mkdir -p out
+          envsubst < packaging/homebrew/tapioca.rb.tmpl > out/tapioca.rb
+          cat out/tapioca.rb
+      - name: push to the tap
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAG: ${{ needs.plan.outputs.tag }}
+        run: |
+          git clone "https://x-access-token:$GH_TOKEN@github.com/${{ github.repository_owner }}/homebrew-tap.git" tap
+          cd tap
+          # A tap created through the web UI with no README has no commits and
+          # no default branch, so the branch name would otherwise be whatever
+          # the runner's init.defaultBranch happens to be.
+          git rev-parse --verify HEAD >/dev/null 2>&1 || git checkout -q -b main
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          mkdir -p Formula
+          cp ../out/tapioca.rb Formula/tapioca.rb
+          if [ ! -f README.md ]; then
+            printf '# homebrew-tap\n\n    brew install %s/tap/tapioca\n' "${{ github.repository_owner }}" > README.md
+          fi
+          git add Formula/tapioca.rb README.md
+          git diff --quiet --cached && { echo "formula already current"; exit 0; }
+          git commit -m "tapioca $TAG"
+          git push -u origin HEAD
+
+  # Installs from the tap on a real macOS runner, which is the only way this
+  # gets tested — brew is not on the maintainer's machine, and a formula that
+  # is valid Ruby can still fail to install.
+  homebrew-test:
+    needs: [plan, homebrew]
+    runs-on: macos-latest
+    steps:
+      - name: install from the tap
+        run: |
+          brew tap ${{ github.repository_owner }}/tap
+          brew install ${{ github.repository_owner }}/tap/tapioca
+      - name: both binaries run and report the release version
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          tapioca --version
+          tapio --version
+          tapioca --version | grep -qF "$VERSION"
+          tapio --version | grep -qF "$VERSION"
+      - name: audit the formula
+        continue-on-error: true
+        run: brew audit --online ${{ github.repository_owner }}/tap/tapioca
+
+  # The AUR is a git remote. This is the one that is genuinely push-to-publish.
+  aur:
+    needs: [plan, checksums]
+    if: needs.plan.outputs.aur == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: render PKGBUILD
+        env:
+          TAG: ${{ needs.plan.outputs.tag }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          SHA_LINUX_ARM64: ${{ needs.checksums.outputs.linux_arm64 }}
+          SHA_LINUX_AMD64: ${{ needs.checksums.outputs.linux_amd64 }}
+          REPO: ${{ github.repository }}
+        run: |
+          mkdir -p out
+          envsubst < packaging/aur/PKGBUILD.tmpl > out/PKGBUILD
+          cat out/PKGBUILD
+      - uses: KSXGitHub/github-actions-deploy-aur@v4
+        with:
+          pkgname: tapioca-bin
+          pkgbuild: out/PKGBUILD
+          commit_username: ${{ secrets.AUR_USERNAME }}
+          commit_email: ${{ secrets.AUR_EMAIL }}
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          commit_message: tapioca ${{ needs.plan.outputs.tag }}
+          updpkgsums: false
+
+  # Opens a PR against microsoft/winget-pkgs. A bot validates it and a human
+  # merges, so this publishes on their schedule, not yours.
+  winget:
+    needs: plan
+    if: needs.plan.outputs.winget == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: vedantmgoyal9/winget-releaser@main
+        with:
+          identifier: Juacamole.Tapioca
+          version: ${{ needs.plan.outputs.version }}
+          installers-regex: '-windows-amd64\.zip$'
+          token: ${{ secrets.WINGET_TOKEN }}
+
+  # No central apt registry exists, so this does the two things that are real:
+  # attach .deb files to the release, and (with a signing key) publish an apt
+  # repository on GitHub Pages.
+  deb:
+    needs: [plan, checksums]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: "1.26" }
+      - run: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+      - name: build the packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.plan.outputs.tag }}
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          mkdir -p dist
+          for arch in amd64 arm64; do
+            gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --pattern "tapioca-$TAG-linux-$arch.tar.gz" --dir dist
+            tar xzf "dist/tapioca-$TAG-linux-$arch.tar.gz" -C dist
+            # nfpm does not expand env vars in contents.src, so the config is
+            # rendered the same way the other package templates are.
+            ARCH="$arch" BINDIR="dist/tapioca-$TAG-linux-$arch" \
+              envsubst < packaging/deb/nfpm.yaml.tmpl > "dist/nfpm-$arch.yaml"
+            nfpm pkg -f "dist/nfpm-$arch.yaml" -p deb -t "dist/tapioca_${VERSION}_${arch}.deb"
+          done
+          ls -l dist/*.deb
+      - name: attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.plan.outputs.tag }}
+        run: gh release upload "$TAG" dist/*.deb --repo "$GITHUB_REPOSITORY" --clobber
+      - uses: actions/upload-artifact@v4
+        with: { name: deb, path: dist/*.deb, if-no-files-found: error }
+
+  apt-repo:
+    needs: [plan, deb]
+    if: needs.plan.outputs.aptrepo == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: apt, path: repo }
+        continue-on-error: true
+      - uses: actions/download-artifact@v4
+        with: { name: deb, path: incoming }
+      - name: build a signed apt repository
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -yqq apt-utils gnupg
+          echo "$GPG_PRIVATE_KEY" | gpg --batch --import
+          key=$(gpg --list-secret-keys --with-colons | awk -F: '/^sec/{print $5; exit}')
+          mkdir -p repo/pool repo/dists/stable/main/binary-amd64 repo/dists/stable/main/binary-arm64
+          cp incoming/*.deb repo/pool/
+          cd repo
+          for arch in amd64 arm64; do
+            apt-ftparchive --arch "$arch" packages pool > "dists/stable/main/binary-$arch/Packages"
+            gzip -kf "dists/stable/main/binary-$arch/Packages"
+          done
+          apt-ftparchive release dists/stable > dists/stable/Release
+          gpg --batch --yes --pinentry-mode loopback --passphrase "$GPG_PASSPHRASE" \
+            -abs -u "$key" -o dists/stable/Release.gpg dists/stable/Release
+          gpg --batch --yes --pinentry-mode loopback --passphrase "$GPG_PASSPHRASE" \
+            --clearsign -u "$key" -o dists/stable/InRelease dists/stable/Release
+          gpg --armor --export "$key" > tapioca.gpg
+      - name: publish the apt branch
+        run: |
+          cd repo
+          git init -q 2>/dev/null || true
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --quiet --cached && { echo "apt repository unchanged"; exit 0; }
+          git commit -m "apt: tapioca ${{ needs.plan.outputs.version }}"
+          git push "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" HEAD:apt --force
+
+  # nixpkgs cannot be pushed to: it is a reviewed PR against NixOS/nixpkgs, and
+  # after the first one lands a bot proposes the version bumps. This job just
+  # proves the flake builds from the tag and prints what that PR needs.
+  nix:
+    needs: plan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.tag }}
+      - uses: cachix/install-nix-action@v27
+      - name: the flake builds from the tag
+        run: nix build .# --print-build-logs
+      - name: numbers for the nixpkgs PR
+        env:
+          TAG: ${{ needs.plan.outputs.tag }}
+        run: |
+          echo "vendorHash: $(grep -o 'sha256-[A-Za-z0-9+/=]*' flake.nix | head -1)"
+          echo "src hash:"
+          nix-prefetch-url --unpack "https://github.com/$GITHUB_REPOSITORY/archive/refs/tags/$TAG.tar.gz" 2>/dev/null | tail -1
+          echo "see packaging/nix/ for the package expression"

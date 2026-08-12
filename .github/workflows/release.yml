@@ -16,6 +16,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the ancestry check below needs real history
+      # Releases come off main. A tag pushed from dev or a feature branch
+      # would otherwise build a release from code that never passed through
+      # the main branch's review, and there is no undoing a published one.
+      - name: tag is on main
+        run: |
+          git fetch --quiet origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::$GITHUB_REF_NAME points at a commit that is not on main."
+            echo "Merge it to main first, then tag."
+            exit 1
+          fi
+          echo "$GITHUB_REF_NAME is on main"
       - name: versions agree with the tag
         run: |
           tag="${GITHUB_REF_NAME#v}"
