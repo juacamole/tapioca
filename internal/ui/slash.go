@@ -64,6 +64,13 @@ func buildSlashCmds() []slashCmd {
 			}
 			return m.applyGlyphs(arg)
 		}},
+		{"wordmark", "[mode]", "welcome screen mark: auto|compact|text|off", func(m *App, arg string) tea.Cmd {
+			if arg == "" {
+				m.openWordmarkPicker()
+				return nil
+			}
+			return m.applyWordmark(arg)
+		}},
 		{"systemprompt", "", "edit the system prompt in your editor", func(m *App, _ string) tea.Cmd {
 			sys := ""
 			if a := m.mgr.ActiveAgent(); a != nil {

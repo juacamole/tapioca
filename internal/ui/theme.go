@@ -278,6 +278,23 @@ func (m *App) openThemePicker() {
 	m.overlay = overlayPicker
 }
 
+func (m *App) applyWordmark(name string) tea.Cmd {
+	m.cfg.Wordmark = SetWordmark(name)
+	m.saveCfg()
+	m.repaint()
+	m.setFlash("wordmark "+m.cfg.Wordmark, false)
+	return m.flashCmd()
+}
+
+func (m *App) openWordmarkPicker() {
+	items := make([]pickerItem, 0, len(WordmarkModes))
+	for _, w := range WordmarkModes {
+		items = append(items, pickerItem{label: w.Name, desc: w.Desc, value: w.Name})
+	}
+	m.pick = newPicker(pickWordmark, "wordmark", items)
+	m.overlay = overlayPicker
+}
+
 func (m *App) openGlyphsPicker() {
 	items := make([]pickerItem, 0, len(glyphSets))
 	for _, n := range glyphNames() {

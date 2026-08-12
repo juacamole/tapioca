@@ -1,6 +1,10 @@
 package ui
 
-import "github.com/charmbracelet/lipgloss"
+import (
+	"strings"
+
+	"github.com/charmbracelet/lipgloss"
+)
 
 // The welcome screen's wordmark: a block rendering of the name in the accent
 // colour and nothing else, so the typography carries the identity rather than
@@ -39,11 +43,58 @@ var wordmarkPlain = []string{
 	`         |_|`,
 }
 
-// wordmark returns the largest drawing that fits w columns, or nil when even
-// the smallest would not — the caller falls back to the name as text, which
-// is always right and never wraps.
+// Wordmark modes. There is deliberately no "full": auto already draws the full
+// mark whenever it fits, and a mode that drew it when it does not would only
+// produce a wrapped mess.
+const (
+	WordmarkAuto    = "auto"    // the largest drawing that fits
+	WordmarkCompact = "compact" // the small one, even where the large one fits
+	WordmarkText    = "text"    // the name, no drawing
+	WordmarkOff     = "off"     // nothing at all
+)
+
+// WordmarkModes lists the choices in the order the picker shows them.
+var WordmarkModes = []struct{ Name, Desc string }{
+	{WordmarkAuto, "largest that fits the pane (default)"},
+	{WordmarkCompact, "always the small mark"},
+	{WordmarkText, "just the name"},
+	{WordmarkOff, "no wordmark"},
+}
+
+const defaultWordmark = WordmarkAuto
+
+var wordmarkMode = defaultWordmark
+
+// SetWordmark switches the mode, reporting the name that took effect. An
+// unknown name falls back to the default rather than leaving the welcome
+// screen blank.
+func SetWordmark(name string) string {
+	name = strings.ToLower(strings.TrimSpace(name))
+	for _, m := range WordmarkModes {
+		if m.Name == name {
+			wordmarkMode = name
+			return name
+		}
+	}
+	wordmarkMode = defaultWordmark
+	return defaultWordmark
+}
+
+// wordmark returns the drawing to use at w columns, or nil for none — the
+// caller then falls back to the name as text, which always fits.
+//
+// Whatever the mode asks for still has to fit: a mark chosen by configuration
+// wraps just as badly as one chosen automatically, and the person who set
+// compact on a wide screen did not ask for a broken screen on a narrow one.
 func wordmark(w int) []string {
+	switch wordmarkMode {
+	case WordmarkOff, WordmarkText:
+		return nil
+	}
 	candidates := [][]string{wordmarkFull, wordmarkCompact}
+	if wordmarkMode == WordmarkCompact {
+		candidates = [][]string{wordmarkCompact}
+	}
 	if gl.plainText {
 		candidates = [][]string{wordmarkPlain}
 	}
@@ -69,6 +120,9 @@ func widest(lines []string) int {
 // text when nothing fits. mono has no colour to spend and styAppTitle is
 // already bold there, so this needs no special case.
 func renderWordmark(w int) []string {
+	if wordmarkMode == WordmarkOff {
+		return nil
+	}
 	mark := wordmark(w)
 	if mark == nil {
 		return []string{styAppTitle.Render("tapioca")}
