@@ -43,6 +43,7 @@ const (
 	overlayHelp
 	overlayPerm
 	overlayText
+	overlayCredential
 )
 
 // quitWindow is how long the second ctrl+c has to arrive to exit.
@@ -99,6 +100,7 @@ type App struct {
 
 	overlay   overlayKind
 	conn      []connEntry // last provider probe, for the connect picker
+	cred      *credForm   // in-flight credential entry, nil when closed
 	pick      picker
 	perms     []permEntry
 	textTitle string
@@ -328,6 +330,9 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.pick = newPicker(pickModel, "switch model", msg.items)
 		m.overlay = overlayPicker
 		return m, nil
+
+	case credTestedMsg:
+		return m, m.handleCredentialTested(msg)
 
 	case connStatusMsg:
 		m.openConnectPicker(msg.entries)
@@ -663,6 +668,15 @@ func (m *App) decidePerm(d tools.Decision) {
 }
 
 func (m *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// The credential overlay owns the keyboard while open: every printable key
+	// is part of a secret being typed, so nothing may fall through to the
+	// global shortcuts.
+	if m.overlay == overlayCredential {
+		if cmd, handled := m.handleCredentialKey(msg); handled {
+			return m, cmd
+		}
+	}
+
 	// Permission prompts take absolute priority.
 	if m.overlay == overlayPerm && len(m.perms) > 0 {
 		switch msg.String() {
@@ -721,7 +735,11 @@ func (m *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		chosen, closed := m.pick.handleKey(msg)
 		if chosen != nil {
 			cmd := m.applyPick(*chosen)
-			if closed {
+			// A selection may open an overlay of its own — picking an
+			// unconfigured provider opens the credential form. Closing the
+			// picker must not close what the selection just opened, so this
+			// only dismisses while the picker is still what is on screen.
+			if closed && m.overlay == overlayPicker {
 				m.dismissOverlay()
 			}
 			return m, cmd
@@ -1730,6 +1748,8 @@ func (m *App) View() string {
 		body = m.renderPerm(m.w, bodyH)
 	case overlayText:
 		body = m.renderTextOverlay(m.w, bodyH)
+	case overlayCredential:
+		body = lipgloss.Place(m.w, bodyH, lipgloss.Center, lipgloss.Center, m.viewCredential())
 	case overlayPicker:
 		checked := func(v string) bool {
 			for _, p := range m.cfg.Dashboard.Panels {
