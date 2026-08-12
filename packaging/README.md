@@ -48,6 +48,18 @@ Then:
 brew install juacamole/tap/tapioca
 ```
 
+The tap can be empty when you set the secret — the workflow creates `main`, a
+README and `Formula/tapioca.rb` on its first run.
+
+**The release has to be published first.** A draft release's assets are not
+publicly downloadable, so a formula pointing at them fails for everyone until
+you publish. The workflow only triggers on publish, so this orders itself, but
+it is worth knowing if you ever push a formula by hand.
+
+A `homebrew-test` job installs from the tap on a macOS runner afterwards and
+runs both binaries — a formula can be valid Ruby and still fail to install, and
+that check does not need brew on your own machine.
+
 **homebrew-core** — `brew install tapioca` with no tap — is a different thing:
 a manual PR to `Homebrew/homebrew-core`, subject to their
 [acceptable formulae](https://docs.brew.sh/Acceptable-Formulae) rules, which

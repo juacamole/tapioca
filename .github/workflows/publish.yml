@@ -110,15 +110,45 @@ jobs:
           TAG: ${{ needs.plan.outputs.tag }}
         run: |
           git clone "https://x-access-token:$GH_TOKEN@github.com/${{ github.repository_owner }}/homebrew-tap.git" tap
-          mkdir -p tap/Formula
-          cp out/tapioca.rb tap/Formula/tapioca.rb
           cd tap
+          # A tap created through the web UI with no README has no commits and
+          # no default branch, so the branch name would otherwise be whatever
+          # the runner's init.defaultBranch happens to be.
+          git rev-parse --verify HEAD >/dev/null 2>&1 || git checkout -q -b main
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Formula/tapioca.rb
+          mkdir -p Formula
+          cp ../out/tapioca.rb Formula/tapioca.rb
+          if [ ! -f README.md ]; then
+            printf '# homebrew-tap\n\n    brew install %s/tap/tapioca\n' "${{ github.repository_owner }}" > README.md
+          fi
+          git add Formula/tapioca.rb README.md
           git diff --quiet --cached && { echo "formula already current"; exit 0; }
           git commit -m "tapioca $TAG"
-          git push
+          git push -u origin HEAD
+
+  # Installs from the tap on a real macOS runner, which is the only way this
+  # gets tested — brew is not on the maintainer's machine, and a formula that
+  # is valid Ruby can still fail to install.
+  homebrew-test:
+    needs: [plan, homebrew]
+    runs-on: macos-latest
+    steps:
+      - name: install from the tap
+        run: |
+          brew tap ${{ github.repository_owner }}/tap
+          brew install ${{ github.repository_owner }}/tap/tapioca
+      - name: both binaries run and report the release version
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          tapioca --version
+          tapio --version
+          tapioca --version | grep -qF "$VERSION"
+          tapio --version | grep -qF "$VERSION"
+      - name: audit the formula
+        continue-on-error: true
+        run: brew audit --online ${{ github.repository_owner }}/tap/tapioca
 
   # The AUR is a git remote. This is the one that is genuinely push-to-publish.
   aur:

@@ -29,9 +29,13 @@ class Tapioca < Formula
   end
 
   def install
+    # Homebrew strips a single top-level directory when it stages the archive,
+    # and these tarballs have one. Finding it anyway means a change to the
+    # archive layout fails loudly here instead of installing nothing.
+    root = Dir["tapioca-*"].find { |d| File.directory?(d) } || "."
     # Both names ship: Shopify's tapioca gem claims the first one too.
-    bin.install "tapioca"
-    bin.install "tapio"
+    bin.install "#{root}/tapioca"
+    bin.install "#{root}/tapio"
   end
 
   test do
