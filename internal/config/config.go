@@ -88,6 +88,7 @@ type Config struct {
 	SandboxNetwork  bool    `toml:"sandbox_network"` // allow network inside the sandbox
 	Theme           string  `toml:"theme"`           // taro | contrast | mono
 	Glyphs          string  `toml:"glyphs"`          // unicode | ascii | nerd
+	Wordmark        string  `toml:"wordmark"`        // auto | compact | text | off
 	PermissionMode  string  `toml:"permission_mode"` // plan | manual | auto | bypass
 
 	BashAllow   []string                  `toml:"bash_allow"`  // always-allowed bash command words
@@ -132,6 +133,7 @@ func Default() *Config {
 		BashTimeout:    180,
 		Theme:          "taro",
 		Glyphs:         "unicode",
+		Wordmark:       "auto",
 		Providers: map[string]ProviderConfig{
 			"ollama":    {Type: "ollama", BaseURL: "http://localhost:11434"},
 			"anthropic": {Type: "anthropic", APIKeyEnv: "ANTHROPIC_API_KEY"},
@@ -349,6 +351,8 @@ editor = ""                     # prompt editor; falls back to $VISUAL, $EDITOR,
 
 theme = "taro"                  # taro | contrast (colorblind-safe) | mono — /theme switches
 glyphs = "unicode"              # unicode | ascii (any terminal) | nerd (patched font) — /glyphs
+wordmark = "auto"               # welcome screen mark: auto (largest that fits) | compact |
+                                # text (just the name) | off — /wordmark
 
 # Override any theme color. "#hex" applies to both backgrounds, "#light/#dark"
 # differs per background. Setting one lifts the mono theme's no-color rule.

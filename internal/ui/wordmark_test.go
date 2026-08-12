@@ -118,3 +118,70 @@ func TestWelcomeTextFitsItsWidth(t *testing.T) {
 		}
 	}
 }
+
+// The mode is configuration, but a mark that does not fit wraps just as badly
+// whoever chose it — so compact on a narrow pane must still degrade.
+func TestWordmarkModesRespectWidth(t *testing.T) {
+	savedGl, savedMode := gl, wordmarkMode
+	defer func() { gl, wordmarkMode = savedGl, savedMode }()
+	gl = glyphSets["unicode"]
+
+	SetWordmark(WordmarkCompact)
+	if got := wordmark(200); len(got) != len(wordmarkCompact) {
+		t.Error("compact mode drew something other than the compact mark on a wide pane")
+	}
+	if got := wordmark(5); got != nil {
+		t.Errorf("compact mode drew a %d-wide mark into 5 columns", widest(got))
+	}
+
+	SetWordmark(WordmarkAuto)
+	if got := wordmark(200); len(got) != len(wordmarkFull) {
+		t.Error("auto did not choose the full mark on a wide pane")
+	}
+
+	for _, mode := range []string{WordmarkText, WordmarkOff} {
+		SetWordmark(mode)
+		if got := wordmark(200); got != nil {
+			t.Errorf("%s drew a mark", mode)
+		}
+	}
+}
+
+// off means nothing; text means the name. The difference has to be visible.
+func TestOffAndTextDiffer(t *testing.T) {
+	savedGl, savedMode, savedZen := gl, wordmarkMode, zenMode
+	defer func() { gl, wordmarkMode, zenMode = savedGl, savedMode, savedZen }()
+	gl, zenMode = glyphSets["unicode"], false
+
+	SetWordmark(WordmarkText)
+	if got := renderWordmark(100); len(got) != 1 || !strings.Contains(got[0], "tapioca") {
+		t.Errorf("text mode rendered %q, want the name", got)
+	}
+	SetWordmark(WordmarkOff)
+	if got := renderWordmark(100); len(got) != 0 {
+		t.Errorf("off mode rendered %q, want nothing", got)
+	}
+	// And the welcome screen must not open with a stray blank line.
+	if first := strings.SplitN(welcomeText(100), "\n", 2)[0]; strings.TrimSpace(first) == "" {
+		t.Error("off mode left a leading blank line on the welcome screen")
+	}
+}
+
+// An unknown mode in a hand-edited config must not blank the screen.
+func TestUnknownModeFallsBackToAuto(t *testing.T) {
+	saved := wordmarkMode
+	defer func() { wordmarkMode = saved }()
+	for _, bad := range []string{"", "enormous", "OFF ", "nonsense"} {
+		got := SetWordmark(bad)
+		if bad == "OFF " {
+			// trimmed and lowercased, so this one is valid
+			if got != WordmarkOff {
+				t.Errorf("SetWordmark(%q) = %q, want off", bad, got)
+			}
+			continue
+		}
+		if got != WordmarkAuto {
+			t.Errorf("SetWordmark(%q) = %q, want auto", bad, got)
+		}
+	}
+}

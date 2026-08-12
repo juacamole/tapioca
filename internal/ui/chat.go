@@ -99,10 +99,16 @@ func welcomeText(w int) string {
 	// the keybind lines below.
 	mark := renderWordmark(w)
 	if zenMode {
+		if len(mark) == 0 {
+			return ""
+		}
 		return strings.Join(mark, "\n")
 	}
-	lines := append(append([]string{}, mark...),
-		"",
+	lines := append([]string{}, mark...)
+	if len(lines) > 0 {
+		lines = append(lines, "")
+	}
+	lines = append(lines,
 		styDim.Render("type a prompt and press enter to chat"),
 		styDim.Render("f1 shows every keybind"+gl.sep+"/help lists commands"),
 		styDim.Render("ctrl+g writes the prompt in vim"+gl.sep+"ctrl+o toggles verbose chat"),
