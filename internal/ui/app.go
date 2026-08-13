@@ -102,6 +102,7 @@ type App struct {
 	conn      []connEntry   // last provider probe, for the connect picker
 	cred      *credForm     // in-flight credential entry, nil when closed
 	credKind  provider.Kind // provider chosen in the connect screen
+	msgLog    []logEntry    // every flash, kept so none is lost to its timer
 	pick      picker
 	perms     []permEntry
 	textTitle string
@@ -333,6 +334,9 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.overlay = overlayPicker
 		return m, nil
 
+	case loginDoneMsg:
+		return m, m.handleLoginDone(msg)
+
 	case credTestedMsg:
 		return m, m.handleCredentialTested(msg)
 
@@ -387,7 +391,13 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleEditorDone(msg)
 
 	case flashClearMsg:
-		if msg.seq == m.flashSeq {
+		// Errors stay until something replaces them. They are the messages
+		// most worth reading and the least likely to be read in four seconds —
+		// often a provider's whole error body — and the reader has no way to
+		// ask for them back once the timer has run. Informational flashes
+		// still expire, since those are confirmations of something the user
+		// just did and clutter the line once read.
+		if msg.seq == m.flashSeq && !m.flashErr {
 			m.flash = ""
 		}
 		return m, nil
@@ -1624,6 +1634,10 @@ func (m *App) setFlash(text string, isErr bool) {
 	m.flash = sanitizeLabel(text)
 	m.flashErr = isErr
 	m.flashSeq++
+	// Recorded here rather than at each call site: this is the one place every
+	// message passes through, and it is already sanitized, so nothing can
+	// reach the history by a route that skips the scrubbing.
+	m.record(m.flash, isErr)
 }
 
 func (m *App) flashCmd() tea.Cmd {
@@ -2007,7 +2021,16 @@ func (m *App) renderStatus() string {
 	var left string
 	if m.flash != "" {
 		if m.flashErr {
-			left = " " + styErr.Render(m.flash)
+			// A provider's error body is routinely longer than the status
+			// line. Truncating in silence is what made these unreadable, so
+			// when it happens the line says where the rest is.
+			hint := gl.sep + "/log"
+			avail := m.w - 2 - lipgloss.Width(hint)
+			if avail > 10 && lipgloss.Width(m.flash) > avail {
+				left = " " + styErr.Render(truncate(m.flash, avail)) + styDim.Render(hint)
+			} else {
+				left = " " + styErr.Render(m.flash)
+			}
 		} else {
 			left = " " + styFlash.Render(m.flash)
 		}

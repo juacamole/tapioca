@@ -70,6 +70,14 @@ func oauthToken(ctx context.Context) (string, error) {
 	return tok, nil
 }
 
+// LoginCommand returns the command that performs a browser login, for a caller
+// that can hand it the terminal. It is not run here: the CLI prints a URL and
+// waits, and a caller that swallows its output leaves a user with no way to
+// reach the browser flow on a machine where no browser can be opened.
+func LoginCommand() *exec.Cmd {
+	return exec.Command(antBinary, "auth", "login")
+}
+
 // oauthShadowed reports the environment variable that will be preferred over
 // an OAuth profile. Credential resolution puts API keys ahead of profiles, so
 // a stale exported key makes a successful login look like it did nothing.
