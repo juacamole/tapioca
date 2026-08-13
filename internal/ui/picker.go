@@ -21,7 +21,6 @@ const (
 	pickWordmark
 	pickEffort
 	pickConnect
-	pickAuthMethod
 )
 
 type pickerItem struct {

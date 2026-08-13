@@ -241,6 +241,12 @@ func (m *App) viewCredential() string {
 	c := m.cred
 	var b strings.Builder
 	b.WriteString(styAccent.Render("connect "+c.kind.Label) + "\n\n")
+	// What this connects to, said rather than inferred. A key from an
+	// Anthropic account is billed per token, which is not what someone
+	// carrying a Pro or Max plan expects to be signing up for.
+	if c.kind.Desc != "" {
+		b.WriteString(styDim.Render(c.kind.Desc) + "\n")
+	}
 	if c.field.Help != "" {
 		b.WriteString(styDim.Render(c.field.Help) + "\n")
 	}

@@ -122,8 +122,8 @@ func TestSelectingAFailingProviderOffersAFix(t *testing.T) {
 	if m.overlay == overlayNone {
 		t.Fatal("selecting a failing provider closed the screen without offering a fix")
 	}
-	if m.pick.kind != pickAuthMethod {
-		t.Errorf("picker kind = %v, want the auth-method choice", m.pick.kind)
+	if m.overlay != overlayCredential || m.cred == nil {
+		t.Errorf("overlay = %v, want the credential form", m.overlay)
 	}
 }
 
@@ -136,13 +136,12 @@ func TestSelectingDoesNotDismissWhatItOpened(t *testing.T) {
 	m.conn = []connEntry{{kind: anthropic, state: connUnset}}
 	m.openConnectPicker(m.conn)
 
-	before := m.pick.kind
 	m.applyConnect("anthropic")
 
-	if m.pick.kind == before {
-		t.Fatal("no new screen was opened")
+	if m.overlay != overlayCredential {
+		t.Fatalf("overlay = %v, want the credential form the selection opened", m.overlay)
 	}
-	if m.overlay != overlayPicker {
-		t.Errorf("overlay = %v, want the newly opened picker", m.overlay)
+	if m.cred == nil {
+		t.Error("the form was opened and then discarded")
 	}
 }
