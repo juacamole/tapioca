@@ -176,11 +176,6 @@ func (m *App) applyConnect(typ string) tea.Cmd {
 	// means "let me fix this". Reporting without offering a fix is the dead
 	// end this whole screen exists to remove.
 	switch {
-	case e.kind.OAuth:
-		// Where a login exists, choosing between it and a pasted key is the
-		// user's call: the login avoids managing a static key, the key avoids
-		// installing anything.
-		m.openAuthMethodPicker(e.kind)
 	case len(e.kind.Fields) == 1 || singleSecret(e.kind):
 		m.openCredentialEntry(e.kind)
 	default:

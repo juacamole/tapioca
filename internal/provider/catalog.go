@@ -23,7 +23,6 @@ type Kind struct {
 	Label  string
 	Desc   string
 	URL    string // where credentials are issued, empty when there are none
-	OAuth  bool   // a login exists as an alternative to a pasted credential
 	Fields []Field
 }
 
@@ -45,11 +44,12 @@ var Catalog = []Kind{
 	{
 		Type:  "anthropic",
 		Label: "anthropic",
-		Desc:  "Claude models",
+		Desc:  "Claude models, billed as API usage",
 		URL:   "https://console.anthropic.com/settings/keys",
-		OAuth: true,
 		Fields: []Field{
-			{Key: "api_key", Label: "API key", Help: "console.anthropic.com → Settings → API keys", Secret: true},
+			{Key: "api_key", Label: "API key",
+				Help:   "console.anthropic.com → Settings → API keys",
+				Secret: true},
 		},
 	},
 	{

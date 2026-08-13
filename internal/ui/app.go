@@ -99,10 +99,9 @@ type App struct {
 	dashSel      int  // selected settings row while editing
 
 	overlay   overlayKind
-	conn      []connEntry   // last provider probe, for the connect picker
-	cred      *credForm     // in-flight credential entry, nil when closed
-	credKind  provider.Kind // provider chosen in the connect screen
-	msgLog    []logEntry    // every flash, kept so none is lost to its timer
+	conn      []connEntry // last provider probe, for the connect picker
+	cred      *credForm   // in-flight credential entry, nil when closed
+	msgLog    []logEntry  // every flash, kept so none is lost to its timer
 	pick      picker
 	perms     []permEntry
 	textTitle string
@@ -333,9 +332,6 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.pick = newPicker(pickModel, "switch model", msg.items)
 		m.overlay = overlayPicker
 		return m, nil
-
-	case loginDoneMsg:
-		return m, m.handleLoginDone(msg)
 
 	case credTestedMsg:
 		return m, m.handleCredentialTested(msg)
@@ -1419,9 +1415,6 @@ func (m *App) applyPick(it pickerItem) tea.Cmd {
 
 	case pickConnect:
 		return m.applyConnect(it.value)
-
-	case pickAuthMethod:
-		return m.applyAuthMethod(it.value)
 
 	case pickSession:
 		return m.loadSessionByID(it.value)
