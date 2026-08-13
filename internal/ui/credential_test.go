@@ -49,9 +49,8 @@ func TestSavePrefersAnEnvironmentReference(t *testing.T) {
 	m := &App{cfg: config.Default()}
 	m.cfg.Providers = map[string]config.ProviderConfig{}
 	k, _ := provider.KindFor("openai")
-	field := provider.Field{Key: "api_key", Secret: true}
 
-	m.saveCredential(k, field, key)
+	m.saveCredential(k, map[string]string{"api_key": key})
 
 	pc := m.cfg.Providers["openai"]
 	if pc.APIKey != "" {
@@ -68,9 +67,8 @@ func TestSaveFallsBackToTheLiteral(t *testing.T) {
 	m := &App{cfg: config.Default()}
 	m.cfg.Providers = map[string]config.ProviderConfig{}
 	k, _ := provider.KindFor("openai")
-	field := provider.Field{Key: "api_key", Secret: true}
 
-	m.saveCredential(k, field, "sk-not-in-the-environment-4a1b")
+	m.saveCredential(k, map[string]string{"api_key": "sk-not-in-the-environment-4a1b"})
 
 	pc := m.cfg.Providers["openai"]
 	if pc.APIKey != "sk-not-in-the-environment-4a1b" {
@@ -127,8 +125,14 @@ func TestSecretFieldsAreEnteredWithEchoOff(t *testing.T) {
 		if m.cred == nil {
 			t.Fatalf("%s: no form opened", k.Type)
 		}
-		if m.cred.input.EchoMode == 0 {
-			t.Errorf("%s: the %s field echoes what is typed", k.Type, m.cred.field.Label)
+		// Walk to the secret field: it is not always first, and echo is
+		// decided per field.
+		for i := range m.cred.fields {
+			m.cred.at = i
+			m.focusField()
+			if m.cred.field().Secret && m.cred.input.EchoMode == 0 {
+				t.Errorf("%s: the %s field echoes what is typed", k.Type, m.cred.field().Label)
+			}
 		}
 	}
 }

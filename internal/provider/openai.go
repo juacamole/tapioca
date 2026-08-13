@@ -24,8 +24,9 @@ type OpenAI struct {
 	name       string
 	baseURL    string
 	apiKey     string
-	flavor     string // "", flavorAzure, flavorGemini
-	apiVersion string // azure only
+	auth       *authSpec // set for the custom type; nil uses the flavor's own scheme
+	flavor     string    // "", flavorAzure, flavorGemini
+	apiVersion string    // azure only
 	client     *http.Client
 }
 
@@ -103,16 +104,24 @@ func (o *OpenAI) modelsURL() string {
 	}
 }
 
-// setAuth attaches the key the way this flavour expects.
-func (o *OpenAI) setAuth(r *http.Request) {
+// setAuth attaches the key the way this flavour expects. A custom provider
+// carries its own spec, since the same wire format is served behind a bearer
+// token, a named header, a query parameter and nothing at all.
+func (o *OpenAI) setAuth(r *http.Request) error {
+	if o.auth != nil {
+		// Returned rather than swallowed: a request that quietly goes out
+		// unauthenticated fails later, somewhere that does not name the cause.
+		return o.auth.apply(r)
+	}
 	if o.apiKey == "" {
-		return
+		return nil
 	}
 	if o.flavor == flavorAzure {
 		r.Header.Set("api-key", o.apiKey)
-		return
+		return nil
 	}
 	r.Header.Set("Authorization", "Bearer "+o.apiKey)
+	return nil
 }
 
 func (o *OpenAI) Name() string { return o.name }
@@ -284,7 +293,9 @@ func (o *OpenAI) Stream(ctx context.Context, req Request, out chan<- Event) (Mes
 		return Message{}, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	o.setAuth(httpReq)
+	if err := o.setAuth(httpReq); err != nil {
+		return Message{}, fmt.Errorf("%s: %w", o.name, err)
+	}
 	resp, err := o.client.Do(httpReq)
 	if err != nil {
 		return Message{}, fmt.Errorf("%s: %w", o.name, err)
@@ -429,7 +440,9 @@ func (o *OpenAI) ListModels(ctx context.Context) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	o.setAuth(req)
+	if err := o.setAuth(req); err != nil {
+		return nil, fmt.Errorf("%s: %w", o.name, err)
+	}
 	resp, err := o.client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", o.name, err)

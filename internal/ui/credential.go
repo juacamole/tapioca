@@ -38,11 +38,47 @@ const (
 )
 
 type credForm struct {
-	kind  provider.Kind
-	field provider.Field
-	input textinput.Model
-	state credState
-	err   string
+	kind   provider.Kind
+	fields []provider.Field  // in the order they are asked for
+	values map[string]string // what has been entered so far
+	at     int               // which field is being entered
+	input  textinput.Model
+	state  credState
+	err    string
+}
+
+// field is the one currently being entered.
+func (c *credForm) field() provider.Field {
+	if c.at < len(c.fields) {
+		return c.fields[c.at]
+	}
+	return provider.Field{}
+}
+
+// relevant reports whether a field applies given what has been entered. A
+// header name is meaningless unless the auth style is header, and asking for
+// it anyway trains people to press enter through questions that do not matter.
+func (c *credForm) relevant(f provider.Field) bool {
+	switch f.Key {
+	case "auth_header":
+		return c.values["auth_style"] == "header"
+	case "auth_query":
+		return c.values["auth_style"] == "query"
+	case "api_key":
+		return c.values["auth_style"] != "none"
+	}
+	return true
+}
+
+// advance moves to the next field that applies, and reports whether any
+// remain.
+func (c *credForm) advance() bool {
+	for c.at++; c.at < len(c.fields); c.at++ {
+		if c.relevant(c.fields[c.at]) {
+			return true
+		}
+	}
+	return false
 }
 
 // credTestedMsg carries the verification result back to the update loop. It
@@ -57,45 +93,68 @@ type credTestedMsg struct {
 // openCredentialEntry starts the flow for a provider whose setup is a single
 // secret. Providers needing several fields are #137.
 func (m *App) openCredentialEntry(k provider.Kind) {
-	// Prefer the secret among the required fields. Taking merely the first
-	// would open an echoing form for a provider whose first field happens to
-	// be an endpoint, and put the credential behind it.
-	var field provider.Field
-	for _, f := range k.Fields {
-		if !f.Optional && f.Secret {
-			field = f
-			break
-		}
+	m.cred = &credForm{kind: k, fields: k.Fields, values: map[string]string{}}
+	// Start on the first field that applies. A provider whose first field is
+	// conditional would otherwise open on a question about a choice not yet
+	// made.
+	if len(k.Fields) > 0 && !m.cred.relevant(k.Fields[0]) {
+		m.cred.advance()
 	}
-	if field.Key == "" {
-		for _, f := range k.Fields {
-			if !f.Optional {
-				field = f
-				break
-			}
-		}
-	}
-	in := textinput.New()
-	in.Placeholder = field.Label
-	in.Prompt = "> "
-	in.CharLimit = 512
-	if field.Secret {
-		in.EchoMode = textinput.EchoPassword
-		in.EchoCharacter = '•'
-	}
-	in.Focus()
-	in.Width = min(60, max(20, m.w-24))
-
-	m.cred = &credForm{kind: k, field: field, input: in}
+	m.focusField()
 	m.overlay = overlayCredential
 }
 
-// testCredential verifies the value against the provider before anything is
-// written. A key that does not work must fail here rather than on the user's
-// next prompt.
-func testCredential(k provider.Kind, field provider.Field, value string) tea.Cmd {
+// focusField prepares the input for the current field. Echo is decided per
+// field rather than per form, so a secret is masked and an address is not.
+func (m *App) focusField() {
+	c := m.cred
+	f := c.field()
+	in := textinput.New()
+	in.Placeholder = f.Label
+	in.Prompt = "> "
+	in.CharLimit = 512
+	if f.Secret {
+		in.EchoMode = textinput.EchoPassword
+		in.EchoCharacter = '•'
+	}
+	if f.Default != "" {
+		in.SetValue(f.Default)
+	}
+	in.Focus()
+	in.Width = min(60, max(20, m.w-24))
+	c.input = in
+	c.state = credEntering
+	c.err = ""
+}
+
+// validateField rejects a value the provider would reject later, at the point
+// it was typed.
+func validateField(f provider.Field, value string) error {
+	if value == "" {
+		return nil // optional, and already checked when required
+	}
+	if len(f.Choices) > 0 {
+		for _, c := range f.Choices {
+			if value == c {
+				return nil
+			}
+		}
+		return fmt.Errorf("%s must be one of %s", f.Label, strings.Join(f.Choices, ", "))
+	}
+	if f.Key == "base_url" {
+		return provider.CheckBaseURL(value)
+	}
+	return nil
+}
+
+// testProvider builds the provider from everything entered and makes a real
+// call. A configuration that does not work must fail here rather than on the
+// user's next prompt, by which point the screen has moved on.
+func testProvider(k provider.Kind, values map[string]string) tea.Cmd {
 	pc := config.ProviderConfig{Type: k.Type}
-	applyField(&pc, field.Key, value)
+	for key, v := range values {
+		applyField(&pc, key, v)
+	}
 	return func() tea.Msg {
 		p, err := provider.New(k.Type, pc)
 		if err != nil {
@@ -128,6 +187,12 @@ func applyField(pc *config.ProviderConfig, key, value string) {
 		pc.CredentialsFile = value
 	case "api_version":
 		pc.APIVersion = value
+	case "auth_style":
+		pc.AuthStyle = value
+	case "auth_header":
+		pc.AuthHeader = value
+	case "auth_query":
+		pc.AuthQuery = value
 	}
 }
 
@@ -137,21 +202,27 @@ func applyField(pc *config.ProviderConfig, key, value string) {
 // from there. The literal is used only when the variable is not actually set,
 // since a reference to an unset variable is a provider that silently does not
 // work.
-func (m *App) saveCredential(k provider.Kind, field provider.Field, value string) {
+func (m *App) saveCredential(k provider.Kind, values map[string]string) {
 	pc := m.cfg.Providers[k.Type]
 	if pc.Type == "" {
 		pc.Type = k.Type
 	}
-	if field.Secret {
-		if env := envHolding(value); env != "" {
-			pc.APIKey = ""
-			pc.APIKeyEnv = env
-		} else {
-			pc.APIKey = value
-			pc.APIKeyEnv = ""
+	for _, f := range k.Fields {
+		value, entered := values[f.Key]
+		if !entered {
+			continue
 		}
-	} else {
-		applyField(&pc, field.Key, value)
+		if f.Secret {
+			if env := envHolding(value); env != "" {
+				pc.APIKey = ""
+				pc.APIKeyEnv = env
+			} else {
+				pc.APIKey = value
+				pc.APIKeyEnv = ""
+			}
+			continue
+		}
+		applyField(&pc, f.Key, value)
 	}
 	if m.cfg.Providers == nil {
 		m.cfg.Providers = map[string]config.ProviderConfig{}
@@ -192,18 +263,35 @@ func (m *App) handleCredentialKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 		m.overlay = overlayNone
 		return nil, true
 	case "enter":
-		if m.cred.state == credTesting {
+		c := m.cred
+		if c.state == credTesting {
 			return nil, true
 		}
-		value := strings.TrimSpace(m.cred.input.Value())
-		if value == "" {
-			m.cred.err = m.cred.field.Label + " cannot be empty"
-			m.cred.state = credFailed
+		f := c.field()
+		value := strings.TrimSpace(c.input.Value())
+		if value == "" && !f.Optional {
+			c.err = f.Label + " cannot be empty"
+			c.state = credFailed
 			return nil, true
 		}
-		m.cred.state = credTesting
-		m.cred.err = ""
-		return testCredential(m.cred.kind, m.cred.field, value), true
+		// Each value is checked as it is entered, so a bad address is reported
+		// on the address rather than as a connection failure three fields
+		// later, when it is no longer obvious which answer was wrong.
+		if err := validateField(f, value); err != nil {
+			c.err = err.Error()
+			c.state = credFailed
+			return nil, true
+		}
+		c.values[f.Key] = value
+
+		if c.advance() {
+			m.focusField()
+			return nil, true
+		}
+		// Every field answered: now the whole thing is tried for real.
+		c.state = credTesting
+		c.err = ""
+		return testProvider(c.kind, c.values), true
 	}
 	if m.cred.state == credTesting {
 		return nil, true
@@ -224,9 +312,8 @@ func (m *App) handleCredentialTested(msg credTestedMsg) tea.Cmd {
 		m.cred.err = sanitizeLabel(msg.err.Error())
 		return nil
 	}
-	k, field := m.cred.kind, m.cred.field
-	value := strings.TrimSpace(m.cred.input.Value())
-	m.saveCredential(k, field, value)
+	k := m.cred.kind
+	m.saveCredential(k, m.cred.values)
 	m.cred = nil
 	m.overlay = overlayNone
 	m.setFlash(fmt.Sprintf("%s connected"+gl.sep+"%d models", k.Label, msg.models), false)
@@ -247,8 +334,15 @@ func (m *App) viewCredential() string {
 	if c.kind.Desc != "" {
 		b.WriteString(styDim.Render(c.kind.Desc) + "\n")
 	}
-	if c.field.Help != "" {
-		b.WriteString(styDim.Render(c.field.Help) + "\n")
+	f := c.field()
+	if f.Help != "" {
+		b.WriteString(styDim.Render(f.Help) + "\n")
+	}
+	if len(c.fields) > 1 {
+		b.WriteString(styDim.Render(fmt.Sprintf("%s (%d of %d)", f.Label, c.at+1, len(c.fields))) + "\n")
+	}
+	if len(f.Choices) > 0 {
+		b.WriteString(styDim.Render("one of: "+strings.Join(f.Choices, ", ")) + "\n")
 	}
 	if c.kind.URL != "" {
 		b.WriteString(styDim.Render(c.kind.URL) + "\n")
