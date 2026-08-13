@@ -20,10 +20,12 @@ type Action struct {
 // operations, ctrl keys the frequent ones, no alt anywhere.
 var actions = []Action{
 	{"send", "send prompt", "enter", "chat"},
-	// shift+enter reaches this only because the terminal is asked to encode it
-	// and the sequence is translated on the way in — see internal/ui/extkeys.go.
-	// ctrl+j is the same key on the wire and works with no protocol at all.
-	{"newline", "insert newline", "shift+enter,ctrl+j", "chat"},
+	// ctrl+j is listed first because it is the one that always works: it is
+	// what shift+enter would send if a terminal could distinguish it, and no
+	// terminal can without being configured to. shift+enter stays bound for
+	// the terminals that have been — see internal/ui/extkeys.go for the
+	// kitty.conf line and why the app cannot arrange it itself.
+	{"newline", "insert newline (shift+enter needs a terminal mapping)", "ctrl+j,shift+enter", "chat"},
 	{"edit_prompt", "edit prompt in vim/$EDITOR", "ctrl+g", "chat"},
 	{"edit_system", "edit system prompt (use /systemprompt)", "", "chat"},
 	{"cancel", "stop generation / close overlay", "esc", "chat"},
