@@ -150,8 +150,15 @@ func validateField(f provider.Field, value string) error {
 // testProvider builds the provider from everything entered and makes a real
 // call. A configuration that does not work must fail here rather than on the
 // user's next prompt, by which point the screen has moved on.
-func testProvider(k provider.Kind, values map[string]string) tea.Cmd {
-	pc := config.ProviderConfig{Type: k.Type}
+//
+// It starts from the existing entry for the same reason saveCredential does:
+// what gets tested has to be what gets saved. Some fields the form never asks
+// about — an address pointing at a proxy, an api_version, extra headers — and
+// dropping them here would report success about a provider that is not the one
+// written to disk.
+func testProvider(k provider.Kind, existing config.ProviderConfig, values map[string]string) tea.Cmd {
+	pc := existing
+	pc.Type = k.Type
 	for key, v := range values {
 		applyField(&pc, key, v)
 	}
@@ -291,7 +298,7 @@ func (m *App) handleCredentialKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 		// Every field answered: now the whole thing is tried for real.
 		c.state = credTesting
 		c.err = ""
-		return testProvider(c.kind, c.values), true
+		return testProvider(c.kind, m.cfg.Providers[c.kind.Type], c.values), true
 	}
 	if m.cred.state == credTesting {
 		return nil, true
@@ -314,6 +321,11 @@ func (m *App) handleCredentialTested(msg credTestedMsg) tea.Cmd {
 	}
 	k := m.cred.kind
 	m.saveCredential(k, m.cred.values)
+	// Provider instances are cached by name, and the one in hand was built
+	// before this credential existed. Without dropping it the screen reports a
+	// connection while the next prompt still goes out with the old key — or
+	// none.
+	m.mgr.ReloadProviders()
 	m.cred = nil
 	m.overlay = overlayNone
 	m.setFlash(fmt.Sprintf("%s connected"+gl.sep+"%d models", k.Label, msg.models), false)

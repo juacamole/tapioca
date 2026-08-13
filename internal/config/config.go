@@ -391,6 +391,13 @@ api_key_env = "ANTHROPIC_API_KEY"
 # api_key = "sk-ant-..."        # or put the key inline (not recommended)
 # base_url = "https://api.anthropic.com"
 
+# Models from every vendor behind one key, through the Vercel AI Gateway. The
+# address is built in; model ids are vendor-qualified, e.g.
+# "anthropic/claude-opus-5".
+# [providers.vercel]
+# type = "vercel"
+# api_key_env = "AI_GATEWAY_API_KEY"
+
 # Any server speaking the OpenAI API — a gateway, a proxy, a local model.
 # auth_style says where the credential goes, since the same wire format is
 # served behind all four of these.

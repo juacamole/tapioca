@@ -54,7 +54,7 @@ func NewCustom(name string, cfg config.ProviderConfig) (*OpenAI, error) {
 	}
 
 	p := NewOpenAI(name, cfg)
-	p.baseURL = base
+	p.baseURL = trimVersionSuffix(base)
 	p.auth = spec
 	return p, nil
 }

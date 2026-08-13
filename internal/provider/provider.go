@@ -177,6 +177,8 @@ func New(name string, cfg config.ProviderConfig) (Provider, error) {
 		return NewOpenAI(name, cfg), nil
 	case "custom":
 		return NewCustom(name, cfg)
+	case "vercel":
+		return NewVercel(name, cfg), nil
 	case "azure":
 		return NewAzure(name, cfg)
 	case "gemini", "google":
