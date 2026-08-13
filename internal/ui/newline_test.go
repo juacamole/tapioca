@@ -2,49 +2,60 @@ package ui
 
 import (
 	"bytes"
+	"os"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// shift+enter is the advertised newline key and has to stay that way: it is
-// what the hint bar, the help screen and the README all name.
-func TestShiftEnterIsTheAdvertisedNewlineKey(t *testing.T) {
+// The advertised newline key has to be one that works with no terminal
+// configuration at all. shift+enter is not that key: terminals send the same
+// byte for it as for enter, and the flag that would separate them reports
+// every key as an escape code, which bubbletea cannot decode.
+func TestAdvertisedNewlineKeyWorksWithNoTerminalSetup(t *testing.T) {
 	km := NewKeyMap(nil)
-	if got := km.FirstKey("newline"); got != "shift+enter" {
-		t.Errorf("newline is advertised as %q, want shift+enter", got)
+	if got := km.FirstKey("newline"); got != "ctrl+j" {
+		t.Errorf("newline is advertised as %q; only ctrl+j arrives unaided", got)
+	}
+	if !km.Is(tea.KeyMsg{Type: tea.KeyCtrlJ}, "newline") {
+		t.Error("ctrl+j does not trigger the newline action")
 	}
 }
 
-// The whole point: a shift+enter from the terminal must end up triggering the
-// newline action. It arrives as an escape sequence, is translated on the way
-// in, and only then meets the keymap — so both halves are checked together.
-func TestShiftEnterFromTheTerminalTriggersNewline(t *testing.T) {
+// shift+enter stays bound for terminals that have been mapped to send it, and
+// the sequence they send is translated to the newline byte on the way in.
+func TestAMappedShiftEnterStillProducesANewline(t *testing.T) {
 	km := NewKeyMap(nil)
 	for _, seq := range shiftEnterSequences {
 		out := make([]byte, 16)
 		n, _ := ExtendedKeyReader(bytes.NewReader(seq)).Read(out)
-		translated := out[:n]
-		if !bytes.Equal(translated, []byte{newlineByte}) {
-			t.Fatalf("%q translated to %q, want a single newline byte", seq, translated)
+		if got := out[:n]; !bytes.Equal(got, []byte{newlineByte}) {
+			t.Fatalf("%q translated to %q, want a single newline byte", seq, got)
 		}
-		// That byte is what bubbletea reports as ctrl+j.
-		if !km.Is(tea.KeyMsg{Type: tea.KeyCtrlJ}, "newline") {
-			t.Error("the translated key does not trigger the newline action")
+	}
+	if !km.Is(tea.KeyMsg{Type: tea.KeyCtrlJ}, "newline") {
+		t.Error("the translated byte does not trigger the newline action")
+	}
+	if !strings.Contains(km.KeysFor("newline"), "shift+enter") {
+		t.Error("shift+enter is no longer bound; a mapped terminal would do nothing")
+	}
+}
+
+// The help must not promise shift+enter works on its own — that promise is
+// what made this a bug report twice.
+func TestNewlineHelpSaysAMappingIsNeeded(t *testing.T) {
+	for _, a := range actions {
+		if a.Name != "newline" {
+			continue
+		}
+		if !strings.Contains(a.Help, "terminal mapping") {
+			t.Errorf("the newline help does not say a mapping is needed: %q", a.Help)
 		}
 	}
 }
 
-// ctrl+j is the same key on the wire and works with no protocol at all, so it
-// stays bound as the fallback for terminals that ignore the request.
-func TestCtrlJRemainsBound(t *testing.T) {
-	if !NewKeyMap(nil).Is(tea.KeyMsg{Type: tea.KeyCtrlJ}, "newline") {
-		t.Error("ctrl+j no longer inserts a newline")
-	}
-}
-
-// No alt bindings anywhere: it is a project rule, not a preference.
+// No alt bindings anywhere: it is a project rule.
 func TestNoAltBindings(t *testing.T) {
 	km := NewKeyMap(nil)
 	for _, a := range actions {
@@ -62,5 +73,25 @@ func TestPlainEnterStillSends(t *testing.T) {
 	}
 	if !km.Is(tea.KeyMsg{Type: tea.KeyEnter}, "send") {
 		t.Error("plain enter no longer sends")
+	}
+}
+
+// Nothing may be written to the terminal to turn a keyboard protocol on.
+// Asking for disambiguation moves ctrl+key and esc onto CSI-u, which bubbletea
+// swallows — so keys that work today would quietly stop, in exchange for
+// nothing, since the flag does not cover Enter anyway.
+func TestNoKeyboardProtocolIsEnabled(t *testing.T) {
+	for _, file := range []string{"extkeys.go", "../cli/cli.go"} {
+		src, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The CSI > … u form is how the protocol is pushed. Its absence in a
+		// string literal is what is being asserted; the prose above may name it.
+		for _, lit := range []string{`"\x1b[>`, `"\x1b[<`} {
+			if strings.Contains(string(src), lit) {
+				t.Errorf("%s still writes %s to the terminal", file, lit)
+			}
+		}
 	}
 }

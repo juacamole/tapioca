@@ -6,49 +6,42 @@ import (
 	"os"
 )
 
-// shift+enter is the documented way to write a second line, and for a long
-// time it did nothing. The reason is that a terminal sends the same byte for
-// enter and shift+enter — a bare CR — so there is nothing to bind to. Modern
-// terminals will encode the modifier, but only if the application asks, and
-// Bubbletea v1 neither asks nor decodes the result.
+// A terminal sends the same byte for enter and shift+enter — a bare CR — so
+// there is nothing to bind shift+enter to. That is not a gap Tapioca can close
+// on its own:
 //
-// So both halves are done here: ask the terminal to disambiguate, then rewrite
-// the sequence it sends into the one byte that already means "newline" on the
-// wire. Anything else keeps working untouched, and a terminal that ignores the
-// request is no worse off than before — ctrl+j still inserts a newline.
+//   - Kitty's "disambiguate escape codes" flag does not help. Its
+//     specification says outright that "the only exceptions are the Enter, Tab
+//     and Backspace keys which still generate the same bytes as in legacy
+//     mode". Enter is named as an exception.
+//   - The flag that would work is "report all keys as escape codes", which
+//     reports *every* key that way, letters included. Bubbletea v1 decodes no
+//     CSI-u at all — verified by feeding it both encodings and watching no key
+//     event arrive — so turning that on would silence the whole keyboard.
+//
+// Asking for disambiguation anyway would be worse than doing nothing: it also
+// moves ctrl+key and esc onto CSI-u, which Bubbletea would then swallow, so
+// keys that work today would stop.
+//
+// What is left is the half that does work. A terminal can be configured to
+// send a distinct sequence for shift+enter, and this rewrites that sequence
+// into the byte that already means newline. One line in kitty.conf:
+//
+//	map shift+enter send_text all \x1b[13;2u
+//
+// ctrl+j needs none of this and is what the app advertises.
 
-const (
-	// Push the Kitty keyboard protocol's "disambiguate escape codes" flag.
-	// Supported by kitty, ghostty, foot, WezTerm and recent iTerm2; ignored by
-	// terminals that do not know it, which is why this is safe to send blind.
-	extKeysEnable = "\x1b[>1u"
-	// Pop it again. Leaving it pushed would hand the user's shell a keyboard
-	// encoding it did not ask for, so this must run even when the app dies.
-	extKeysDisable = "\x1b[<u"
+// newlineByte is ctrl+j (LF), which Bubbletea reports as "ctrl+j" and the
+// newline action already binds. Translating to it means the rest of the app
+// never has to know any of this happened.
+const newlineByte = 0x0a
 
-	// newlineByte is ctrl+j (LF), which Bubbletea reports as "ctrl+j" and the
-	// newline action already binds. Translating to it means the rest of the
-	// app never has to know any of this happened.
-	newlineByte = 0x0a
-)
-
-// shiftEnterSequences are the encodings a terminal may use for shift+enter.
-// The first is the Kitty protocol form (CSI 13 ; 2 u); the second is xterm's
-// older modifyOtherKeys form, which some terminals send instead.
+// shiftEnterSequences are the encodings a terminal may be configured to send
+// for shift+enter. The first is the Kitty protocol form (CSI 13 ; 2 u); the
+// second is xterm's older modifyOtherKeys form.
 var shiftEnterSequences = [][]byte{
 	[]byte("\x1b[13;2u"),
 	[]byte("\x1b[27;2;13~"),
-}
-
-// EnableExtendedKeys asks the terminal to distinguish shift+enter from enter
-// and returns the function that undoes it. The caller must defer the result:
-// the flag lives in the terminal, not the process, and survives a crash.
-func EnableExtendedKeys() func() {
-	if os.Getenv("TAPIOCA_NO_EXTENDED_KEYS") != "" {
-		return func() {}
-	}
-	_, _ = os.Stdout.WriteString(extKeysEnable)
-	return func() { _, _ = os.Stdout.WriteString(extKeysDisable) }
 }
 
 // extKeyReader rewrites shift+enter sequences into a plain newline byte as

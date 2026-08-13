@@ -402,19 +402,16 @@ func Main() {
 	if args.resumePicker {
 		app.StartWithSessionPicker()
 	}
-	// The terminal sends the same byte for enter and shift+enter unless asked
-	// not to. Ask, and undo it on the way out — the flag lives in the terminal
-	// and would otherwise outlive the process.
-	restoreKeys := ui.EnableExtendedKeys()
-	defer restoreKeys()
-
+	// Nothing is asked of the terminal: the flag that would make shift+enter
+	// distinct reports every key as an escape code, and Bubbletea decodes none
+	// of them. The input is still filtered so a terminal configured to send a
+	// shift+enter sequence gets a newline out of it — see internal/ui/extkeys.go.
 	p := tea.NewProgram(app,
 		tea.WithAltScreen(),
 		tea.WithMouseCellMotion(),
 		tea.WithInput(ui.ExtendedKeyReader(os.Stdin)),
 	)
 	if _, err := p.Run(); err != nil {
-		restoreKeys()
 		fail(err)
 	}
 }
