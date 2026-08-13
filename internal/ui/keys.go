@@ -20,7 +20,10 @@ type Action struct {
 // operations, ctrl keys the frequent ones, no alt anywhere.
 var actions = []Action{
 	{"send", "send prompt", "enter", "chat"},
-	{"newline", "insert newline (shift+enter needs terminal support; ctrl+j is its wire form)", "shift+enter,ctrl+j", "chat"},
+	// shift+enter reaches this only because the terminal is asked to encode it
+	// and the sequence is translated on the way in — see internal/ui/extkeys.go.
+	// ctrl+j is the same key on the wire and works with no protocol at all.
+	{"newline", "insert newline", "shift+enter,ctrl+j", "chat"},
 	{"edit_prompt", "edit prompt in vim/$EDITOR", "ctrl+g", "chat"},
 	{"edit_system", "edit system prompt (use /systemprompt)", "", "chat"},
 	{"cancel", "stop generation / close overlay", "esc", "chat"},

@@ -60,7 +60,7 @@ func (m *App) helpContent(w int) string {
 		"mark chat text with the mouse — it is",
 		"  copied automatically",
 		"keybinds: [keys] in config (/settings)",
-		"shift+enter needs terminal support (README)",
+		"newline: shift+enter, or ctrl+j",
 	} {
 		b.WriteString(styDim.Render(truncate(n, w)) + "\n")
 	}
