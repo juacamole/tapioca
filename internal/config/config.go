@@ -16,6 +16,7 @@ type ProviderConfig struct {
 	BaseURL         string `toml:"base_url"`         // optional override
 	APIKey          string `toml:"api_key"`          // literal key (discouraged; prefer env)
 	APIKeyEnv       string `toml:"api_key_env"`      // env var holding the key
+	Auth            string `toml:"auth"`             // "oauth" authenticates from the provider CLI profile
 	ContextWindow   int    `toml:"context_window"`   // tokens; 0 = per-type default
 	APIVersion      string `toml:"api_version"`      // azure only; defaults to a known-good one
 	Region          string `toml:"region"`           // bedrock, vertex

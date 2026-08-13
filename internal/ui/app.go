@@ -99,8 +99,9 @@ type App struct {
 	dashSel      int  // selected settings row while editing
 
 	overlay   overlayKind
-	conn      []connEntry // last provider probe, for the connect picker
-	cred      *credForm   // in-flight credential entry, nil when closed
+	conn      []connEntry   // last provider probe, for the connect picker
+	cred      *credForm     // in-flight credential entry, nil when closed
+	credKind  provider.Kind // provider chosen in the connect screen
 	pick      picker
 	perms     []permEntry
 	textTitle string
@@ -735,12 +736,16 @@ func (m *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		chosen, closed := m.pick.handleKey(msg)
 		if chosen != nil {
+			// A selection may open something of its own: an unconfigured
+			// provider opens the credential form, one with a login opens a
+			// second picker. Closing must not close what the selection just
+			// opened, and checking the overlay alone is not enough — a new
+			// picker leaves it as overlayPicker. The picker's kind is what
+			// actually distinguishes "still the same screen".
+			wasKind := m.pick.kind
 			cmd := m.applyPick(*chosen)
-			// A selection may open an overlay of its own — picking an
-			// unconfigured provider opens the credential form. Closing the
-			// picker must not close what the selection just opened, so this
-			// only dismisses while the picker is still what is on screen.
-			if closed && m.overlay == overlayPicker {
+			opened := m.overlay != overlayPicker || m.pick.kind != wasKind
+			if closed && !opened {
 				m.dismissOverlay()
 			}
 			return m, cmd
@@ -1404,6 +1409,9 @@ func (m *App) applyPick(it pickerItem) tea.Cmd {
 
 	case pickConnect:
 		return m.applyConnect(it.value)
+
+	case pickAuthMethod:
+		return m.applyAuthMethod(it.value)
 
 	case pickSession:
 		return m.loadSessionByID(it.value)
