@@ -126,14 +126,18 @@ func (m *App) regionAt(x, y int) (region, int) {
 	if x < chatLeft || x >= chatLeft+chatW {
 		return regionNone, 0
 	}
-	vpTop := chatTop + 1
-	switch {
-	case y >= vpTop && y < vpTop+m.vp.Height:
-		return regionChat, 0
-	case y >= vpTop+m.vp.Height+1 && y < chatTop+chatH-1:
-		return regionInput, 0
+	if y < chatTop || y >= chatTop+chatH {
+		return regionNone, 0
 	}
-	return regionNone, 0
+	// Every row of the pane belongs to one half of it. The borders and the
+	// rule between the transcript and the input used to map to nothing, so a
+	// click landing on one silently did nothing — and whether you hit a border
+	// is a matter of a row or two, which is what made it look intermittent.
+	// A border is part of the thing it draws around.
+	if y < chatTop+1+m.vp.Height {
+		return regionChat, 0
+	}
+	return regionInput, 0
 }
 
 // handleChatMouse processes clicks (focus follows the mouse) and selection
