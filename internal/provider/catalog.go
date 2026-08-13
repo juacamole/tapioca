@@ -102,6 +102,17 @@ var Catalog = []Kind{
 		},
 	},
 	{
+		Type:  "vercel",
+		Label: "vercel",
+		Desc:  "hundreds of models from every vendor, behind one key",
+		URL:   "https://vercel.com/d?to=%2F%5Bteam%5D%2F%7E%2Fai-gateway%2Fapi-keys",
+		// Only the key: the gateway's address is fixed, and not having to know
+		// it is the reason this exists rather than a custom entry.
+		Fields: []Field{
+			{Key: "api_key", Label: "API key", Help: "vercel.com → AI Gateway → API keys", Secret: true},
+		},
+	},
+	{
 		Type:  "custom",
 		Label: "custom",
 		Desc:  "any server speaking the OpenAI API — a gateway, a proxy, a local model",
