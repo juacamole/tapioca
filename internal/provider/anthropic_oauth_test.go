@@ -128,6 +128,38 @@ func TestMissingCLIIsDistinctFromMissingLogin(t *testing.T) {
 	}
 }
 
+// A hardcoded brew command is wrong on any machine without Homebrew, which is
+// most of them — telling someone to run a command they do not have is the same
+// failure as telling them nothing.
+func TestInstallHintMatchesTheMachine(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("PATH", dir)
+	if got := installHint(); !strings.Contains(got, "go install") {
+		t.Errorf("with no brew present the hint is %q, want the go command", got)
+	}
+
+	// With brew on PATH the tap is the better answer.
+	if err := os.WriteFile(filepath.Join(dir, "brew"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := installHint(); !strings.Contains(got, "brew") {
+		t.Errorf("with brew present the hint is %q, want the brew command", got)
+	}
+}
+
+// The hint must never send a Nix user to nixpkgs for this: `ant` there is
+// Apache Ant, a Java build tool sharing the name, which would fail at
+// `ant auth login` in a way that looks like a bug in this app.
+func TestInstallHintNeverSuggestsTheNixpkgsAnt(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	got := installHint()
+	for _, bad := range []string{"nix-shell -p ant", "nix profile install nixpkgs#ant", "pkgs.ant"} {
+		if strings.Contains(got, bad) {
+			t.Errorf("hint %q suggests %q, which installs Apache Ant", got, bad)
+		}
+	}
+}
+
 func TestLoggedOutSaysHowToLogIn(t *testing.T) {
 	stubAnt(t, `echo "no active profile" >&2; exit 1`)
 	_, err := oauthToken(context.Background())
@@ -176,5 +208,30 @@ func TestOAuthWritesNoTokenToConfig(t *testing.T) {
 	}
 	if cfg.APIKey != "" || strings.Contains(cfg.APIKeyEnv, "oat01") {
 		t.Error("the token reached the provider config")
+	}
+}
+
+// Apache Ant on PATH must be named as the problem. Its own failures — an
+// unknown-argument complaint, or "build.xml does not exist" — are
+// unrecognisable as the wrong program to someone who has just been told to
+// install "the Anthropic CLI", and read as a bug in this app instead.
+func TestApacheAntIsRecognisedAsTheWrongProgram(t *testing.T) {
+	stubAnt(t, `
+if [ "$1" = "-version" ]; then
+  echo "Apache Ant(TM) version 1.10.17 compiled on April 6 2026"
+  exit 0
+fi
+echo "Unknown argument: --access-token" >&2
+exit 1`)
+
+	ok, why := AnthropicOAuthAvailable()
+	if ok {
+		t.Fatal("Apache Ant was accepted as the Anthropic CLI")
+	}
+	if !strings.Contains(why, "Apache Ant") {
+		t.Errorf("reason %q does not name Apache Ant as the problem", why)
+	}
+	if strings.Contains(why, "Unknown argument") {
+		t.Errorf("reason %q passes through Apache Ant's own error instead of explaining it", why)
 	}
 }

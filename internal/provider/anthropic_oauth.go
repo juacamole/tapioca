@@ -82,17 +82,50 @@ func oauthShadowed() string {
 	return ""
 }
 
+// installHint names a command that will actually work on this machine. A
+// single hardcoded suggestion is wrong for most people: Homebrew is not
+// present on a NixOS or plain Linux box, and telling someone to run a command
+// they do not have is the same failure as telling them nothing.
+//
+// Nix users get the Go command rather than a nixpkgs one on purpose. The CLI
+// is not in nixpkgs, and `nix-shell -p ant` installs Apache Ant — a Java build
+// tool that shares the name and will fail at `ant auth login` in a way that
+// looks like a Tapioca bug.
+func installHint() string {
+	if _, err := exec.LookPath("brew"); err == nil {
+		return "brew install anthropics/tap/ant"
+	}
+	return "go install github.com/anthropics/anthropic-cli/cmd/ant@latest"
+}
+
+// wrongAnt reports whether the ant on PATH is Apache Ant rather than the
+// Anthropic CLI. They share a name, Apache Ant is what package managers hand
+// you when you ask for "ant", and its failures are unrecognisable as the wrong
+// program: an unknown-argument complaint, or "build.xml does not exist". A
+// user who has just been told to install the Anthropic CLI reads those as a
+// bug in this app.
+func wrongAnt() bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, _ := exec.CommandContext(ctx, antBinary, "-version").CombinedOutput()
+	return strings.Contains(string(out), "Apache Ant")
+}
+
 // AnthropicOAuthAvailable reports whether a login could be attempted, and why
-// not when it could not. The UI needs the reason: an absent CLI and an absent
-// login have different fixes, and reporting either as "auth failed" sends the
-// user looking in the wrong place.
+// not when it could not. The UI needs the reason: an absent CLI, the wrong
+// program under the same name, and an absent login are three different
+// problems with three different fixes, and reporting any of them as "auth
+// failed" sends the user looking in the wrong place.
 func AnthropicOAuthAvailable() (bool, string) {
 	if _, err := exec.LookPath(antBinary); err != nil {
-		return false, "install the Anthropic CLI: brew install anthropics/tap/ant"
+		return false, "the Anthropic CLI is not installed" + " — " + installHint()
+	}
+	if wrongAnt() {
+		return false, "the `ant` on your PATH is Apache Ant, not the Anthropic CLI — " + installHint()
 	}
 	if _, err := oauthToken(context.Background()); err != nil {
 		if errors.Is(err, ErrNoAntCLI) {
-			return false, "install the Anthropic CLI: brew install anthropics/tap/ant"
+			return false, "the Anthropic CLI is not installed" + " — " + installHint()
 		}
 		return false, err.Error()
 	}
