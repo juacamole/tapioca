@@ -122,13 +122,138 @@ func (m *App) panelBox(d *panelDef, a *agent.Agent, w, h int, focused bool) stri
 		innerH = 1
 	}
 	contentH := innerH - 1 // minus title line
-	lines := fitLines(d.render(m, a, innerW, contentH), innerW, contentH)
+	all := d.render(m, a, innerW, contentH)
+	off := m.panelScrollFor(d.key, len(all), contentH)
+	lines := fitLinesFrom(all, innerW, contentH, off)
 	title := d.title
 	if d.key == "settings" && m.dashEditing && focused {
 		title += "" + gl.sep + "editing"
 	}
+	// Say when there is more, and which way. Without this a truncated panel is
+	// indistinguishable from one that simply has little to show.
+	if mark := scrollMark(off, len(all), contentH); mark != "" {
+		title += " " + mark
+	}
 	content := styPanelTitle.Render(truncate(title, innerW)) + "\n" + strings.Join(lines, "\n")
 	return borderStyle(focused).Width(innerW).Height(innerH).Render(content)
+}
+
+// scrollMark shows which way a panel continues past its edge, or "" when it
+// all fits.
+func scrollMark(off, total, visible int) string {
+	if total <= visible {
+		return ""
+	}
+	switch {
+	case off <= 0:
+		return gl.moreDown
+	case off >= total-visible:
+		return gl.moreUp
+	default:
+		return gl.moreUp + gl.moreDown
+	}
+}
+
+// panelScrollFor returns a panel's scroll offset, clamped to what its content
+// allows. Clamping on read rather than on write means a panel that shrinks —
+// a resize, a tool call finishing — cannot be left scrolled past its end.
+func (m *App) panelScrollFor(key string, total, visible int) int {
+	maxOff := max(0, total-visible)
+	off := m.dashScroll[key]
+	if off > maxOff {
+		off = maxOff
+	}
+	if off < 0 {
+		off = 0
+	}
+	return off
+}
+
+// scrollPanel moves a panel's offset by delta and reports whether it moved.
+func (m *App) scrollPanel(key string, delta, total, visible int) bool {
+	if total <= visible {
+		return false
+	}
+	before := m.panelScrollFor(key, total, visible)
+	if m.dashScroll == nil {
+		m.dashScroll = map[string]int{}
+	}
+	m.dashScroll[key] = before + delta
+	return m.panelScrollFor(key, total, visible) != before
+}
+
+// revealRow scrolls a panel just far enough to bring a row into view, so
+// walking the settings with the arrow keys cannot step onto a row that is not
+// on screen.
+func (m *App) revealRow(key string, row, total, visible int) {
+	if total <= visible {
+		return
+	}
+	if m.dashScroll == nil {
+		m.dashScroll = map[string]int{}
+	}
+	off := m.panelScrollFor(key, total, visible)
+	switch {
+	case row < off:
+		off = row
+	case row >= off+visible:
+		off = row - visible + 1
+	}
+	m.dashScroll[key] = off
+}
+
+// panelContentHeight is how many lines of a panel's body are on screen, and
+// how many it has in total. Both come from the same layout the renderer uses,
+// so scrolling can never disagree with what is drawn.
+func (m *App) panelContentHeight(defs []*panelDef, i int) (total, visible int) {
+	if i < 0 || i >= len(defs) {
+		return 0, 0
+	}
+	dashW, dashH := m.dashDims()
+	bodyH := m.h - 3
+	var sizes []int
+	var w int
+	if dashW > 0 {
+		_, sizes, _ = m.dashLayout(dashW, bodyH)
+		w = dashW
+	} else {
+		_, sizes, _ = m.dashLayout(m.w, dashH)
+	}
+	if i >= len(sizes) {
+		return 0, 0
+	}
+	h := sizes[i]
+	if dashW == 0 {
+		w, h = sizes[i], dashH
+	}
+	innerW, innerH := w-2, h-2
+	if innerH < 1 {
+		innerH = 1
+	}
+	visible = innerH - 1 // minus the title line
+	total = len(defs[i].render(m, m.mgr.ActiveAgent(), innerW, visible))
+	return total, visible
+}
+
+// scrollFocusedPanel scrolls the selected panel by a page.
+func (m *App) scrollFocusedPanel(defs []*panelDef, dir int) {
+	i := m.dashPanelSel
+	total, visible := m.panelContentHeight(defs, i)
+	if visible < 1 {
+		return
+	}
+	step := max(1, visible-1) // keep a line of overlap, as a pager does
+	m.scrollPanel(defs[i].key, dir*step, total, visible)
+}
+
+// revealSettingsRow keeps the row being edited on screen.
+func (m *App) revealSettingsRow(defs []*panelDef) {
+	i := m.dashPanelSel
+	if i < 0 || i >= len(defs) || defs[i].key != "settings" {
+		return
+	}
+	total, visible := m.panelContentHeight(defs, i)
+	m.revealRow("settings", m.dashSel, total, visible)
 }
 
 // panelFocused reports whether panel index i has dashboard focus.
@@ -169,8 +294,16 @@ func (m *App) renderDashboardRow(w, h int) string {
 	return lipgloss.JoinHorizontal(lipgloss.Top, boxes...)
 }
 
-// fitLines pads/truncates lines to exactly h rows of width ≤ w.
-func fitLines(lines []string, w, h int) []string {
+// fitLinesFrom pads and truncates lines to exactly h rows of width ≤ w,
+// starting at a scroll offset. Content that did not fit used to be cut off and
+// unreachable — the settings panel has ten rows and is routinely given fewer.
+func fitLinesFrom(lines []string, w, h, offset int) []string {
+	if offset > 0 {
+		if offset > len(lines) {
+			offset = len(lines)
+		}
+		lines = lines[offset:]
+	}
 	if len(lines) > h {
 		lines = lines[:h]
 	}

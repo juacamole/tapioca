@@ -9,6 +9,7 @@ import (
 
 	"tapioca/internal/agent"
 	"tapioca/internal/config"
+	"tapioca/internal/mcp"
 )
 
 // press builds the message bubbletea delivers for a left click.
@@ -19,7 +20,7 @@ func press(x, y int) tea.MouseMsg {
 func dashApp(t *testing.T, w, h int) *App {
 	t.Helper()
 	cfg := config.Default()
-	mgr := agent.NewManager(cfg, nil, nil)
+	mgr := agent.NewManager(cfg, mcp.NewRegistry(), nil)
 	mgr.Agents = []*agent.Agent{{ID: 1}}
 	m := &App{cfg: cfg, w: w, h: h, ready: true, mgr: mgr}
 	m.ta = textarea.New()
