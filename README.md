@@ -70,6 +70,7 @@ and `CRUSH.md`, so instructions written for other tools work unchanged.
 |---|---|
 | `/help` | keybinds and commands |
 | `/model [provider:]name` | switch model (no argument opens a picker) |
+| `/connect` | connect a provider or account |
 | `/effort [level]` | thinking effort (no argument opens a picker) |
 | `/thinking` | toggle thinking |
 | `/tools` | toggle tools for this agent |
@@ -85,6 +86,7 @@ and `CRUSH.md`, so instructions written for other tools work unchanged.
 | `/clear` | clear this agent's conversation |
 | `/cd dir` | change the working directory |
 | `/diff` | git diff of the working directory |
+| `/log` | recent messages and errors |
 | `/permissions` | what runs without approval |
 | `/checkpoints` | pick a checkpoint to rewind to |
 | `/rewind [n\|id]` | rewind file changes |
