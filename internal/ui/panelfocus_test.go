@@ -23,6 +23,7 @@ func dashApp(t *testing.T, w, h int) *App {
 	mgr := agent.NewManager(cfg, mcp.NewRegistry(), nil)
 	mgr.Agents = []*agent.Agent{{ID: 1}}
 	m := &App{cfg: cfg, w: w, h: h, ready: true, mgr: mgr}
+	m.keys = NewKeyMap(nil)
 	m.ta = textarea.New()
 	m.vp = viewport.New(w, h)
 	m.recalcLayout()

@@ -94,9 +94,10 @@ type App struct {
 	spin spinner.Model
 
 	focus        focusArea
-	dashPanelSel int  // focused panel when the dashboard has focus
-	dashEditing  bool // inside the settings panel, editing rows
-	dashSel      int  // selected settings row while editing
+	dashPanelSel int          // focused panel when the dashboard has focus
+	dashEditing  bool         // inside the settings panel, editing rows
+	dashSel      int          // selected settings row while editing
+	setEdit      *settingEdit // a numeric settings row being typed into
 	// dashScroll is each panel's scroll offset, by panel key. Per panel rather
 	// than one shared offset, so scrolling the tool list does not also move the
 	// settings you were part way down.
@@ -777,6 +778,13 @@ func (m *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case m.keys.Is(msg, "cancel"):
+		// The innermost open thing gets escape first: a typed field, then
+		// editing mode. This case was reached before the dashboard ever saw
+		// the key, so the settings panel's own "esc done" did nothing.
+		// Generation is still stoppable with ctrl+c.
+		if m.focus == focusDash && (m.setEdit != nil || m.dashEditing) {
+			return m.handleDashKey(msg, a)
+		}
 		if a != nil {
 			if c := m.compacting[a.ID]; c != nil {
 				c()
@@ -1244,6 +1252,11 @@ func (m *App) handleDashKey(msg tea.KeyMsg, a *agent.Agent) (tea.Model, tea.Cmd)
 	}
 
 	if m.dashEditing {
+		// A typed field owns the keyboard while it is open, or digits would
+		// leak through and step the value underneath at the same time.
+		if m.setEdit != nil {
+			return m.handleSettingInput(msg, a)
+		}
 		n := len(settingsRows)
 		switch {
 		case m.keys.Is(msg, "cancel"):
@@ -1325,13 +1338,25 @@ func (m *App) activateSetting(a *agent.Agent) tea.Cmd {
 	if a == nil {
 		return nil
 	}
-	switch settingsRows[m.dashSel].key {
-	case "model":
+	key := settingsRows[m.dashSel].key
+	switch {
+	case key == "model":
 		m.setFlash("loading models…", false)
 		return tea.Batch(m.loadModelsCmd(), m.flashCmd())
+	case isNumericSetting(key):
+		// Enter opens the value for typing. Stepping is still on the arrows,
+		// which suits a nudge; enter is for when you know the number.
+		m.openSettingInput(key, m.settingValue(key, a))
+		return nil
 	default:
 		return m.adjustSetting(a, +1)
 	}
+}
+
+// isNumericSetting reports whether a settings row takes a typed number.
+func isNumericSetting(key string) bool {
+	_, ok := numericSettings[key]
+	return ok
 }
 
 // adjustSetting changes the selected settings row, applies it to the active

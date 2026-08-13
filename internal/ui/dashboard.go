@@ -691,6 +691,13 @@ func renderSettingsPanel(m *App, a *agent.Agent, w, h int) []string {
 	for i, r := range settingsRows {
 		val := m.settingValue(r.key, a)
 		if editing && i == m.dashSel {
+			// While a value is being typed the row shows the field, so the
+			// number under the cursor is the one that will be applied.
+			if m.setEdit != nil && m.setEdit.key == r.key {
+				line := fmt.Sprintf("> %-13s %s", r.label, m.settingInputView())
+				lines = append(lines, truncate(line, w))
+				continue
+			}
 			line := fmt.Sprintf("> %-13s %s", r.label, val)
 			lines = append(lines, stySelected.Render(padRight(truncate(line, w), w)))
 			continue
@@ -700,8 +707,14 @@ func renderSettingsPanel(m *App, a *agent.Agent, w, h int) []string {
 	}
 	if !zenMode {
 		switch {
+		case m.setEdit != nil && editing:
+			if m.setEdit.err != "" {
+				lines = append(lines, styErr.Render(truncate(m.setEdit.err, w)))
+			} else {
+				lines = append(lines, styDim.Render("type a number"+gl.sep+"enter saves"+gl.sep+"esc cancels"))
+			}
 		case editing:
-			lines = append(lines, styDim.Render("arrows adjust"+gl.sep+"enter pick"+gl.sep+"esc done"))
+			lines = append(lines, styDim.Render("arrows adjust"+gl.sep+"enter type/pick"+gl.sep+"esc done"))
 		case m.focus == focusDash:
 			lines = append(lines, styDim.Render("enter to edit"+gl.sep+"shift+arrows move panel"))
 		default:
