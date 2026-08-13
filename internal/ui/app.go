@@ -1018,7 +1018,7 @@ func (m *App) handleInputKey(msg tea.KeyMsg, a *agent.Agent) (tea.Model, tea.Cmd
 	if a != nil {
 		s := msg.String()
 		if s == "up" && (m.recalling || strings.TrimSpace(m.ta.Value()) == "") {
-			prompts := userPrompts(a)
+			prompts := recallHistory(a)
 			if len(prompts) > 0 {
 				if !m.recalling {
 					m.recalling = true
@@ -1038,7 +1038,7 @@ func (m *App) handleInputKey(msg tea.KeyMsg, a *agent.Agent) (tea.Model, tea.Cmd
 			}
 		}
 		if s == "down" && m.recalling {
-			prompts := userPrompts(a)
+			prompts := recallHistory(a)
 			m.recallIdx--
 			if m.recallIdx > len(prompts) {
 				m.recallIdx = len(prompts)
@@ -1066,14 +1066,22 @@ func (m *App) handleInputKey(msg tea.KeyMsg, a *agent.Agent) (tea.Model, tea.Cmd
 	return m, cmd
 }
 
-// userPrompts lists the agent's past user prompts, oldest first.
-func userPrompts(a *agent.Agent) []string {
+// recallHistory lists everything the user typed at this agent, oldest first:
+// prompts and slash commands together. They are stored differently — a prompt
+// is a user message, a slash command is a "note" written by noteSlash — but
+// from the input box they were one sequence of things typed, and recall that
+// silently drops half of them means retyping a command to fix a typo in it.
+func recallHistory(a *agent.Agent) []string {
 	var out []string
 	for _, msg := range a.Messages {
-		if msg.Role == "user" && !msg.IsToolResult() && !msg.Hidden {
-			if t := msg.Text(); strings.TrimSpace(t) != "" {
-				out = append(out, t)
-			}
+		switch {
+		case msg.Role == "user" && !msg.IsToolResult() && !msg.Hidden:
+		case msg.Role == "note":
+		default:
+			continue
+		}
+		if t := strings.TrimSpace(msg.Text()); t != "" {
+			out = append(out, t)
 		}
 	}
 	return out
