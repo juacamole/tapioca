@@ -175,15 +175,15 @@ func (m *App) applyConnect(typ string) tea.Cmd {
 	// is no use: the list already showed it, and selecting a broken provider
 	// means "let me fix this". Reporting without offering a fix is the dead
 	// end this whole screen exists to remove.
-	switch {
-	case len(e.kind.Fields) == 1 || singleSecret(e.kind):
-		m.openCredentialEntry(e.kind)
-	default:
-		// Providers needing several fields are #137; until then, say what they
-		// need rather than opening a form that can only ask for one of them.
+	// The form asks for as many fields as the provider declares, so every
+	// provider goes through it. A provider with nothing to configure has an
+	// empty field list and would open an empty form, which is the one case
+	// worth reporting instead.
+	if len(e.kind.Fields) == 0 {
 		m.setFlash(e.kind.Needs(), false)
 		return m.flashCmd()
 	}
+	m.openCredentialEntry(e.kind)
 	return nil
 }
 
@@ -205,18 +205,6 @@ func (m *App) useProvider(name string) tea.Cmd {
 	m.saveCfg()
 	m.setFlash("using "+name, false)
 	return m.flashCmd()
-}
-
-// singleSecret reports whether a provider needs exactly one required value,
-// which is the shape the entry flow handles.
-func singleSecret(k provider.Kind) bool {
-	n := 0
-	for _, f := range k.Fields {
-		if !f.Optional {
-			n++
-		}
-	}
-	return n == 1
 }
 
 // cmdConnect starts the probe. It reports progress first because the sweep

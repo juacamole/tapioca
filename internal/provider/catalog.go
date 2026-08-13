@@ -15,6 +15,7 @@ type Field struct {
 	Secret   bool   // masked on entry and never echoed anywhere
 	Optional bool
 	Default  string
+	Choices  []string // when set, the value is picked rather than typed
 }
 
 // Kind describes a provider type: what to call it, and what it needs.
@@ -98,6 +99,22 @@ var Catalog = []Kind{
 			{Key: "base_url", Label: "endpoint", Help: "https://<resource>.openai.azure.com"},
 			{Key: "api_key", Label: "API key", Help: "the resource's key in the Azure portal", Secret: true},
 			{Key: "api_version", Label: "API version", Help: "blank uses a known-good one", Optional: true},
+		},
+	},
+	{
+		Type:  "custom",
+		Label: "custom",
+		Desc:  "any server speaking the OpenAI API — a gateway, a proxy, a local model",
+		Fields: []Field{
+			{Key: "base_url", Label: "address", Help: "the API root, e.g. https://api.example.com/v1"},
+			{Key: "auth_style", Label: "auth", Help: "where the credential goes",
+				Default: "bearer", Choices: []string{"bearer", "header", "query", "none"}},
+			{Key: "api_key", Label: "API key", Help: "leave blank only with auth: none",
+				Secret: true, Optional: true},
+			{Key: "auth_header", Label: "header name", Help: "only for auth: header, e.g. X-API-Key",
+				Optional: true},
+			{Key: "auth_query", Label: "query name", Help: "only for auth: query, e.g. key",
+				Optional: true},
 		},
 	},
 }
