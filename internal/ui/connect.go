@@ -165,21 +165,31 @@ func (m *App) applyConnect(typ string) tea.Cmd {
 	if !ok {
 		return nil
 	}
-	switch e.state {
-	case connReady:
+	if e.state == connReady {
 		return m.useProvider(e.name)
-	case connFailing:
-		m.setFlash(e.kind.Label+gl.sep+e.detail, true)
+	}
+
+	// Failing and unconfigured take the same path. The default config ships an
+	// anthropic entry, so that provider is never "unconfigured" — it is
+	// configured and broken until a key exists, and reporting the error again
+	// is no use: the list already showed it, and selecting a broken provider
+	// means "let me fix this". Reporting without offering a fix is the dead
+	// end this whole screen exists to remove.
+	switch {
+	case e.kind.OAuth:
+		// Where a login exists, choosing between it and a pasted key is the
+		// user's call: the login avoids managing a static key, the key avoids
+		// installing anything.
+		m.openAuthMethodPicker(e.kind)
+	case len(e.kind.Fields) == 1 || singleSecret(e.kind):
+		m.openCredentialEntry(e.kind)
 	default:
-		if len(e.kind.Fields) == 1 || singleSecret(e.kind) {
-			m.openCredentialEntry(e.kind)
-			return nil
-		}
 		// Providers needing several fields are #137; until then, say what they
 		// need rather than opening a form that can only ask for one of them.
 		m.setFlash(e.kind.Needs(), false)
+		return m.flashCmd()
 	}
-	return m.flashCmd()
+	return nil
 }
 
 // useProvider points the active agent at a provider that is known to work.

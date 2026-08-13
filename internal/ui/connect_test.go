@@ -102,3 +102,47 @@ func TestReachableButEmptyCountsAsFailing(t *testing.T) {
 		t.Error("a failing provider must say why")
 	}
 }
+
+// The default config ships an anthropic entry, so that provider is never
+// "unconfigured" — it is configured and broken until a key exists. Selecting
+// it used to re-report the error the list had already shown, which is the same
+// dead end this screen exists to remove: a problem stated, with no way to act
+// on it.
+func TestSelectingAFailingProviderOffersAFix(t *testing.T) {
+	anthropic, _ := provider.KindFor("anthropic")
+	m := &App{cfg: config.Default(), w: 100, h: 30}
+	m.conn = []connEntry{{
+		kind: anthropic, name: "anthropic",
+		state: connFailing, detail: "anthropic: no API key",
+	}}
+	m.overlay = overlayPicker
+
+	m.applyConnect("anthropic")
+
+	if m.overlay == overlayNone {
+		t.Fatal("selecting a failing provider closed the screen without offering a fix")
+	}
+	if m.pick.kind != pickAuthMethod {
+		t.Errorf("picker kind = %v, want the auth-method choice", m.pick.kind)
+	}
+}
+
+// Opening a second picker leaves the overlay as overlayPicker, so a guard that
+// checks only the overlay would dismiss what the selection just opened. The
+// kind is what distinguishes "still the same screen".
+func TestSelectingDoesNotDismissWhatItOpened(t *testing.T) {
+	anthropic, _ := provider.KindFor("anthropic")
+	m := &App{cfg: config.Default(), w: 100, h: 30}
+	m.conn = []connEntry{{kind: anthropic, state: connUnset}}
+	m.openConnectPicker(m.conn)
+
+	before := m.pick.kind
+	m.applyConnect("anthropic")
+
+	if m.pick.kind == before {
+		t.Fatal("no new screen was opened")
+	}
+	if m.overlay != overlayPicker {
+		t.Errorf("overlay = %v, want the newly opened picker", m.overlay)
+	}
+}

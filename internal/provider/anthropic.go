@@ -19,7 +19,8 @@ import (
 type Anthropic struct {
 	name    string
 	baseURL string
-	apiKey  string
+	apiKey  string // empty when authenticating by OAuth
+	oauth   bool
 	client  *http.Client
 }
 
@@ -33,17 +34,43 @@ func NewAnthropic(name string, cfg config.ProviderConfig) (*Anthropic, error) {
 	if key == "" {
 		key = os.Getenv(env)
 	}
-	if key == "" {
-		return nil, fmt.Errorf("anthropic: no API key (set providers.%s.api_key or $%s)", name, env)
-	}
 	base := strings.TrimSuffix(cfg.BaseURL, "/")
 	if base == "" {
 		base = "https://api.anthropic.com"
+	}
+	// An explicit oauth mode authenticates from the CLI profile instead of a
+	// key. A key still wins when both are configured, matching how the SDKs
+	// resolve credentials — but the connect screen reports that, because a
+	// login that silently does nothing is the worst version of this.
+	if cfg.Auth == "oauth" && key == "" {
+		return &Anthropic{name: name, baseURL: base, oauth: true, client: httpClient}, nil
+	}
+	if key == "" {
+		return nil, fmt.Errorf("anthropic: no API key (set providers.%s.api_key or $%s)", name, env)
 	}
 	return &Anthropic{name: name, baseURL: base, apiKey: key, client: httpClient}, nil
 }
 
 func (a *Anthropic) Name() string { return a.name }
+
+// authorize sets the credential headers. OAuth and key auth differ only here:
+// a bearer token on Authorization plus the oauth beta header, rather than
+// x-api-key. Both paths run through this so a new request site cannot be
+// written that authenticates one way and not the other.
+func (a *Anthropic) authorize(ctx context.Context, h http.Header) error {
+	h.Set("anthropic-version", "2023-06-01")
+	if !a.oauth {
+		h.Set("x-api-key", a.apiKey)
+		return nil
+	}
+	tok, err := oauthToken(ctx)
+	if err != nil {
+		return err
+	}
+	h.Set("Authorization", "Bearer "+tok)
+	h.Set("anthropic-beta", "oauth-2025-04-20")
+	return nil
+}
 
 type cacheControl struct {
 	Type string `json:"type"`
@@ -200,8 +227,9 @@ func (a *Anthropic) Stream(ctx context.Context, req Request, out chan<- Event) (
 		return Message{}, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("x-api-key", a.apiKey)
-	httpReq.Header.Set("anthropic-version", "2023-06-01")
+	if err := a.authorize(ctx, httpReq.Header); err != nil {
+		return Message{}, err
+	}
 
 	resp, err := a.client.Do(httpReq)
 	if err != nil {
@@ -222,8 +250,9 @@ func (a *Anthropic) ListModels(ctx context.Context) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("x-api-key", a.apiKey)
-	req.Header.Set("anthropic-version", "2023-06-01")
+	if err := a.authorize(ctx, req.Header); err != nil {
+		return nil, err
+	}
 	resp, err := a.client.Do(req)
 	if err != nil {
 		return nil, err
