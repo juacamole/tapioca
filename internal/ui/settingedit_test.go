@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"tapioca/internal/agent"
 )
@@ -31,12 +31,12 @@ func settingsApp(t *testing.T, rowKey string) (*App, *agent.Agent) {
 
 func typeKeys(m *App, s string) {
 	for _, r := range s {
-		m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
 	}
 }
 
-func enter(m *App) { m.Update(tea.KeyMsg{Type: tea.KeyEnter}) }
-func esc(m *App)   { m.Update(tea.KeyMsg{Type: tea.KeyEsc}) }
+func enter(m *App) { m.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) }
+func esc(m *App)   { m.Update(tea.KeyPressMsg{Code: tea.KeyEscape}) }
 
 // Reaching 32000 from 4096 by stepping is fifty-five presses of an arrow key.
 func TestMaxTokensCanBeTyped(t *testing.T) {
@@ -48,7 +48,7 @@ func TestMaxTokensCanBeTyped(t *testing.T) {
 	}
 	// Clear the seeded value, then type.
 	for range 8 {
-		m.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+		m.Update(tea.KeyPressMsg{Code: tea.KeyBackspace})
 	}
 	typeKeys(m, "32000")
 	enter(m)
@@ -68,7 +68,7 @@ func TestThinkBudgetCanBeTyped(t *testing.T) {
 	m, a := settingsApp(t, "budget")
 	enter(m)
 	for range 8 {
-		m.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+		m.Update(tea.KeyPressMsg{Code: tea.KeyBackspace})
 	}
 	typeKeys(m, "16384")
 	enter(m)
@@ -86,7 +86,7 @@ func TestNonNumericEntryIsRefusedAndKept(t *testing.T) {
 
 	enter(m)
 	for range 8 {
-		m.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+		m.Update(tea.KeyPressMsg{Code: tea.KeyBackspace})
 	}
 	typeKeys(m, "abc")
 	enter(m)
@@ -113,7 +113,7 @@ func TestOutOfRangeEntryIsRefusedWithTheRange(t *testing.T) {
 
 	enter(m)
 	for range 8 {
-		m.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+		m.Update(tea.KeyPressMsg{Code: tea.KeyBackspace})
 	}
 	typeKeys(m, "5")
 	enter(m)
@@ -136,7 +136,7 @@ func TestEscapeLeavesTheValueAlone(t *testing.T) {
 
 	enter(m)
 	for range 8 {
-		m.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+		m.Update(tea.KeyPressMsg{Code: tea.KeyBackspace})
 	}
 	typeKeys(m, "9999")
 	esc(m)
@@ -179,7 +179,7 @@ func TestTypedValueAcceptsThousandsSeparators(t *testing.T) {
 	m, a := settingsApp(t, "max_tokens")
 	enter(m)
 	for range 8 {
-		m.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+		m.Update(tea.KeyPressMsg{Code: tea.KeyBackspace})
 	}
 	typeKeys(m, "8,192")
 	enter(m)

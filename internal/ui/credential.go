@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
 
 	"tapioca/internal/config"
 	"tapioca/internal/provider"
@@ -121,7 +121,7 @@ func (m *App) focusField() {
 		in.SetValue(f.Default)
 	}
 	in.Focus()
-	in.Width = min(60, max(20, m.w-24))
+	in.SetWidth(min(60, max(20, m.w-24)))
 	c.input = in
 	c.state = credEntering
 	c.err = ""
@@ -260,7 +260,7 @@ func looksLikeKeyVar(name string) bool {
 }
 
 // handleCredentialKey drives the entry overlay.
-func (m *App) handleCredentialKey(msg tea.KeyMsg) (tea.Cmd, bool) {
+func (m *App) handleCredentialKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 	if m.cred == nil {
 		return nil, false
 	}

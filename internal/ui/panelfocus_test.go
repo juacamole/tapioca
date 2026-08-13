@@ -1,11 +1,11 @@
 package ui
 
 import (
-	"github.com/charmbracelet/bubbles/textarea"
-	"github.com/charmbracelet/bubbles/viewport"
+	"charm.land/bubbles/v2/textarea"
+	"charm.land/bubbles/v2/viewport"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"tapioca/internal/agent"
 	"tapioca/internal/config"
@@ -13,8 +13,8 @@ import (
 )
 
 // press builds the message bubbletea delivers for a left click.
-func press(x, y int) tea.MouseMsg {
-	return tea.MouseMsg{X: x, Y: y, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft}
+func press(x, y int) tea.MouseClickMsg {
+	return tea.MouseClickMsg{X: x, Y: y, Button: tea.MouseLeft}
 }
 
 func dashApp(t *testing.T, w, h int) *App {
@@ -22,10 +22,10 @@ func dashApp(t *testing.T, w, h int) *App {
 	cfg := config.Default()
 	mgr := agent.NewManager(cfg, mcp.NewRegistry(), nil)
 	mgr.Agents = []*agent.Agent{{ID: 1}}
-	m := &App{cfg: cfg, w: w, h: h, ready: true, mgr: mgr}
+	m := &App{cfg: cfg, w: w, h: h, ready: true, mgr: mgr, mouseOn: true}
 	m.keys = NewKeyMap(nil)
 	m.ta = textarea.New()
-	m.vp = viewport.New(w, h)
+	m.vp = viewport.New(viewport.WithWidth(w), viewport.WithHeight(h))
 	m.recalcLayout()
 	return m
 }

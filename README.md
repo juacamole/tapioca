@@ -107,20 +107,8 @@ and its name becomes a command of your own.
 
 ### Newlines in the prompt
 
-`ctrl+j` inserts a line break. `shift+enter` cannot work on its own: terminals
-send the same byte for it as for `enter`, and the one protocol flag that would
-separate them reports *every* key as an escape code, which no terminal library
-here can decode.
-
-Your terminal can send something distinct, and Tapioca will take it. In
-`kitty.conf`:
-
-```
-map shift+enter send_text all \x1b[13;2u
-```
-
-The xterm `modifyOtherKeys` form (`\x1b[27;2;13~`) is accepted too, so the
-equivalent mapping works in other terminals.
+`shift+enter` inserts a line break, and `ctrl+j` does the same in terminals
+without support for keyboard enhancements.
 
 ## CLI
 

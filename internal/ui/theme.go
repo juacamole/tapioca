@@ -1,12 +1,34 @@
 package ui
 
 import (
+	"image/color"
 	"sort"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 )
+
+// adaptiveColor is a light/dark pair. lipgloss v2 dropped AdaptiveColor —
+// it resolves the background once at startup rather than per style — so the
+// pair is kept here and resolved in one place, at the point a style is built.
+type adaptiveColor struct{ Light, Dark string }
+
+// darkBG is the terminal's background, decided once before the program runs.
+var darkBG = true
+
+// SetDarkBackground records whether the terminal background is dark. It must
+// be called before any style is built, since v2 resolves the pair rather than
+// deferring it the way AdaptiveColor did.
+func SetDarkBackground(dark bool) {
+	darkBG = dark
+	applyPalette(active)
+}
+
+// resolve picks the side of the pair this terminal wants.
+func (c adaptiveColor) resolve() color.Color {
+	return lipgloss.LightDark(darkBG)(lipgloss.Color(c.Light), lipgloss.Color(c.Dark))
+}
 
 // palette is one theme's colors as light/dark pairs. mono themes ignore the
 // colors entirely and lean on bold/faint/reverse, for terminals with a fixed
@@ -14,9 +36,9 @@ import (
 type palette struct {
 	desc                                                  string
 	mono                                                  bool
-	accent, dim, user, err, ok, warn, border, think, tool lipgloss.AdaptiveColor
-	codeBg                                                lipgloss.AdaptiveColor
-	agents                                                []lipgloss.AdaptiveColor
+	accent, dim, user, err, ok, warn, border, think, tool adaptiveColor
+	codeBg                                                adaptiveColor
+	agents                                                []adaptiveColor
 }
 
 const defaultTheme = "taro"
@@ -27,17 +49,17 @@ const defaultTheme = "taro"
 var themes = map[string]palette{
 	"taro": {
 		desc:   "violet accent, cool neutrals (default)",
-		accent: lipgloss.AdaptiveColor{Light: "#6C4FD8", Dark: "#A78BFA"},
-		dim:    lipgloss.AdaptiveColor{Light: "#8B8B98", Dark: "#6A6A78"},
-		user:   lipgloss.AdaptiveColor{Light: "#1F8A5D", Dark: "#6EE7A8"},
-		err:    lipgloss.AdaptiveColor{Light: "#D03050", Dark: "#FB7185"},
-		ok:     lipgloss.AdaptiveColor{Light: "#1F8A5D", Dark: "#6EE7A8"},
-		warn:   lipgloss.AdaptiveColor{Light: "#B45309", Dark: "#FBBF24"},
-		border: lipgloss.AdaptiveColor{Light: "#D9D9E3", Dark: "#33333E"},
-		think:  lipgloss.AdaptiveColor{Light: "#8E44AD", Dark: "#D8B4FE"},
-		tool:   lipgloss.AdaptiveColor{Light: "#1D6FB8", Dark: "#7CC7FF"},
-		codeBg: lipgloss.AdaptiveColor{Light: "#F1F1F6", Dark: "#232330"},
-		agents: []lipgloss.AdaptiveColor{
+		accent: adaptiveColor{Light: "#6C4FD8", Dark: "#A78BFA"},
+		dim:    adaptiveColor{Light: "#8B8B98", Dark: "#6A6A78"},
+		user:   adaptiveColor{Light: "#1F8A5D", Dark: "#6EE7A8"},
+		err:    adaptiveColor{Light: "#D03050", Dark: "#FB7185"},
+		ok:     adaptiveColor{Light: "#1F8A5D", Dark: "#6EE7A8"},
+		warn:   adaptiveColor{Light: "#B45309", Dark: "#FBBF24"},
+		border: adaptiveColor{Light: "#D9D9E3", Dark: "#33333E"},
+		think:  adaptiveColor{Light: "#8E44AD", Dark: "#D8B4FE"},
+		tool:   adaptiveColor{Light: "#1D6FB8", Dark: "#7CC7FF"},
+		codeBg: adaptiveColor{Light: "#F1F1F6", Dark: "#232330"},
+		agents: []adaptiveColor{
 			{Light: "#6C4FD8", Dark: "#A78BFA"},
 			{Light: "#1D6FB8", Dark: "#7CC7FF"},
 			{Light: "#0F766E", Dark: "#5EEAD4"},
@@ -48,17 +70,17 @@ var themes = map[string]palette{
 	},
 	"contrast": {
 		desc:   "colorblind-safe, high contrast",
-		accent: lipgloss.AdaptiveColor{Light: "#0072B2", Dark: "#56B4E9"},
-		dim:    lipgloss.AdaptiveColor{Light: "#6B6B6B", Dark: "#9A9A9A"},
-		user:   lipgloss.AdaptiveColor{Light: "#006B54", Dark: "#009E73"},
-		err:    lipgloss.AdaptiveColor{Light: "#B33A00", Dark: "#D55E00"},
-		ok:     lipgloss.AdaptiveColor{Light: "#006B54", Dark: "#009E73"},
-		warn:   lipgloss.AdaptiveColor{Light: "#9A6A00", Dark: "#E69F00"},
-		border: lipgloss.AdaptiveColor{Light: "#9A9A9A", Dark: "#5A5A5A"},
-		think:  lipgloss.AdaptiveColor{Light: "#8A4B72", Dark: "#CC79A7"},
-		tool:   lipgloss.AdaptiveColor{Light: "#0072B2", Dark: "#56B4E9"},
-		codeBg: lipgloss.AdaptiveColor{Light: "#EDEDED", Dark: "#2A2A2A"},
-		agents: []lipgloss.AdaptiveColor{
+		accent: adaptiveColor{Light: "#0072B2", Dark: "#56B4E9"},
+		dim:    adaptiveColor{Light: "#6B6B6B", Dark: "#9A9A9A"},
+		user:   adaptiveColor{Light: "#006B54", Dark: "#009E73"},
+		err:    adaptiveColor{Light: "#B33A00", Dark: "#D55E00"},
+		ok:     adaptiveColor{Light: "#006B54", Dark: "#009E73"},
+		warn:   adaptiveColor{Light: "#9A6A00", Dark: "#E69F00"},
+		border: adaptiveColor{Light: "#9A9A9A", Dark: "#5A5A5A"},
+		think:  adaptiveColor{Light: "#8A4B72", Dark: "#CC79A7"},
+		tool:   adaptiveColor{Light: "#0072B2", Dark: "#56B4E9"},
+		codeBg: adaptiveColor{Light: "#EDEDED", Dark: "#2A2A2A"},
+		agents: []adaptiveColor{
 			{Light: "#0072B2", Dark: "#56B4E9"},
 			{Light: "#B33A00", Dark: "#D55E00"},
 			{Light: "#006B54", Dark: "#009E73"},
@@ -128,12 +150,12 @@ func SetTheme(name string, overrides map[string]string) string {
 
 // parseColor accepts "#hex" for both backgrounds, or "#light/#dark" to differ
 // between them. Slash separates the pair so comma stays free for lists.
-func parseColor(val string) lipgloss.AdaptiveColor {
+func parseColor(val string) adaptiveColor {
 	light, dark, ok := strings.Cut(val, "/")
 	if !ok {
 		dark = light
 	}
-	return lipgloss.AdaptiveColor{
+	return adaptiveColor{
 		Light: strings.TrimSpace(light),
 		Dark:  strings.TrimSpace(dark),
 	}
@@ -147,7 +169,7 @@ func applyOverride(p *palette, key, val string) {
 		return
 	}
 	if strings.ToLower(strings.TrimSpace(key)) == "agents" {
-		var cols []lipgloss.AdaptiveColor
+		var cols []adaptiveColor
 		for _, part := range strings.Split(val, ",") {
 			if part = strings.TrimSpace(part); part != "" {
 				cols = append(cols, parseColor(part))
@@ -190,11 +212,11 @@ func applyOverride(p *palette, key, val string) {
 func applyPalette(p palette) {
 	colAccent, colBorder = p.accent, p.border
 
-	fg := func(c lipgloss.AdaptiveColor) lipgloss.Style {
+	fg := func(c adaptiveColor) lipgloss.Style {
 		if p.mono {
 			return lipgloss.NewStyle()
 		}
-		return lipgloss.NewStyle().Foreground(c)
+		return lipgloss.NewStyle().Foreground(c.resolve())
 	}
 
 	styAppTitle = fg(p.accent).Bold(true)
@@ -221,7 +243,7 @@ func applyPalette(p palette) {
 		styTabIdle = lipgloss.NewStyle().Faint(true)
 		styCode = lipgloss.NewStyle().Reverse(true)
 	} else {
-		styCode = lipgloss.NewStyle().Background(p.codeBg)
+		styCode = lipgloss.NewStyle().Background(p.codeBg.resolve())
 	}
 }
 
@@ -240,7 +262,7 @@ func borderStyle(focused bool) lipgloss.Style {
 	if focused {
 		c = colAccent
 	}
-	return lipgloss.NewStyle().Border(gl.border).BorderForeground(c)
+	return lipgloss.NewStyle().Border(gl.border).BorderForeground(c.resolve())
 }
 
 // applyTheme switches theme, persists it and repaints. Cached renders hold
@@ -304,9 +326,9 @@ func (m *App) openGlyphsPicker() {
 	m.overlay = overlayPicker
 }
 
-func agentColor(id int) lipgloss.TerminalColor {
+func agentColor(id int) color.Color {
 	if active.mono || len(active.agents) == 0 {
 		return lipgloss.NoColor{}
 	}
-	return active.agents[(id-1+len(active.agents))%len(active.agents)]
+	return active.agents[(id-1+len(active.agents))%len(active.agents)].resolve()
 }

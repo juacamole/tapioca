@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/BurntSushi/toml"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 
 	"tapioca/internal/acp"
 	"tapioca/internal/agent"
@@ -393,7 +393,9 @@ func Main() {
 		os.Exit(code)
 	}
 
-	ui.SetMarkdownDark(lipgloss.HasDarkBackground())
+	dark := lipgloss.HasDarkBackground(os.Stdin, os.Stdout)
+	ui.SetMarkdownDark(dark)
+	ui.SetDarkBackground(dark)
 	cfg.Theme = ui.SetTheme(cfg.Theme, cfg.Colors)
 	cfg.Glyphs = ui.SetGlyphs(cfg.Glyphs)
 	cfg.Wordmark = ui.SetWordmark(cfg.Wordmark)
@@ -402,15 +404,9 @@ func Main() {
 	if args.resumePicker {
 		app.StartWithSessionPicker()
 	}
-	// Nothing is asked of the terminal: the flag that would make shift+enter
-	// distinct reports every key as an escape code, and Bubbletea decodes none
-	// of them. The input is still filtered so a terminal configured to send a
-	// shift+enter sequence gets a newline out of it — see internal/ui/extkeys.go.
-	p := tea.NewProgram(app,
-		tea.WithAltScreen(),
-		tea.WithMouseCellMotion(),
-		tea.WithInput(ui.ExtendedKeyReader(os.Stdin)),
-	)
+	// Alt screen, mouse mode and keyboard enhancements are declared on the
+	// view now, not here — see App.View.
+	p := tea.NewProgram(app)
 	if _, err := p.Run(); err != nil {
 		fail(err)
 	}

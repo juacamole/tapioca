@@ -10,11 +10,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/spinner"
-	"github.com/charmbracelet/bubbles/textarea"
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/spinner"
+	"charm.land/bubbles/v2/textarea"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	rtrunc "github.com/muesli/reflow/truncate"
 	"github.com/muesli/reflow/wrap"
 
@@ -180,7 +180,7 @@ func NewApp(cfg *config.Config, mgr *agent.Manager, sessID, sessName string, cre
 		keys:        NewKeyMap(cfg.Keys),
 		mgr:         mgr,
 		ta:          ta,
-		vp:          viewport.New(0, 0),
+		vp:          viewport.New(viewport.WithWidth(0), viewport.WithHeight(0)),
 		spin:        sp,
 		mouseOn:     true,
 		probedCtx:   map[string]bool{},
@@ -287,7 +287,7 @@ func (m *App) openTextOverlay(title, content string) {
 	m.textTitle = title
 	w := min(m.w-8, 140)
 	h := max(5, m.h-9)
-	m.textVP = viewport.New(w-4, h-4)
+	m.textVP = viewport.New(viewport.WithWidth(w-4), viewport.WithHeight(h-4))
 	m.textVP.SetContent(content)
 	m.overlay = overlayText
 }
@@ -447,7 +447,7 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, gitTick()
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 
 	case tea.MouseMsg:
@@ -680,7 +680,7 @@ func (m *App) decidePerm(d tools.Decision) {
 	}
 }
 
-func (m *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m *App) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// The credential overlay owns the keyboard while open: every printable key
 	// is part of a secret being typed, so nothing may fall through to the
 	// global shortcuts.
@@ -713,13 +713,13 @@ func (m *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.overlay == overlayText || m.overlay == overlayHelp {
 		switch {
 		case m.keys.Is(msg, "scroll_up"):
-			m.textVP.SetYOffset(m.textVP.YOffset - 1)
+			m.textVP.SetYOffset(m.textVP.YOffset() - 1)
 		case m.keys.Is(msg, "scroll_down"):
-			m.textVP.SetYOffset(m.textVP.YOffset + 1)
+			m.textVP.SetYOffset(m.textVP.YOffset() + 1)
 		case m.keys.Is(msg, "page_up"):
-			m.textVP.SetYOffset(m.textVP.YOffset - m.textVP.Height)
+			m.textVP.SetYOffset(m.textVP.YOffset() - m.textVP.Height())
 		case m.keys.Is(msg, "page_down"):
-			m.textVP.SetYOffset(m.textVP.YOffset + m.textVP.Height)
+			m.textVP.SetYOffset(m.textVP.YOffset() + m.textVP.Height())
 		case m.keys.Is(msg, "scroll_top"):
 			m.textVP.GotoTop()
 		case m.keys.Is(msg, "scroll_bottom"):
@@ -827,12 +827,14 @@ func (m *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case m.keys.Is(msg, "toggle_mouse"):
 		m.mouseOn = !m.mouseOn
+		// The mode is declared on the view, so flipping the flag is the whole
+		// change — v2 turns reporting on and off from the next render.
 		if m.mouseOn {
 			m.setFlash("mouse captured — wheel scrolls the chat again", false)
-			return m, tea.Batch(tea.EnableMouseCellMotion, m.flashCmd())
+			return m, m.flashCmd()
 		}
 		m.setFlash("mouse released — select & copy text with your terminal, "+m.keys.FirstKey("toggle_mouse")+" to re-capture", false)
-		return m, tea.Batch(tea.DisableMouse, m.flashCmd())
+		return m, m.flashCmd()
 
 	case m.keys.Is(msg, "toggle_dashboard"):
 		m.cfg.Dashboard.Visible = !m.cfg.Dashboard.Visible
@@ -934,10 +936,10 @@ func (m *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// puts you in write mode, so the focus-scoped scroll keys were never
 	// reachable while typing.
 	case m.keys.Is(msg, "output_up"):
-		m.vp.SetYOffset(m.vp.YOffset - m.vp.Height/2)
+		m.vp.SetYOffset(m.vp.YOffset() - m.vp.Height()/2)
 		return m, nil
 	case m.keys.Is(msg, "output_down"):
-		m.vp.SetYOffset(m.vp.YOffset + m.vp.Height/2)
+		m.vp.SetYOffset(m.vp.YOffset() + m.vp.Height()/2)
 		return m, nil
 	}
 
@@ -952,13 +954,13 @@ func (m *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case m.keys.Is(msg, "copy_all"):
 			return m, m.copyAll()
 		case m.keys.Is(msg, "scroll_up"):
-			m.vp.SetYOffset(m.vp.YOffset - 1)
+			m.vp.SetYOffset(m.vp.YOffset() - 1)
 		case m.keys.Is(msg, "scroll_down"):
-			m.vp.SetYOffset(m.vp.YOffset + 1)
+			m.vp.SetYOffset(m.vp.YOffset() + 1)
 		case m.keys.Is(msg, "page_up"):
-			m.vp.SetYOffset(m.vp.YOffset - m.vp.Height)
+			m.vp.SetYOffset(m.vp.YOffset() - m.vp.Height())
 		case m.keys.Is(msg, "page_down"):
-			m.vp.SetYOffset(m.vp.YOffset + m.vp.Height)
+			m.vp.SetYOffset(m.vp.YOffset() + m.vp.Height())
 		case m.keys.Is(msg, "scroll_top"):
 			m.vp.GotoTop()
 		case m.keys.Is(msg, "scroll_bottom"):
@@ -975,7 +977,7 @@ func (m *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // handleInputKey processes keys while the prompt input is focused: slash
 // command completion, @-mention completion, prompt history recall, sending,
 // and typing.
-func (m *App) handleInputKey(msg tea.KeyMsg, a *agent.Agent) (tea.Model, tea.Cmd) {
+func (m *App) handleInputKey(msg tea.KeyPressMsg, a *agent.Agent) (tea.Model, tea.Cmd) {
 	if fs := m.mentionMatches(); len(fs) > 0 {
 		switch msg.String() {
 		case "up":
@@ -1069,7 +1071,7 @@ func (m *App) handleInputKey(msg tea.KeyMsg, a *agent.Agent) (tea.Model, tea.Cmd
 	var cmd tea.Cmd
 	before := strings.Count(m.ta.Value(), "\n")
 	m.ta, cmd = m.ta.Update(msg)
-	if msg.Type == tea.KeyRunes || msg.String() == "backspace" {
+	if msg.Text != "" || msg.String() == "backspace" {
 		m.recalling = false
 	}
 	if strings.Count(m.ta.Value(), "\n") != before {
@@ -1239,7 +1241,7 @@ func (m *App) fittedPanels() []*panelDef {
 
 // handleDashKey drives the dashboard: panel-level focus (move/reorder), and
 // row editing inside the settings panel.
-func (m *App) handleDashKey(msg tea.KeyMsg, a *agent.Agent) (tea.Model, tea.Cmd) {
+func (m *App) handleDashKey(msg tea.KeyPressMsg, a *agent.Agent) (tea.Model, tea.Cmd) {
 	defs := m.fittedPanels()
 	if len(defs) == 0 {
 		return m, nil
@@ -1749,8 +1751,8 @@ func (m *App) recalcLayout() {
 	}
 	m.ta.SetWidth(innerW)
 	m.ta.SetHeight(taH)
-	m.vp.Width = innerW
-	m.vp.Height = max(1, chatH-2-taH-1-attach)
+	m.vp.SetWidth(innerW)
+	m.vp.SetHeight(max(1, chatH-2-taH-1-attach))
 }
 
 func (m *App) refreshChat(force bool) {
@@ -1763,7 +1765,7 @@ func (m *App) refreshChat(force bool) {
 	atBottom := m.vp.AtBottom()
 	// Finalized messages arrive pre-wrapped from the message cache; only the
 	// streaming tail needs the overflow hard-wrap here.
-	content := wrap.String(renderConversation(a, max(10, m.vp.Width-1), m.spin.View(), m.cfg.Verbose, m.thinkingOpen), max(10, m.vp.Width))
+	content := wrap.String(renderConversation(a, max(10, m.vp.Width()-1), m.spin.View(), m.cfg.Verbose, m.thinkingOpen), max(10, m.vp.Width()))
 	m.chatStyled = strings.Split(content, "\n")
 	// Stripping ANSI from the whole transcript costs milliseconds and this
 	// runs on every spinner tick, so it is deferred until something actually
@@ -1791,8 +1793,23 @@ func (m *App) refreshChat(force bool) {
 
 // View --------------------------------------------------------------------
 
-// View implements tea.Model.
-func (m *App) View() string {
+// View implements tea.Model. v2 returns a View struct rather than a string;
+// the content is the same, wrapped.
+func (m *App) View() tea.View {
+	v := tea.NewView(m.render())
+	// v2 declares screen state on the view rather than through startup
+	// options. Keyboard enhancements are what make shift+enter a distinct key
+	// at all: the terminal is asked to encode modifiers, and v2 decodes them.
+	v.AltScreen = true
+	v.MouseMode = tea.MouseModeCellMotion
+	if !m.mouseOn {
+		v.MouseMode = tea.MouseModeNone
+	}
+	return v
+}
+
+// render builds the screen.
+func (m *App) render() string {
 	if !m.ready {
 		return "loading…"
 	}
@@ -1862,7 +1879,11 @@ func (m *App) renderBody(bodyH int) string {
 		content += styTool.Render("attached: "+strings.Join(labels, ", ")) + "\n"
 	}
 	content += m.ta.View()
-	chat := borderStyle(m.focus == focusInput || m.focus == focusChat).Width(innerW).Height(chatH - 2).Render(content)
+	// lipgloss v2 counts the border in Width and Height: they are the outer
+	// size of the frame, where v1 measured the content inside it. Passing the
+	// inner size here made every box two columns narrow, which showed up as
+	// the rule under the transcript wrapping onto a second line.
+	chat := borderStyle(m.focus == focusInput || m.focus == focusChat).Width(chatW).Height(chatH).Render(content)
 
 	switch {
 	case dashW == 0 && dashH == 0:
@@ -1971,7 +1992,7 @@ func (m *App) renderPerm(w, h int) string {
 }
 
 func (m *App) renderTextOverlay(w, h int) string {
-	content := styPanelTitle.Render(truncate(m.textTitle, m.textVP.Width)) + "\n" + m.textVP.View()
+	content := styPanelTitle.Render(truncate(m.textTitle, m.textVP.Width())) + "\n" + m.textVP.View()
 	if !zenMode {
 		content += "\n" + styDim.Render("j/k scroll"+gl.sep+"u/d page"+gl.sep+"g/G top/bottom"+gl.sep+"esc close")
 	}

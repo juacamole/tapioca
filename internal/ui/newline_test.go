@@ -1,57 +1,53 @@
 package ui
 
 import (
-	"bytes"
-	"os"
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 )
 
-// The advertised newline key has to be one that works with no terminal
-// configuration at all. shift+enter is not that key: terminals send the same
-// byte for it as for enter, and the flag that would separate them reports
-// every key as an escape code, which bubbletea cannot decode.
-func TestAdvertisedNewlineKeyWorksWithNoTerminalSetup(t *testing.T) {
+// shift+enter took three attempts. Terminals send the same byte for it as for
+// enter, so it cannot be told apart unless the terminal encodes modifiers —
+// and Bubbletea v1 could neither ask for that nor decode the answer. v2 does
+// both, so this is a key like any other now.
+func TestShiftEnterIsBoundToNewline(t *testing.T) {
 	km := NewKeyMap(nil)
-	if got := km.FirstKey("newline"); got != "ctrl+j" {
-		t.Errorf("newline is advertised as %q; only ctrl+j arrives unaided", got)
+	shiftEnter := tea.KeyPressMsg{Code: tea.KeyEnter, Mod: tea.ModShift}
+
+	if got := shiftEnter.String(); got != "shift+enter" {
+		t.Fatalf("bubbletea names this key %q, so the binding would never match", got)
 	}
-	if !km.Is(tea.KeyMsg{Type: tea.KeyCtrlJ}, "newline") {
-		t.Error("ctrl+j does not trigger the newline action")
+	if !km.Is(shiftEnter, "newline") {
+		t.Error("shift+enter does not insert a newline")
+	}
+	if got := km.FirstKey("newline"); got != "shift+enter" {
+		t.Errorf("newline is advertised as %q, want shift+enter", got)
 	}
 }
 
-// shift+enter stays bound for terminals that have been mapped to send it, and
-// the sequence they send is translated to the newline byte on the way in.
-func TestAMappedShiftEnterStillProducesANewline(t *testing.T) {
+// ctrl+j is the same key on the wire and needs no protocol at all, so it stays
+// as the fallback for terminals without keyboard enhancements.
+func TestCtrlJRemainsBoundToNewline(t *testing.T) {
 	km := NewKeyMap(nil)
-	for _, seq := range shiftEnterSequences {
-		out := make([]byte, 16)
-		n, _ := ExtendedKeyReader(bytes.NewReader(seq)).Read(out)
-		if got := out[:n]; !bytes.Equal(got, []byte{newlineByte}) {
-			t.Fatalf("%q translated to %q, want a single newline byte", seq, got)
-		}
+	ctrlJ := tea.KeyPressMsg{Code: 'j', Mod: tea.ModCtrl}
+	if got := ctrlJ.String(); got != "ctrl+j" {
+		t.Fatalf("ctrl+j is named %q", got)
 	}
-	if !km.Is(tea.KeyMsg{Type: tea.KeyCtrlJ}, "newline") {
-		t.Error("the translated byte does not trigger the newline action")
-	}
-	if !strings.Contains(km.KeysFor("newline"), "shift+enter") {
-		t.Error("shift+enter is no longer bound; a mapped terminal would do nothing")
+	if !km.Is(ctrlJ, "newline") {
+		t.Error("ctrl+j no longer inserts a newline")
 	}
 }
 
-// The help must not promise shift+enter works on its own — that promise is
-// what made this a bug report twice.
-func TestNewlineHelpSaysAMappingIsNeeded(t *testing.T) {
-	for _, a := range actions {
-		if a.Name != "newline" {
-			continue
-		}
-		if !strings.Contains(a.Help, "terminal mapping") {
-			t.Errorf("the newline help does not say a mapping is needed: %q", a.Help)
-		}
+// Plain enter must still send, or the newline binding has eaten submission.
+func TestPlainEnterStillSends(t *testing.T) {
+	km := NewKeyMap(nil)
+	enterMsg := tea.KeyPressMsg{Code: tea.KeyEnter}
+	if km.Is(enterMsg, "newline") {
+		t.Error("plain enter triggers newline — prompts could not be sent")
+	}
+	if !km.Is(enterMsg, "send") {
+		t.Error("plain enter no longer sends")
 	}
 }
 
@@ -65,33 +61,15 @@ func TestNoAltBindings(t *testing.T) {
 	}
 }
 
-// Plain enter must still send, or the newline binding has eaten submission.
-func TestPlainEnterStillSends(t *testing.T) {
-	km := NewKeyMap(nil)
-	if km.Is(tea.KeyMsg{Type: tea.KeyEnter}, "newline") {
-		t.Error("plain enter triggers newline — prompts could not be sent")
+// The alt screen and mouse mode are declared on the view in v2 rather than at
+// startup, so losing those lines would silently change the whole UI.
+func TestViewDeclaresScreenState(t *testing.T) {
+	m := dashApp(t, 100, 30)
+	v := m.View()
+	if !v.AltScreen {
+		t.Error("the view does not ask for the alt screen")
 	}
-	if !km.Is(tea.KeyMsg{Type: tea.KeyEnter}, "send") {
-		t.Error("plain enter no longer sends")
-	}
-}
-
-// Nothing may be written to the terminal to turn a keyboard protocol on.
-// Asking for disambiguation moves ctrl+key and esc onto CSI-u, which bubbletea
-// swallows — so keys that work today would quietly stop, in exchange for
-// nothing, since the flag does not cover Enter anyway.
-func TestNoKeyboardProtocolIsEnabled(t *testing.T) {
-	for _, file := range []string{"extkeys.go", "../cli/cli.go"} {
-		src, err := os.ReadFile(file)
-		if err != nil {
-			t.Fatal(err)
-		}
-		// The CSI > … u form is how the protocol is pushed. Its absence in a
-		// string literal is what is being asserted; the prose above may name it.
-		for _, lit := range []string{`"\x1b[>`, `"\x1b[<`} {
-			if strings.Contains(string(src), lit) {
-				t.Errorf("%s still writes %s to the terminal", file, lit)
-			}
-		}
+	if v.MouseMode != tea.MouseModeCellMotion {
+		t.Errorf("mouse mode = %v, want cell motion", v.MouseMode)
 	}
 }

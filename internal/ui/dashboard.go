@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 
 	"tapioca/internal/agent"
 	"tapioca/internal/catalog"
@@ -135,7 +135,8 @@ func (m *App) panelBox(d *panelDef, a *agent.Agent, w, h int, focused bool) stri
 		title += " " + mark
 	}
 	content := styPanelTitle.Render(truncate(title, innerW)) + "\n" + strings.Join(lines, "\n")
-	return borderStyle(focused).Width(innerW).Height(innerH).Render(content)
+	// Width and Height are the outer frame in lipgloss v2, border included.
+	return borderStyle(focused).Width(w).Height(h).Render(content)
 }
 
 // scrollMark shows which way a panel continues past its edge, or "" when it
