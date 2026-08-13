@@ -19,8 +19,7 @@ import (
 type Anthropic struct {
 	name    string
 	baseURL string
-	apiKey  string // empty when authenticating by OAuth
-	oauth   bool
+	apiKey  string
 	client  *http.Client
 }
 
@@ -34,43 +33,17 @@ func NewAnthropic(name string, cfg config.ProviderConfig) (*Anthropic, error) {
 	if key == "" {
 		key = os.Getenv(env)
 	}
+	if key == "" {
+		return nil, fmt.Errorf("anthropic: no API key (set providers.%s.api_key or $%s)", name, env)
+	}
 	base := strings.TrimSuffix(cfg.BaseURL, "/")
 	if base == "" {
 		base = "https://api.anthropic.com"
-	}
-	// An explicit oauth mode authenticates from the CLI profile instead of a
-	// key. A key still wins when both are configured, matching how the SDKs
-	// resolve credentials — but the connect screen reports that, because a
-	// login that silently does nothing is the worst version of this.
-	if cfg.Auth == "oauth" && key == "" {
-		return &Anthropic{name: name, baseURL: base, oauth: true, client: httpClient}, nil
-	}
-	if key == "" {
-		return nil, fmt.Errorf("anthropic: no API key (set providers.%s.api_key or $%s)", name, env)
 	}
 	return &Anthropic{name: name, baseURL: base, apiKey: key, client: httpClient}, nil
 }
 
 func (a *Anthropic) Name() string { return a.name }
-
-// authorize sets the credential headers. OAuth and key auth differ only here:
-// a bearer token on Authorization plus the oauth beta header, rather than
-// x-api-key. Both paths run through this so a new request site cannot be
-// written that authenticates one way and not the other.
-func (a *Anthropic) authorize(ctx context.Context, h http.Header) error {
-	h.Set("anthropic-version", "2023-06-01")
-	if !a.oauth {
-		h.Set("x-api-key", a.apiKey)
-		return nil
-	}
-	tok, err := oauthToken(ctx)
-	if err != nil {
-		return err
-	}
-	h.Set("Authorization", "Bearer "+tok)
-	h.Set("anthropic-beta", "oauth-2025-04-20")
-	return nil
-}
 
 type cacheControl struct {
 	Type string `json:"type"`
@@ -112,28 +85,20 @@ type anthTool struct {
 }
 
 type anthThinking struct {
-	Type string `json:"type"`
-	// Omitted for adaptive and disabled: a budget_tokens of any value, zero
-	// included, is rejected by the models that take those modes.
-	BudgetTokens int `json:"budget_tokens,omitempty"`
-}
-
-// anthOutputConfig carries the effort level on models that take one.
-type anthOutputConfig struct {
-	Effort string `json:"effort,omitempty"`
+	Type         string `json:"type"`
+	BudgetTokens int    `json:"budget_tokens"`
 }
 
 type anthReq struct {
-	Model            string            `json:"model,omitempty"`
-	AnthropicVersion string            `json:"anthropic_version,omitempty"`
-	MaxTokens        int               `json:"max_tokens"`
-	System           []anthBlock       `json:"system,omitempty"`
-	Messages         []anthMsg         `json:"messages"`
-	Stream           bool              `json:"stream"`
-	Temperature      *float64          `json:"temperature,omitempty"`
-	Thinking         *anthThinking     `json:"thinking,omitempty"`
-	OutputConfig     *anthOutputConfig `json:"output_config,omitempty"`
-	Tools            []anthTool        `json:"tools,omitempty"`
+	Model            string        `json:"model,omitempty"`
+	AnthropicVersion string        `json:"anthropic_version,omitempty"`
+	MaxTokens        int           `json:"max_tokens"`
+	System           []anthBlock   `json:"system,omitempty"`
+	Messages         []anthMsg     `json:"messages"`
+	Stream           bool          `json:"stream"`
+	Temperature      *float64      `json:"temperature,omitempty"`
+	Thinking         *anthThinking `json:"thinking,omitempty"`
+	Tools            []anthTool    `json:"tools,omitempty"`
 }
 
 type anthUsage struct {
@@ -235,9 +200,8 @@ func (a *Anthropic) Stream(ctx context.Context, req Request, out chan<- Event) (
 		return Message{}, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	if err := a.authorize(ctx, httpReq.Header); err != nil {
-		return Message{}, err
-	}
+	httpReq.Header.Set("x-api-key", a.apiKey)
+	httpReq.Header.Set("anthropic-version", "2023-06-01")
 
 	resp, err := a.client.Do(httpReq)
 	if err != nil {
@@ -258,9 +222,8 @@ func (a *Anthropic) ListModels(ctx context.Context) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := a.authorize(ctx, req.Header); err != nil {
-		return nil, err
-	}
+	req.Header.Set("x-api-key", a.apiKey)
+	req.Header.Set("anthropic-version", "2023-06-01")
 	resp, err := a.client.Do(req)
 	if err != nil {
 		return nil, err
@@ -334,50 +297,20 @@ func (a *Anthropic) buildBody(req Request) anthReq {
 		blocks[len(blocks)-1].CacheControl = ephemeral
 		marked++
 	}
-	applyThinking(&body, req)
-
-	return body
-}
-
-// applyThinking sets the thinking, effort and sampling fields for whatever the
-// named model accepts. Each generation removed parameters rather than
-// deprecating them, so sending the previous shape is a rejected request.
-func applyThinking(body *anthReq, req Request) {
-	caps := anthCapsFor(req.Model)
-
 	if req.Thinking {
 		budget := req.ThinkingBudget
 		if budget < 1024 {
 			budget = 1024
 		}
-		switch {
-		case caps.adaptive:
-			body.Thinking = &anthThinking{Type: "adaptive"}
-			if caps.effort {
-				body.OutputConfig = &anthOutputConfig{Effort: effortFor(budget)}
-			}
-		case caps.budget:
-			// The budget is a ceiling inside max_tokens, so the response needs
-			// room for an answer beyond it.
-			if body.MaxTokens <= budget {
-				body.MaxTokens = budget + 1024
-			}
-			body.Thinking = &anthThinking{Type: "enabled", BudgetTokens: budget}
+		if body.MaxTokens <= budget {
+			body.MaxTokens = budget + 1024
 		}
-		// Sampling is rejected alongside thinking on every model that takes
-		// it, and had to be 1 on the ones where it was allowed.
-		return
-	}
-
-	// Off. Omitting the field is not off on the current models — they think by
-	// default — so it has to be said, in the spelling each one accepts. Fable
-	// and Mythos have no off at all, and rejecting an explicit disabled is
-	// their way of saying so.
-	if caps.canDisable {
-		body.Thinking = &anthThinking{Type: "disabled"}
-	}
-	if caps.sampling && req.Temperature >= 0 {
+		body.Thinking = &anthThinking{Type: "enabled", BudgetTokens: budget}
+		// Temperature must be 1 with thinking enabled; omit it.
+	} else if req.Temperature >= 0 {
 		t := req.Temperature
 		body.Temperature = &t
 	}
+
+	return body
 }

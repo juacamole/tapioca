@@ -217,15 +217,8 @@ func (m *App) costFor(providerName, model string) (costRates, bool) {
 	best := -1
 	var r costRates
 	ok := false
-	// A gateway serves "anthropic/claude-opus-5" for what every price list
-	// keys as "claude-opus-5", so prefixes are matched against both forms —
-	// otherwise nothing through a gateway ever has a price.
-	bare := catalog.Bare(model)
-	matches := func(prefix string) bool {
-		return strings.HasPrefix(model, prefix) || strings.HasPrefix(bare, prefix)
-	}
 	for prefix, c := range m.cfg.Costs {
-		if matches(prefix) && len(prefix) > best {
+		if strings.HasPrefix(model, prefix) && len(prefix) > best {
 			best, r, ok = len(prefix), costRates{In: c.In, Out: c.Out}, true
 		}
 	}
@@ -239,7 +232,7 @@ func (m *App) costFor(providerName, model string) (costRates, bool) {
 	}
 	if !ok {
 		for _, c := range defaultCosts {
-			if matches(c.prefix) && len(c.prefix) > best {
+			if strings.HasPrefix(model, c.prefix) && len(c.prefix) > best {
 				best, r, ok = len(c.prefix), costRates{In: c.in, Out: c.out}, true
 			}
 		}
@@ -286,12 +279,7 @@ func (m *App) contextWindowFor(a *agent.Agent) int {
 	switch pc.Type {
 	case "anthropic":
 		return 200_000
-	// A gateway fronts models from every vendor, so the type says nothing about
-	// the window — the catalog above answers for anything it knows, and this is
-	// only reached for a model it has never heard of. 128k errs the right way:
-	// too low silently compacts a long session down to nothing, while too high
-	// costs one API error that says exactly what happened.
-	case "openai", "openai-compatible", "custom", "vercel", "azure":
+	case "openai", "openai-compatible":
 		return 128_000
 	default:
 		return 8_192

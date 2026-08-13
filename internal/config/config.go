@@ -12,21 +12,16 @@ import (
 
 // ProviderConfig describes one LLM backend.
 type ProviderConfig struct {
-	Type            string            `toml:"type"`             // "ollama" | "anthropic" | "openai"
-	BaseURL         string            `toml:"base_url"`         // optional override
-	APIKey          string            `toml:"api_key"`          // literal key (discouraged; prefer env)
-	APIKeyEnv       string            `toml:"api_key_env"`      // env var holding the key
-	Auth            string            `toml:"auth"`             // "oauth" authenticates from the provider CLI profile
-	AuthStyle       string            `toml:"auth_style"`       // custom: bearer | header | query | none
-	AuthHeader      string            `toml:"auth_header"`      // custom: header name when auth_style = header
-	AuthQuery       string            `toml:"auth_query"`       // custom: query parameter when auth_style = query
-	Headers         map[string]string `toml:"headers"`          // custom: sent on every request
-	ContextWindow   int               `toml:"context_window"`   // tokens; 0 = per-type default
-	APIVersion      string            `toml:"api_version"`      // azure only; defaults to a known-good one
-	Region          string            `toml:"region"`           // bedrock, vertex
-	Profile         string            `toml:"profile"`          // bedrock: AWS shared-credentials profile
-	Project         string            `toml:"project"`          // vertex: GCP project
-	CredentialsFile string            `toml:"credentials_file"` // vertex: service account JSON
+	Type            string `toml:"type"`             // "ollama" | "anthropic" | "openai"
+	BaseURL         string `toml:"base_url"`         // optional override
+	APIKey          string `toml:"api_key"`          // literal key (discouraged; prefer env)
+	APIKeyEnv       string `toml:"api_key_env"`      // env var holding the key
+	ContextWindow   int    `toml:"context_window"`   // tokens; 0 = per-type default
+	APIVersion      string `toml:"api_version"`      // azure only; defaults to a known-good one
+	Region          string `toml:"region"`           // bedrock, vertex
+	Profile         string `toml:"profile"`          // bedrock: AWS shared-credentials profile
+	Project         string `toml:"project"`          // vertex: GCP project
+	CredentialsFile string `toml:"credentials_file"` // vertex: service account JSON
 }
 
 // Cost is the price per million tokens for a model prefix.
@@ -390,26 +385,6 @@ type = "anthropic"
 api_key_env = "ANTHROPIC_API_KEY"
 # api_key = "sk-ant-..."        # or put the key inline (not recommended)
 # base_url = "https://api.anthropic.com"
-
-# Models from every vendor behind one key, through the Vercel AI Gateway. The
-# address is built in; model ids are vendor-qualified, e.g.
-# "anthropic/claude-opus-5".
-# [providers.vercel]
-# type = "vercel"
-# api_key_env = "AI_GATEWAY_API_KEY"
-
-# Any server speaking the OpenAI API — a gateway, a proxy, a local model.
-# auth_style says where the credential goes, since the same wire format is
-# served behind all four of these.
-# [providers.mygateway]
-# type = "custom"
-# base_url = "https://api.example.com/v1"
-# api_key_env = "MY_GATEWAY_KEY"
-# auth_style = "bearer"         # bearer | header | query | none
-# auth_header = "X-API-Key"     # only for auth_style = "header"
-# auth_query = "key"            # only for auth_style = "query"
-#   [providers.mygateway.headers]   # sent on every request
-#   X-Org-Id = "org_123"
 
 # Anthropic models on AWS Bedrock. Credentials come from the usual AWS
 # environment variables or ~/.aws/credentials; the model is a Bedrock id.
