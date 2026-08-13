@@ -148,6 +148,26 @@ func (m *App) handleChatMouse(msg tea.MouseMsg) (bool, tea.Cmd) {
 	}
 	switch msg.Action {
 	case tea.MouseActionPress:
+		// The wheel over a panel scrolls that panel, whether or not it has
+		// focus — otherwise the only way to read a truncated panel is to focus
+		// it first, which is not how a wheel behaves anywhere else.
+		if msg.Button == tea.MouseButtonWheelUp || msg.Button == tea.MouseButtonWheelDown {
+			if r, idx := m.regionAt(msg.X, msg.Y); r == regionDash {
+				dir := -1
+				if msg.Button == tea.MouseButtonWheelDown {
+					dir = 1
+				}
+				defs := m.fittedPanels()
+				if idx < len(defs) {
+					total, visible := m.panelContentHeight(defs, idx)
+					if m.scrollPanel(defs[idx].key, dir, total, visible) {
+						return true, nil
+					}
+				}
+				return true, nil // over a panel: never scroll the transcript instead
+			}
+			return false, nil
+		}
 		if msg.Button != tea.MouseButtonLeft {
 			return false, nil
 		}

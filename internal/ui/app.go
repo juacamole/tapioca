@@ -97,6 +97,10 @@ type App struct {
 	dashPanelSel int  // focused panel when the dashboard has focus
 	dashEditing  bool // inside the settings panel, editing rows
 	dashSel      int  // selected settings row while editing
+	// dashScroll is each panel's scroll offset, by panel key. Per panel rather
+	// than one shared offset, so scrolling the tool list does not also move the
+	// settings you were part way down.
+	dashScroll map[string]int
 
 	overlay   overlayKind
 	conn      []connEntry // last provider probe, for the connect picker
@@ -1247,9 +1251,11 @@ func (m *App) handleDashKey(msg tea.KeyMsg, a *agent.Agent) (tea.Model, tea.Cmd)
 			return m, nil
 		case m.keys.Is(msg, "scroll_up"):
 			m.dashSel = (m.dashSel - 1 + n) % n
+			m.revealSettingsRow(defs)
 			return m, nil
 		case m.keys.Is(msg, "scroll_down"):
 			m.dashSel = (m.dashSel + 1) % n
+			m.revealSettingsRow(defs)
 			return m, nil
 		case m.keys.Is(msg, "send"):
 			return m, m.activateSetting(a)
@@ -1265,6 +1271,12 @@ func (m *App) handleDashKey(msg tea.KeyMsg, a *agent.Agent) (tea.Model, tea.Cmd)
 
 	// Panel level.
 	switch {
+	case m.keys.Is(msg, "page_up"), m.keys.Is(msg, "output_up"):
+		m.scrollFocusedPanel(defs, -1)
+		return m, nil
+	case m.keys.Is(msg, "page_down"), m.keys.Is(msg, "output_down"):
+		m.scrollFocusedPanel(defs, +1)
+		return m, nil
 	case m.keys.Is(msg, "move_panel_prev"):
 		m.moveFocusedPanel(defs, -1)
 		return m, nil
