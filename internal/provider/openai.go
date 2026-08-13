@@ -24,9 +24,8 @@ type OpenAI struct {
 	name       string
 	baseURL    string
 	apiKey     string
-	auth       *authSpec // set for the custom type; nil uses the flavor's own scheme
-	flavor     string    // "", flavorAzure, flavorGemini
-	apiVersion string    // azure only
+	flavor     string // "", flavorAzure, flavorGemini
+	apiVersion string // azure only
 	client     *http.Client
 }
 
@@ -77,21 +76,7 @@ func newOpenAILike(name string, cfg config.ProviderConfig, flavor, defaultBase, 
 	if base == "" {
 		base = defaultBase
 	}
-	if flavor == "" {
-		base = trimVersionSuffix(base)
-	}
 	return &OpenAI{name: name, baseURL: base, apiKey: key, flavor: flavor, client: httpClient}
-}
-
-// trimVersionSuffix drops a trailing /v1 from a configured base URL, because
-// the default flavour appends /v1 itself. Every gateway publishes its address
-// with that segment already on it — https://ai-gateway.vercel.sh/v1,
-// https://openrouter.ai/api/v1, https://api.groq.com/openai/v1 — so a URL
-// pasted from the provider's own documentation would otherwise request
-// /v1/v1 and get a 404 that names nothing. Only the last segment goes:
-// https://openrouter.ai/api/v1 becomes .../api, and /v1 is put back on.
-func trimVersionSuffix(base string) string {
-	return strings.TrimSuffix(strings.TrimSuffix(base, "/v1"), "/")
 }
 
 // chatURL builds the completions endpoint for this flavour.
@@ -118,24 +103,16 @@ func (o *OpenAI) modelsURL() string {
 	}
 }
 
-// setAuth attaches the key the way this flavour expects. A custom provider
-// carries its own spec, since the same wire format is served behind a bearer
-// token, a named header, a query parameter and nothing at all.
-func (o *OpenAI) setAuth(r *http.Request) error {
-	if o.auth != nil {
-		// Returned rather than swallowed: a request that quietly goes out
-		// unauthenticated fails later, somewhere that does not name the cause.
-		return o.auth.apply(r)
-	}
+// setAuth attaches the key the way this flavour expects.
+func (o *OpenAI) setAuth(r *http.Request) {
 	if o.apiKey == "" {
-		return nil
+		return
 	}
 	if o.flavor == flavorAzure {
 		r.Header.Set("api-key", o.apiKey)
-		return nil
+		return
 	}
 	r.Header.Set("Authorization", "Bearer "+o.apiKey)
-	return nil
 }
 
 func (o *OpenAI) Name() string { return o.name }
@@ -307,9 +284,7 @@ func (o *OpenAI) Stream(ctx context.Context, req Request, out chan<- Event) (Mes
 		return Message{}, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	if err := o.setAuth(httpReq); err != nil {
-		return Message{}, fmt.Errorf("%s: %w", o.name, err)
-	}
+	o.setAuth(httpReq)
 	resp, err := o.client.Do(httpReq)
 	if err != nil {
 		return Message{}, fmt.Errorf("%s: %w", o.name, err)
@@ -454,9 +429,7 @@ func (o *OpenAI) ListModels(ctx context.Context) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := o.setAuth(req); err != nil {
-		return nil, fmt.Errorf("%s: %w", o.name, err)
-	}
+	o.setAuth(req)
 	resp, err := o.client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", o.name, err)

@@ -43,7 +43,6 @@ const (
 	overlayHelp
 	overlayPerm
 	overlayText
-	overlayCredential
 )
 
 // quitWindow is how long the second ctrl+c has to arrive to exit.
@@ -99,9 +98,6 @@ type App struct {
 	dashSel      int  // selected settings row while editing
 
 	overlay   overlayKind
-	conn      []connEntry // last provider probe, for the connect picker
-	cred      *credForm   // in-flight credential entry, nil when closed
-	msgLog    []logEntry  // every flash, kept so none is lost to its timer
 	pick      picker
 	perms     []permEntry
 	textTitle string
@@ -321,23 +317,15 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case modelsLoadedMsg:
 		if len(msg.items) == 0 {
-			// Nothing reachable. This is the moment the user most needs a way
-			// in, and a flash naming whichever provider happened to be in the
-			// default config is the opposite of one: it expires, it reads as a
-			// guess, and it leaves nothing to act on. Open the connection
-			// manager, which shows each provider's own failure next to it.
-			m.setFlash("no models — checking providers…", false)
-			return m, tea.Batch(probeConnections(m.cfg), m.flashCmd())
+			e := "no models found"
+			if len(msg.errs) > 0 {
+				e = strings.Join(msg.errs, ""+gl.sep+"")
+			}
+			m.setFlash(e, true)
+			return m, m.flashCmd()
 		}
 		m.pick = newPicker(pickModel, "switch model", msg.items)
 		m.overlay = overlayPicker
-		return m, nil
-
-	case credTestedMsg:
-		return m, m.handleCredentialTested(msg)
-
-	case connStatusMsg:
-		m.openConnectPicker(msg.entries)
 		return m, nil
 
 	case titleDoneMsg:
@@ -387,13 +375,7 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleEditorDone(msg)
 
 	case flashClearMsg:
-		// Errors stay until something replaces them. They are the messages
-		// most worth reading and the least likely to be read in four seconds —
-		// often a provider's whole error body — and the reader has no way to
-		// ask for them back once the timer has run. Informational flashes
-		// still expire, since those are confirmations of something the user
-		// just did and clutter the line once read.
-		if msg.seq == m.flashSeq && !m.flashErr {
+		if msg.seq == m.flashSeq {
 			m.flash = ""
 		}
 		return m, nil
@@ -676,15 +658,6 @@ func (m *App) decidePerm(d tools.Decision) {
 }
 
 func (m *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// The credential overlay owns the keyboard while open: every printable key
-	// is part of a secret being typed, so nothing may fall through to the
-	// global shortcuts.
-	if m.overlay == overlayCredential {
-		if cmd, handled := m.handleCredentialKey(msg); handled {
-			return m, cmd
-		}
-	}
-
 	// Permission prompts take absolute priority.
 	if m.overlay == overlayPerm && len(m.perms) > 0 {
 		switch msg.String() {
@@ -742,16 +715,8 @@ func (m *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		chosen, closed := m.pick.handleKey(msg)
 		if chosen != nil {
-			// A selection may open something of its own: an unconfigured
-			// provider opens the credential form, one with a login opens a
-			// second picker. Closing must not close what the selection just
-			// opened, and checking the overlay alone is not enough — a new
-			// picker leaves it as overlayPicker. The picker's kind is what
-			// actually distinguishes "still the same screen".
-			wasKind := m.pick.kind
 			cmd := m.applyPick(*chosen)
-			opened := m.overlay != overlayPicker || m.pick.kind != wasKind
-			if closed && !opened {
+			if closed {
 				m.dismissOverlay()
 			}
 			return m, cmd
@@ -1413,9 +1378,6 @@ func (m *App) applyPick(it pickerItem) tea.Cmd {
 	case pickEffort:
 		return m.applyEffort(it.value)
 
-	case pickConnect:
-		return m.applyConnect(it.value)
-
 	case pickSession:
 		return m.loadSessionByID(it.value)
 
@@ -1627,10 +1589,6 @@ func (m *App) setFlash(text string, isErr bool) {
 	m.flash = sanitizeLabel(text)
 	m.flashErr = isErr
 	m.flashSeq++
-	// Recorded here rather than at each call site: this is the one place every
-	// message passes through, and it is already sanitized, so nothing can
-	// reach the history by a route that skips the scrubbing.
-	m.record(m.flash, isErr)
 }
 
 func (m *App) flashCmd() tea.Cmd {
@@ -1764,8 +1722,6 @@ func (m *App) View() string {
 		body = m.renderPerm(m.w, bodyH)
 	case overlayText:
 		body = m.renderTextOverlay(m.w, bodyH)
-	case overlayCredential:
-		body = lipgloss.Place(m.w, bodyH, lipgloss.Center, lipgloss.Center, m.viewCredential())
 	case overlayPicker:
 		checked := func(v string) bool {
 			for _, p := range m.cfg.Dashboard.Panels {
@@ -2014,16 +1970,7 @@ func (m *App) renderStatus() string {
 	var left string
 	if m.flash != "" {
 		if m.flashErr {
-			// A provider's error body is routinely longer than the status
-			// line. Truncating in silence is what made these unreadable, so
-			// when it happens the line says where the rest is.
-			hint := gl.sep + "/log"
-			avail := m.w - 2 - lipgloss.Width(hint)
-			if avail > 10 && lipgloss.Width(m.flash) > avail {
-				left = " " + styErr.Render(truncate(m.flash, avail)) + styDim.Render(hint)
-			} else {
-				left = " " + styErr.Render(m.flash)
-			}
+			left = " " + styErr.Render(m.flash)
 		} else {
 			left = " " + styFlash.Render(m.flash)
 		}
