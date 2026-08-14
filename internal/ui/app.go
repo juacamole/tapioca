@@ -43,6 +43,7 @@ const (
 	overlayHelp
 	overlayPerm
 	overlayText
+	overlayAsk
 	overlayCredential
 )
 
@@ -98,6 +99,7 @@ type App struct {
 	dashEditing  bool         // inside the settings panel, editing rows
 	dashSel      int          // selected settings row while editing
 	setEdit      *settingEdit // a numeric settings row being typed into
+	ask          *askState    // an in-flight /ask, kept out of the history
 	// dashScroll is each panel's scroll offset, by panel key. Per panel rather
 	// than one shared offset, so scrolling the tool list does not also move the
 	// settings you were part way down.
@@ -447,6 +449,9 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, gitTick()
 
+	case askMsg:
+		return m, m.handleAsk(msg)
+
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 
@@ -688,6 +693,15 @@ func (m *App) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if cmd, handled := m.handleCredentialKey(msg); handled {
 			return m, cmd
 		}
+	}
+
+	// The ask overlay owns the keyboard while open: it is a transient answer
+	// and every key should either scroll it or dismiss it.
+	if m.overlay == overlayAsk {
+		if m.keys.Is(msg, "cancel") || m.keys.Is(msg, "send") || msg.String() == "q" {
+			m.closeAsk()
+		}
+		return m, nil
 	}
 
 	// Permission prompts take absolute priority.
@@ -1826,6 +1840,8 @@ func (m *App) render() string {
 		body = m.renderPerm(m.w, bodyH)
 	case overlayText:
 		body = m.renderTextOverlay(m.w, bodyH)
+	case overlayAsk:
+		body = lipgloss.Place(m.w, bodyH, lipgloss.Center, lipgloss.Center, m.viewAsk())
 	case overlayCredential:
 		body = lipgloss.Place(m.w, bodyH, lipgloss.Center, lipgloss.Center, m.viewCredential())
 	case overlayPicker:
