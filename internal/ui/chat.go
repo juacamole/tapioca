@@ -373,7 +373,7 @@ func renderText(text string, w int) string {
 	}
 	// A dangling open fence still renders as code.
 	flush()
-	return strings.Join(out, "\n")
+	return linkify(strings.Join(out, "\n"))
 }
 
 // wrapPlain wraps text without styling.
