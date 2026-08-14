@@ -757,6 +757,18 @@ func (m *App) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.dismissOverlay()
 			return m, nil
 		}
+		// In the queue picker, d drops the selected prompt without leaving.
+		if m.pick.kind == pickQueue && msg.String() == "d" {
+			if it := m.pick.selected(); it != nil {
+				idx := -1
+				if _, err := fmt.Sscanf(it.value, "%d", &idx); err == nil {
+					m.dropQueued(idx)
+				}
+			}
+			m.dismissOverlay()
+			m.openQueuePicker()
+			return m, nil
+		}
 		// In the panels picker, left/right reorders the selected panel.
 		if m.pick.kind == pickPanels {
 			if s := msg.String(); s == "left" || s == "right" {
@@ -1487,6 +1499,9 @@ func (m *App) applyPick(it pickerItem) tea.Cmd {
 
 	case pickConnect:
 		return m.applyConnect(it.value)
+
+	case pickQueue:
+		return m.applyQueuePick(it.value)
 
 	case pickSession:
 		return m.loadSessionByID(it.value)
