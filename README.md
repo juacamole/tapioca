@@ -57,7 +57,9 @@ Default keybinds avoid `alt`, so they work on macOS.
 **Safety nets for real work.** Edit a file in your own editor and the agent's
 stale writes are refused until it re-reads. Everything it writes is checked by
 your language servers, with errors attached to the tool result so they're fixed
-in the same turn. `/rewind` restores the worktree from a checkpoint.
+in the same turn. `/rewind` restores the worktree from a checkpoint. `[[hooks]]`
+runs commands of yours around tool calls — format after an edit, log what ran,
+or refuse a call outright when your own check says no.
 
 **One binary.** `tapioca --acp` speaks the
 [Agent Client Protocol](https://agentclientprotocol.com), so Zed and other ACP
@@ -79,6 +81,7 @@ and `CRUSH.md`, so instructions written for other tools work unchanged.
 | `/goal text \| clear` | set a session goal |
 | `/btw note` | add context without asking for a reply |
 | `/remember fact \| clear` | persist a project fact |
+| `/skills [name]` | list capability packs; a name loads one now |
 | `/systemprompt` | edit the system prompt |
 | `/regen` | regenerate the last response |
 | `/edit` | pull the last prompt back into the input |
@@ -104,6 +107,23 @@ and `CRUSH.md`, so instructions written for other tools work unchanged.
 
 Drop a markdown file in `~/.config/tapioca/commands/` or `.tapioca/commands/`
 and its name becomes a command of your own.
+
+### Skills
+
+A command is a macro you fire; a skill is a capability the model reaches for. A
+`SKILL.md` in `~/.config/tapioca/skills/<name>/` or `.tapioca/skills/<name>/`
+declares a name and a description, and only those are in context — one line
+each. When the model judges one relevant it calls `load_skill`, which brings in
+the instructions and whatever files are bundled beside them, so a checklist or a
+script travels with the skill. `/skills` lists what is installed and what this
+conversation has loaded.
+
+```
+.tapioca/skills/release/
+  SKILL.md        # --- name / description --- then the instructions
+  checklist.md    # loaded only once the skill is engaged
+  verify.sh
+```
 
 ### Newlines in the prompt
 

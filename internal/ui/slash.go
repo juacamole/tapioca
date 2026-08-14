@@ -78,6 +78,7 @@ func buildSlashCmds() []slashCmd {
 			}
 			return openEditorCmd(m.cfg.Editor, editTargetSystem, sys)
 		}},
+		{"skills", "[name]", "list capability packs (name loads one now)", cmdSkills},
 		{"model", "[provider:]name", "switch model (no arg: picker)", cmdModel},
 		{"connect", "", "connect a provider or account", cmdConnect},
 		{"mcp", "[server]", "log in to an MCP server that needs OAuth", cmdMCPLogin},
@@ -87,6 +88,8 @@ func buildSlashCmds() []slashCmd {
 		{"remember", "fact | clear", "persist a project fact for the model", cmdRemember},
 		{"btw", "note", "add context without asking for a reply", cmdBtw},
 		{"ask", "question", "answer from context, kept out of the conversation", cmdAsk},
+		{"queue", "", "edit or drop prompts waiting to send", cmdQueue},
+		{"steer", "text", "stop this turn and send yours next, keeping its work", cmdSteer},
 		{"cd", "dir", "change the working directory", cmdCd},
 		{"diff", "", "show git diff of the working directory", cmdDiff},
 		{"permissions", "", "show what runs without approval", cmdPermissions},
@@ -512,6 +515,11 @@ func cmdCd(m *App, arg string) tea.Cmd {
 		return m.flashCmd()
 	}
 	m.reloadUserCmds() // .tapioca/commands is per project
+	m.reloadSkills()   // and so is .tapioca/skills
+	// Whether hooks may run is a question about this tree, so it is asked
+	// again: /cd into a checkout that holds the config file has to withdraw
+	// them, exactly as starting there would have.
+	hookNotes := tools.ApplyHooks(e, m.cfg, e.Cwd())
 	note := "cwd: " + e.Cwd()
 	if project.Instructions(e.Cwd()) != "" {
 		note += "" + gl.sep + "loaded project instructions"
@@ -519,7 +527,13 @@ func cmdCd(m *App, arg string) tea.Cmd {
 	if n := len(m.userCmds); n > 0 {
 		note += fmt.Sprintf("%s%d commands", gl.sep, n)
 	}
-	m.setFlash(note, false)
+	if n := len(m.skills); n > 0 {
+		note += fmt.Sprintf("%s%d skills", gl.sep, n)
+	}
+	if len(hookNotes) > 0 {
+		note += gl.sep + hookNotes[0]
+	}
+	m.setFlash(note, len(hookNotes) > 0)
 	return tea.Batch(m.flashCmd(), fetchGitCmd(e.Cwd()))
 }
 
@@ -589,6 +603,9 @@ func cmdPermissions(m *App, _ string) tea.Cmd {
 	b.WriteString(styPanelTitle.Render("never prompts") + "\n")
 	b.WriteString("  read_file, grep, glob, web_search, web_fetch " + styDim.Render("(read-only builtins)") + "\n")
 	b.WriteString("  todo_write " + styDim.Render("(writes the plan panel, not the disk)") + "\n")
+	if len(m.skills) > 0 {
+		b.WriteString("  load_skill " + styDim.Render("(reads a skill's own SKILL.md, nothing else)") + "\n")
+	}
 	if n := len(m.mgr.MCP.AllTools()); n > 0 {
 		b.WriteString(fmt.Sprintf("  %d MCP tools prompt like builtins %s\n", n, styDim.Render("(grants show as mcp:name)")))
 	}
@@ -646,6 +663,21 @@ func cmdPermissions(m *App, _ string) tea.Cmd {
 		}
 		for _, r := range p.Allow {
 			b.WriteString("  " + styOK.Render("allow ") + r + "\n")
+		}
+	}
+	// The executor is asked rather than the config, so a hook refused for
+	// living inside the worktree is absent here — this page is what is in
+	// force, not what was written down.
+	if m.mgr.Exec != nil {
+		if hooks := m.mgr.Exec.Hooks(); len(hooks) > 0 {
+			b.WriteString("\n" + styPanelTitle.Render("hooks") + styDim.Render("  ([[hooks]] in config; pre_tool can refuse a call)") + "\n")
+			for _, h := range hooks {
+				match := h.Match
+				if match == "" {
+					match = "*"
+				}
+				b.WriteString(fmt.Sprintf("  %-14s %-12s %s\n", h.Event, match, sanitizeLabel(h.Command)))
+			}
 		}
 	}
 	b.WriteString("\n" + styDim.Render("revoke: /settings edits bash_allow and [permissions]; session grants clear on restart"))

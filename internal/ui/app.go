@@ -24,6 +24,7 @@ import (
 	"tapioca/internal/mcp"
 	"tapioca/internal/provider"
 	"tapioca/internal/secretenv"
+	"tapioca/internal/skills"
 	"tapioca/internal/tools"
 )
 
@@ -101,6 +102,8 @@ type App struct {
 	setEdit      *settingEdit // a numeric settings row being typed into
 	ask          *askState    // an in-flight /ask, kept out of the history
 	search       *searchState // an open transcript search
+	reloadSeen   string       // fingerprint of the watched files at the last reload
+	hookNotes    []string     // what the last reload refused about [[hooks]]
 	// dashScroll is each panel's scroll offset, by panel key. Per panel rather
 	// than one shared offset, so scrolling the tool list does not also move the
 	// settings you were part way down.
@@ -130,6 +133,8 @@ type App struct {
 	thinkOpen  map[string]bool         // explicit expand/collapse per thinking block
 	thinkAt    map[int]string          // transcript line -> thinking block key
 	userCmds   []userCmd               // commands loaded from markdown files
+	skills     []skills.Skill          // capability packs the model can load
+	skillProbs []skills.Problem        // packs that did not parse, for /skills
 
 	// Chat transcript caches for mouse selection.
 	chatStyled []string
@@ -178,7 +183,7 @@ func NewApp(cfg *config.Config, mgr *agent.Manager, sessID, sessName string, cre
 	sp := spinner.New(spinner.WithSpinner(gl.spinner))
 	sp.Style = styAccent
 
-	return &App{
+	app := &App{
 		cfg:         cfg,
 		keys:        NewKeyMap(cfg.Keys),
 		mgr:         mgr,
@@ -197,6 +202,15 @@ func NewApp(cfg *config.Config, mgr *agent.Manager, sessID, sessName string, cre
 		sessTitled:  sessName != "",
 		sessCreated: created,
 	}
+	app.reloadSkills()
+	// A pack that does not parse is skipped, and saying so once at startup is
+	// the difference between a typo in a SKILL.md and a skill that mysteriously
+	// never gets used. Error flashes are not cleared by the timer, so it stays
+	// until something replaces it.
+	if n := len(app.skillProbs); n > 0 {
+		app.setFlash(fmt.Sprintf("%d skill(s) skipped — /skills says why", n), true)
+	}
+	return app
 }
 
 // statusLabel returns the fine-grained stage label when one is active.
@@ -225,7 +239,7 @@ func (m *App) cwd() string {
 
 // Init implements tea.Model.
 func (m *App) Init() tea.Cmd {
-	cmds := []tea.Cmd{textarea.Blink, m.spin.Tick, autosaveTick(), gitTick(), fetchGitCmd(m.cwd())}
+	cmds := []tea.Cmd{textarea.Blink, m.spin.Tick, autosaveTick(), gitTick(), reloadTick(), fetchGitCmd(m.cwd())}
 	for _, a := range m.mgr.Agents {
 		cmds = append(cmds, waitAgent(a))
 	}
@@ -440,6 +454,9 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Batch(m.flashCmd(), fetchGitCmd(m.cwd()))
 
+	case reloadTickMsg:
+		return m, tea.Batch(m.checkReload(), reloadTick())
+
 	case autosaveMsg:
 		if m.cfg.Autosave && m.dirty {
 			m.saveSession(false)
@@ -539,6 +556,16 @@ func (m *App) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 	case agent.EvNotice:
 		m.setFlash(ev.Text, true)
 		cmds = append(cmds, m.flashCmd())
+	case agent.EvFallback:
+		a.ResetStream()
+		note := ev.Provider + ":" + ev.Model
+		if ev.Err != nil {
+			note += gl.sep + truncate(sanitizeLabel(ev.Err.Error()), 40)
+		}
+		a.ProviderName, a.Model = ev.Provider, ev.Model
+		m.setFlash("falling back to "+note, true)
+		cmds = append(cmds, m.flashCmd())
+
 	case agent.EvRetry:
 		a.ResetStream()
 		a.Status = agent.StatusWaiting
@@ -638,43 +665,69 @@ func (m *App) handleEditorDone(msg editorDoneMsg) (tea.Model, tea.Cmd) {
 			m.setFlash(fmt.Sprintf("system prompt updated (%s)", humanTokens(len(a.SystemPrompt))), false)
 		}
 	case editTargetConfig:
-		newCfg, err := config.Load(m.cfg.Path())
-		if err != nil {
-			m.setFlash(err.Error()+" — fix with /settings", true)
-			return m, m.flashCmd()
-		}
-		*m.cfg = *newCfg
-		m.keys = NewKeyMap(m.cfg.Keys)
-		secretenv.SetExtra(m.cfg.SecretEnv)
-		m.cfg.Theme = SetTheme(m.cfg.Theme, m.cfg.Colors)
-		m.cfg.Glyphs = SetGlyphs(m.cfg.Glyphs)
-		m.cfg.Wordmark = SetWordmark(m.cfg.Wordmark)
-		m.spin.Spinner = gl.spinner
-		m.repaint()
-		if m.mgr.Exec != nil {
-			m.mgr.Exec.SetMode(m.cfg.PermissionMode)
-			m.mgr.Exec.SetBashPrefixes(m.cfg.BashAllow)
-			m.mgr.Exec.SetRules(m.cfg.Permissions.Allow, m.cfg.Permissions.Ask, m.cfg.Permissions.Deny)
-			m.mgr.Exec.SetSandbox(m.cfg.Sandbox)
-			m.mgr.Exec.SetSandboxNetwork(m.cfg.SandboxNetwork)
-			m.mgr.Exec.SetTimeout(time.Duration(m.cfg.BashTimeout) * time.Second)
-			m.reloadUserCmds()
-		}
-		m.mgr.ReloadProviders()
-		// Push the edited defaults onto existing agents too, so the file is
-		// the single source of truth after /settings.
-		for _, ag := range m.mgr.Agents {
-			ag.MaxTokens = m.cfg.MaxTokens
-			ag.Temperature = m.cfg.Temperature
-			ag.Thinking = m.cfg.Thinking
-			ag.ThinkingBudget = m.cfg.ThinkingBudget
-			ag.SystemPrompt = m.cfg.SystemPrompt
-		}
-		m.recalcLayout()
-		m.refreshChat(true)
-		m.setFlash("config reloaded", false)
+		m.applyReload()
 	}
 	return m, m.flashCmd()
+}
+
+// applyReload re-reads the config and applies it in place. One implementation
+// for all three ways in — leaving the editor, /reload, and the watcher — so
+// they cannot drift into meaning different things.
+//
+// A file that will not parse leaves everything as it was. Editors write
+// partial files constantly, and with a watcher that is no longer a rare case:
+// a half-saved config must not take a running session down.
+func (m *App) applyReload() bool {
+	newCfg, err := config.Load(m.cfg.Path())
+	if err != nil {
+		m.setFlash(err.Error()+" — the previous config is still running", true)
+		return false
+	}
+	m.hookNotes = nil
+	*m.cfg = *newCfg
+	m.keys = NewKeyMap(m.cfg.Keys)
+	secretenv.SetExtra(m.cfg.SecretEnv)
+	m.cfg.Theme = SetTheme(m.cfg.Theme, m.cfg.Colors)
+	m.cfg.Glyphs = SetGlyphs(m.cfg.Glyphs)
+	m.cfg.Wordmark = SetWordmark(m.cfg.Wordmark)
+	m.spin.Spinner = gl.spinner
+	m.repaint()
+	if m.mgr.Exec != nil {
+		m.mgr.Exec.SetMode(m.cfg.PermissionMode)
+		m.mgr.Exec.SetBashPrefixes(m.cfg.BashAllow)
+		m.mgr.Exec.SetRules(m.cfg.Permissions.Allow, m.cfg.Permissions.Ask, m.cfg.Permissions.Deny)
+		m.mgr.Exec.SetSandbox(m.cfg.Sandbox)
+		m.mgr.Exec.SetSandboxNetwork(m.cfg.SandboxNetwork)
+		m.mgr.Exec.SetTimeout(time.Duration(m.cfg.BashTimeout) * time.Second)
+		m.hookNotes = tools.ApplyHooks(m.mgr.Exec, m.cfg, m.cwd())
+		m.reloadUserCmds()
+		m.reloadSkills()
+	}
+	m.mgr.ReloadProviders()
+	// Push the edited defaults onto existing agents too, so the file is
+	// the single source of truth after a reload.
+	for _, ag := range m.mgr.Agents {
+		ag.MaxTokens = m.cfg.MaxTokens
+		ag.Temperature = m.cfg.Temperature
+		ag.Thinking = m.cfg.Thinking
+		ag.ThinkingBudget = m.cfg.ThinkingBudget
+		ag.SystemPrompt = m.cfg.SystemPrompt
+	}
+	m.recalcLayout()
+	m.refreshChat(true)
+	m.noteReloadStamps()
+	m.flashReloaded("config reloaded")
+	return true
+}
+
+// flashReloaded announces a reload, carrying whatever it had to say about
+// [[hooks]]. Every caller goes through this: a refused hook is the one thing a
+// reload must not swallow, and each of them sets a message of its own.
+func (m *App) flashReloaded(text string) {
+	if len(m.hookNotes) > 0 {
+		text += gl.sep + m.hookNotes[0]
+	}
+	m.setFlash(text, len(m.hookNotes) > 0)
 }
 
 func (m *App) decidePerm(d tools.Decision) {
@@ -761,6 +814,18 @@ func (m *App) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.overlay == overlayPicker {
 		if m.keys.Is(msg, "quit") {
 			m.dismissOverlay()
+			return m, nil
+		}
+		// In the queue picker, d drops the selected prompt without leaving.
+		if m.pick.kind == pickQueue && msg.String() == "d" {
+			if it := m.pick.selected(); it != nil {
+				idx := -1
+				if _, err := fmt.Sscanf(it.value, "%d", &idx); err == nil {
+					m.dropQueued(idx)
+				}
+			}
+			m.dismissOverlay()
+			m.openQueuePicker()
 			return m, nil
 		}
 		// In the panels picker, left/right reorders the selected panel.
@@ -1494,6 +1559,9 @@ func (m *App) applyPick(it pickerItem) tea.Cmd {
 	case pickConnect:
 		return m.applyConnect(it.value)
 
+	case pickQueue:
+		return m.applyQueuePick(it.value)
+
 	case pickSession:
 		return m.loadSessionByID(it.value)
 
@@ -1616,6 +1684,11 @@ func (m *App) sendPrepared(a *agent.Agent, userMsg provider.Message) tea.Cmd {
 		}
 	}
 
+	// Resolved per turn rather than once: the config can change under a
+	// running session now that it reloads on disk change.
+	if problems := m.mgr.ResolveFallbacks(a); len(problems) > 0 {
+		m.setFlash("fallback: "+problems[0], true)
+	}
 	a.Messages = append(a.Messages, userMsg)
 	var titleCmd tea.Cmd
 	if m.sessName == "" {

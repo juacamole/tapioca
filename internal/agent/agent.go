@@ -15,6 +15,7 @@ import (
 	"tapioca/internal/mcp"
 	"tapioca/internal/project"
 	"tapioca/internal/provider"
+	"tapioca/internal/skills"
 	"tapioca/internal/stats"
 	"tapioca/internal/textenc"
 	"tapioca/internal/tools"
@@ -69,6 +70,7 @@ const (
 	EvPermission // a built-in tool wants permission; answer via Perm.Reply
 	EvSpawn      // the agent delegated a task; answer via Spawn.Reply
 	EvRetry      // transient provider failure; retrying after Delay
+	EvFallback   // this model is out; continuing on the next one configured
 	EvNotice     // non-fatal warning for the user
 	EvError
 	EvDone // turn finished (after any tool rounds)
@@ -136,6 +138,9 @@ type Agent struct {
 	Thinking       bool
 	ThinkingBudget int
 	ToolsEnabled   bool
+	// Fallbacks are tried in order when this model cannot answer. Resolved by
+	// the frontend, which is the only part that can build a provider.
+	Fallbacks []fallbackTarget
 
 	Messages      []provider.Message
 	Queue         []provider.Message // prompts queued while the agent is busy
@@ -190,11 +195,21 @@ func (a *Agent) TotalTokens() int {
 // settings panel, /settings reload); reading them from run would race, and a
 // reload can even nil the provider. Snapshotting at Send makes each turn see
 // one consistent configuration.
+// fallbackTarget is somewhere to try when the current model cannot answer.
+// Resolved before the run starts, because the run loop has no way to build a
+// provider from config on its own.
+type fallbackTarget struct {
+	prov         provider.Provider
+	providerName string
+	model        string
+}
+
 type runSettings struct {
 	prov           provider.Provider
 	providerName   string
 	providerErr    string
 	model          string
+	fallbacks      []fallbackTarget
 	systemBase     string
 	goal           string
 	maxTokens      int
@@ -212,11 +227,26 @@ func (a *Agent) snapshot() runSettings {
 	}
 	return runSettings{
 		prov: a.Provider, providerName: a.ProviderName, providerErr: a.ProviderErr,
-		model: a.Model, systemBase: a.SystemPrompt, goal: a.Goal,
+		model: a.Model, fallbacks: a.Fallbacks, systemBase: a.SystemPrompt, goal: a.Goal,
 		maxTokens: a.MaxTokens, temperature: a.Temperature,
 		thinking: a.Thinking, thinkingBudget: a.ThinkingBudget,
 		toolsEnabled: a.ToolsEnabled, rounds: rounds,
 	}
+}
+
+// nextFallback moves the run settings to the next configured model and
+// reports whether there was one. It mutates rs because everything downstream —
+// the request, the usage attribution, the status line — reads the model from
+// there, and leaving them disagreeing about which model answered is worse than
+// the failure being recovered from.
+func nextFallback(rs *runSettings, at *int) (fallbackTarget, bool) {
+	if *at+1 >= len(rs.fallbacks) {
+		return fallbackTarget{}, false
+	}
+	*at++
+	t := rs.fallbacks[*at]
+	rs.prov, rs.providerName, rs.model = t.prov, t.providerName, t.model
+	return t, true
 }
 
 // System composes the effective system prompt (base + goal + cwd + mode).
@@ -238,6 +268,12 @@ func composeSystem(base, goal string, exec *tools.Executor) string {
 		}
 		if mem := project.Memory(cwd); mem != "" {
 			sys += "\n\nProject memory (remembered facts):\n" + mem
+		}
+		// One line per skill and no more: the bodies are what would make this
+		// expensive, and load_skill fetches those only when one is relevant.
+		if list, _ := skills.Load(cwd); len(list) > 0 {
+			sys += "\n\nSkills installed here. Only these descriptions are loaded; " +
+				"call load_skill with a name to get the instructions behind it:\n" + skills.Catalog(list)
 		}
 		// Tool guidance belongs here rather than in the default system prompt:
 		// that one is user-editable and already saved in existing configs.
@@ -340,11 +376,17 @@ func (a *Agent) run(ctx context.Context, rs runSettings, history []provider.Mess
 			if a.Depth == 0 && a.CanSpawn {
 				req.Tools = append(req.Tools, SpawnTool)
 			}
+			if a.Exec != nil {
+				if list, _ := skills.Load(a.Exec.Cwd()); len(list) > 0 {
+					req.Tools = append(req.Tools, SkillTool)
+				}
+			}
 			if a.MCP != nil {
 				req.Tools = append(req.Tools, a.MCP.AllTools()...)
 			}
 		}
 
+		fallbackAt := -1
 		var msg provider.Message
 		var streamErr error
 		var stopReason string
@@ -386,12 +428,26 @@ func (a *Agent) run(ctx context.Context, rs runSettings, history []provider.Mess
 			if streamErr == nil || ctx.Err() != nil || errors.Is(streamErr, context.Canceled) {
 				break
 			}
-			if attempt >= provider.RetryMaxAttempts || !provider.Retryable(streamErr) {
+			if !provider.Retryable(streamErr) {
 				break
 			}
 			delay, ok := provider.RetryDelay(attempt, streamErr)
-			if !ok {
-				break
+			if attempt >= provider.RetryMaxAttempts || !ok {
+				// Retrying this model is finished. The failure classes that
+				// get here — rate limits, exhausted quota, a provider having
+				// trouble — are rarely about the model, so somewhere else may
+				// well answer. A refusal or a bad request never reaches this
+				// point: those are answers, and asking a second model would
+				// only spend money to be told the same thing twice.
+				next, ok := nextFallback(&rs, &fallbackAt)
+				if !ok {
+					break
+				}
+				req.Model = rs.model
+				a.emit(Event{Kind: EvFallback, Err: streamErr,
+					Provider: next.providerName, Model: next.model})
+				attempt = -1 // the loop's ++ makes this the first attempt there
+				continue
 			}
 			if msg.Usage != nil {
 				lost.InputTokens += msg.Usage.InputTokens
@@ -509,6 +565,8 @@ func (a *Agent) run(ctx context.Context, rs runSettings, history []provider.Mess
 				text, isErr = a.writeTodos(tu.Input)
 			case tu.Name == SpawnTool.Name:
 				text, isErr = a.spawnAgent(ctx, tu.Input)
+			case tu.Name == SkillTool.Name:
+				text, isErr = a.loadSkill(tu.Input)
 			case a.Exec != nil && a.Exec.Has(tu.Name):
 				// No deadline here: the executor times the execution itself,
 				// after any permission prompt has been answered.
@@ -539,11 +597,25 @@ func (a *Agent) run(ctx context.Context, rs runSettings, history []provider.Mess
 				}
 				if !allowed {
 					text, isErr = "the user denied permission for this call", true
-				} else {
-					toolStart = time.Now()
-					callCtx, cancelCall := context.WithTimeout(ctx, toolCallTimeout)
-					text, isErr, callErr = a.MCP.Call(callCtx, tu.Name, tu.Input)
-					cancelCall()
+					break
+				}
+				// Hooks run here for the same reason the rules do: a policy
+				// that covered the built-ins and skipped every tool an MCP
+				// server offers would be a policy with a hole in it.
+				if a.Exec != nil {
+					if reason, blocked := a.Exec.RunPreToolHooks(ctx, key, tu.Input); blocked {
+						text, isErr = reason, true
+						break
+					}
+				}
+				toolStart = time.Now()
+				callCtx, cancelCall := context.WithTimeout(ctx, toolCallTimeout)
+				text, isErr, callErr = a.MCP.Call(callCtx, tu.Name, tu.Input)
+				cancelCall()
+				if a.Exec != nil {
+					if note := a.Exec.RunPostToolHooks(ctx, key, tu.Input, isErr || callErr != nil); note != "" {
+						text = strings.TrimRight(text, "\n") + "\n" + note
+					}
 				}
 			default:
 				callErr = fmt.Errorf("no handler for tool %q", tu.Name)
