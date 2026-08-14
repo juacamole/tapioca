@@ -175,6 +175,9 @@ type Agent struct {
 	Events chan Event
 	MCP    *mcp.Registry
 	Exec   *tools.Executor
+	// Remote answers this agent's turns instead of a provider, when it is an
+	// external agent Tapioca drives rather than one it runs.
+	Remote Remote
 	cancel context.CancelFunc
 }
 
@@ -290,14 +293,53 @@ func composeSystem(base, goal string, exec *tools.Executor) string {
 	return sys
 }
 
+// Remote answers an agent's turns somewhere other than a provider: another
+// agent, in its own process, driven over ACP. Declared here rather than in
+// internal/acp because that package speaks to this one, not the other way
+// round.
+type Remote interface {
+	// Prompt runs one turn and returns when it has ended, reporting what
+	// happened on the way through the agent's own events. A cancelled ctx asks
+	// the other side to stop.
+	Prompt(ctx context.Context, text string) error
+	// Close disconnects and stops the process behind it.
+	Close()
+}
+
 // Send starts a turn using history (which must already include the new user
 // message). It returns immediately; progress arrives on a.Events.
 func (a *Agent) Send(history []provider.Message) {
-	history = RepairHistory(history)
-	rs := a.snapshot()
 	ctx, cancel := context.WithCancel(context.Background())
 	a.cancel = cancel
+	if a.Remote != nil {
+		// The agent on the other end keeps the conversation; only the new
+		// prompt crosses the connection, so history is not replayed to it.
+		go a.runRemote(ctx, lastText(history))
+		return
+	}
+	history = RepairHistory(history)
+	rs := a.snapshot()
 	go a.run(ctx, rs, history)
+}
+
+// runRemote drives one turn on an external agent. Whatever goes wrong out
+// there is this tab's error and nothing more: a process Tapioca did not write,
+// crashing, must not take the session with it.
+func (a *Agent) runRemote(ctx context.Context, text string) {
+	defer a.emit(Event{Kind: EvDone})
+	a.emit(Event{Kind: EvStatus, Status: StatusWaiting, Text: "sending prompt"})
+	if err := a.Remote.Prompt(ctx, text); err != nil {
+		a.emit(Event{Kind: EvError, Err: err})
+	}
+}
+
+func lastText(history []provider.Message) string {
+	for i := len(history) - 1; i >= 0; i-- {
+		if history[i].Role == "user" {
+			return history[i].Text()
+		}
+	}
+	return ""
 }
 
 // Todos is written by writeTodos on the run goroutine and read by the
@@ -328,6 +370,25 @@ func (a *Agent) emit(ev Event) {
 	a.Events <- ev
 }
 
+// Emit publishes an event as if this agent's run loop had produced it. An
+// agent driven over ACP runs its turn in another process, and the frontend
+// should not learn a second vocabulary to display one.
+func (a *Agent) Emit(ev Event) { a.emit(ev) }
+
+// Ask puts a permission request in front of the user and blocks for the
+// answer. A cancelled turn counts as a refusal: nothing is allowed by the
+// absence of an answer.
+func (a *Agent) Ask(ctx context.Context, tool, summary string) tools.Decision {
+	req := &PermissionReq{Tool: tool, Summary: summary, Reply: make(chan tools.Decision, 1)}
+	a.emit(Event{Kind: EvPermission, Perm: req})
+	select {
+	case d := <-req.Reply:
+		return d
+	case <-ctx.Done():
+		return tools.Decision{}
+	}
+}
+
 func (a *Agent) run(ctx context.Context, rs runSettings, history []provider.Message) {
 	defer a.emit(Event{Kind: EvDone})
 
@@ -340,16 +401,7 @@ func (a *Agent) run(ctx context.Context, rs runSettings, history []provider.Mess
 		return
 	}
 
-	ask := func(tool, summary string) tools.Decision {
-		req := &PermissionReq{Tool: tool, Summary: summary, Reply: make(chan tools.Decision, 1)}
-		a.emit(Event{Kind: EvPermission, Perm: req})
-		select {
-		case d := <-req.Reply:
-			return d
-		case <-ctx.Done():
-			return tools.Decision{}
-		}
-	}
+	ask := func(tool, summary string) tools.Decision { return a.Ask(ctx, tool, summary) }
 
 	doomKey, doomCount, doomOff := "", 0, false
 	for round := 0; round < rs.rounds; round++ {
@@ -578,25 +630,13 @@ func (a *Agent) run(ctx context.Context, rs runSettings, history []provider.Mess
 				// including the configured rules; theirs match on the tool
 				// name and the call's arguments.
 				key := "mcp:" + tu.Name
-				act := ""
+				denial := ""
+				allowed := true
 				if a.Exec != nil {
-					act = a.Exec.RuleFor(key, string(tu.Input))
-				}
-				if act == tools.RuleDeny {
-					text, isErr = "denied: a permission rule in the config forbids "+tu.Name, true
-					break
-				}
-				// A rule that says ask outranks an earlier "always allow".
-				allowed := act != tools.RuleAsk && (a.Exec == nil || a.Exec.ExternalAllowed(key))
-				if !allowed {
-					d := ask(key, argsPreview)
-					allowed = d.Allow
-					if d.Always && a.Exec != nil && act != tools.RuleAsk {
-						a.Exec.GrantExternal(key)
-					}
+					denial, allowed = a.Exec.ApproveExternal(key, argsPreview, ask)
 				}
 				if !allowed {
-					text, isErr = "the user denied permission for this call", true
+					text, isErr = denial, true
 					break
 				}
 				// Hooks run here for the same reason the rules do: a policy

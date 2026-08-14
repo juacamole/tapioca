@@ -66,13 +66,25 @@ or refuse a call outright when your own check says no.
 editors drive the same build. It reads `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`
 and `CRUSH.md`, so instructions written for other tools work unchanged.
 
+**It drives other agents too.** Configure one under `[[agents.external]]` and
+`/connect` gives it a tab: its output streams into the transcript, and every
+command it wants to run goes through your permission rules first — the same
+prompt, the same `deny` list, whoever is asking.
+
+```toml
+[[agents.external]]
+name    = "claude-code"
+command = "claude"
+args    = ["--acp"]
+```
+
 ## Slash commands
 
 | | |
 |---|---|
 | `/help` | keybinds and commands |
 | `/model [provider:]name` | switch model (no argument opens a picker) |
-| `/connect` | connect a provider or account |
+| `/connect [agent]` | connect a provider, account or external agent |
 | `/effort [level]` | thinking effort (no argument opens a picker) |
 | `/thinking` | toggle thinking |
 | `/tools` | toggle tools for this agent |

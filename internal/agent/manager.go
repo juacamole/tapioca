@@ -139,6 +139,33 @@ func (m *Manager) NewAgent() *Agent {
 	return a
 }
 
+// NewExternal creates a tab for an agent Tapioca drives over ACP. It has no
+// provider and no settings of its own: the process on the other end owns the
+// model, the prompt and the history, and this is the frontend for it. The
+// executor comes along all the same — the permission rules are Tapioca's, and
+// they apply to whatever that process asks to do.
+func (m *Manager) NewExternal(name string, remote Remote) *Agent {
+	m.nextID++
+	if name == "" {
+		name = fmt.Sprintf("external-%d", m.nextID)
+	}
+	a := &Agent{
+		ID:   m.nextID,
+		Name: name,
+		// The dashboard's model column answers "what is replying here", and
+		// for this tab that is the external agent rather than any model of
+		// ours — naming it is closer to the truth than leaving it blank.
+		ProviderName: "acp",
+		Model:        name,
+		ToolsEnabled: true,
+		Remote:       remote,
+		Events:       make(chan Event, 512),
+		Exec:         m.Exec,
+	}
+	m.Agents = append(m.Agents, a)
+	return a
+}
+
 // Fork clones src (settings, system prompt, goal and full history) into a new
 // agent, so the conversation can branch.
 func (m *Manager) Fork(src *Agent) *Agent {
@@ -199,6 +226,16 @@ func (m *Manager) Spawn(parent *Agent, name string) *Agent {
 	return a
 }
 
+// CloseRemotes disconnects every external agent. Their processes are children
+// of this one, and nothing keeps running after the app exits.
+func (m *Manager) CloseRemotes() {
+	for _, a := range m.Agents {
+		if a.Remote != nil {
+			a.Remote.Close()
+		}
+	}
+}
+
 // ActiveAgent returns the currently selected agent, or nil.
 func (m *Manager) ActiveAgent() *Agent {
 	if len(m.Agents) == 0 {
@@ -242,6 +279,9 @@ func (m *Manager) Close(i int) {
 	}
 	a := m.Agents[i]
 	a.Cancel()
+	if a.Remote != nil {
+		a.Remote.Close()
+	}
 	// Drain remaining events so the run goroutine can exit.
 	go func() {
 		for {
@@ -264,8 +304,17 @@ func (m *Manager) ToSession(id, name string, createdAt time.Time) *session.Sessi
 	if m.Exec != nil {
 		cwd = m.Exec.Cwd()
 	}
-	s := &session.Session{ID: id, Name: name, Cwd: cwd, CreatedAt: createdAt, Active: m.Active}
-	for _, a := range m.Agents {
+	s := &session.Session{ID: id, Name: name, Cwd: cwd, CreatedAt: createdAt}
+	for i, a := range m.Agents {
+		if a.Remote != nil {
+			// A connection to another process is not state a file can hold,
+			// and restoring the tab without it would produce an agent that
+			// looks connected and answers nothing.
+			continue
+		}
+		if i == m.Active {
+			s.Active = len(s.Agents)
+		}
 		msgs := a.Messages
 		if len(a.PendingNotes) > 0 {
 			msgs = append(append([]provider.Message{}, a.Messages...), a.PendingNotes...)
@@ -296,6 +345,9 @@ func (m *Manager) ToSession(id, name string, createdAt time.Time) *session.Sessi
 func (m *Manager) LoadSession(s *session.Session) {
 	for i := range m.Agents {
 		m.Agents[i].Cancel()
+		if r := m.Agents[i].Remote; r != nil {
+			r.Close()
+		}
 	}
 	m.Agents = nil
 	for _, st := range s.Agents {

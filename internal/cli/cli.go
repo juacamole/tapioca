@@ -317,6 +317,7 @@ func Main() {
 		go lsps.Warm() // load the workspace before the first edit needs it
 	}
 	mgr := agent.NewManager(cfg, reg, exec)
+	defer mgr.CloseRemotes() // external agents are children too
 	// Only the TUI can run a subagent (it owns the tabs and their event
 	// pumps), so only it advertises the tool. Headless runs below never do.
 	mgr.AllowSpawn = args.printPrompt == ""
