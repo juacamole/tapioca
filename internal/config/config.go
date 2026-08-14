@@ -29,6 +29,13 @@ type ProviderConfig struct {
 	CredentialsFile string            `toml:"credentials_file"` // vertex: service account JSON
 }
 
+// Fallback is an ordered list of models to try when one cannot answer. When
+// names the model it applies to as "[provider:]model"; Then is tried in order.
+type Fallback struct {
+	When string   `toml:"when"`
+	Then []string `toml:"then"`
+}
+
 // Cost is the price per million tokens for a model prefix.
 type Cost struct {
 	In  float64 `toml:"in"`
@@ -116,6 +123,7 @@ type Config struct {
 	Keys        map[string]string         `toml:"keys"`
 	Colors      map[string]string         `toml:"colors"` // theme overrides: "#hex" or "#light/#dark"
 	Costs       map[string]Cost           `toml:"costs"`  // model prefix -> $/Mtok
+	Fallbacks   []Fallback                `toml:"fallback"`
 
 	path    string // where this config was loaded from
 	presave func(*Config)
@@ -513,6 +521,13 @@ api_key_env = "ANTHROPIC_API_KEY"
 # [providers.lmstudio]
 # type = "openai"
 # base_url = "http://localhost:1234"
+
+# When a model cannot answer — rate limited, out of quota, provider erroring —
+# try these instead, in order. A refusal or a bad request is an answer, not a
+# failure, and is never retried elsewhere.
+# [[fallback]]
+# when = "anthropic:claude-opus-5"
+# then = ["anthropic:claude-sonnet-5", "ollama:qwen3-coder"]
 
 # Cost table for the dashboard, $ per million tokens, matched by model prefix.
 # Sensible defaults exist for common anthropic/openai models; override here.

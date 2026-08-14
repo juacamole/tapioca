@@ -86,6 +86,8 @@ func buildSlashCmds() []slashCmd {
 		{"remember", "fact | clear", "persist a project fact for the model", cmdRemember},
 		{"btw", "note", "add context without asking for a reply", cmdBtw},
 		{"ask", "question", "answer from context, kept out of the conversation", cmdAsk},
+		{"queue", "", "edit or drop prompts waiting to send", cmdQueue},
+		{"steer", "text", "stop this turn and send yours next, keeping its work", cmdSteer},
 		{"cd", "dir", "change the working directory", cmdCd},
 		{"diff", "", "show git diff of the working directory", cmdDiff},
 		{"permissions", "", "show what runs without approval", cmdPermissions},

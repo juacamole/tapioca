@@ -24,6 +24,7 @@ func dashApp(t *testing.T, w, h int) *App {
 	mgr.Agents = []*agent.Agent{{ID: 1}}
 	m := &App{cfg: cfg, w: w, h: h, ready: true, mgr: mgr, mouseOn: true}
 	m.keys = NewKeyMap(nil)
+	m.spawns = map[int]*agent.SpawnReq{}
 	m.ta = textarea.New()
 	m.vp = viewport.New(viewport.WithWidth(w), viewport.WithHeight(h))
 	m.recalcLayout()

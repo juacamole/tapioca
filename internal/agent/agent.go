@@ -69,6 +69,7 @@ const (
 	EvPermission // a built-in tool wants permission; answer via Perm.Reply
 	EvSpawn      // the agent delegated a task; answer via Spawn.Reply
 	EvRetry      // transient provider failure; retrying after Delay
+	EvFallback   // this model is out; continuing on the next one configured
 	EvNotice     // non-fatal warning for the user
 	EvError
 	EvDone // turn finished (after any tool rounds)
@@ -136,6 +137,9 @@ type Agent struct {
 	Thinking       bool
 	ThinkingBudget int
 	ToolsEnabled   bool
+	// Fallbacks are tried in order when this model cannot answer. Resolved by
+	// the frontend, which is the only part that can build a provider.
+	Fallbacks []fallbackTarget
 
 	Messages      []provider.Message
 	Queue         []provider.Message // prompts queued while the agent is busy
@@ -190,11 +194,21 @@ func (a *Agent) TotalTokens() int {
 // settings panel, /settings reload); reading them from run would race, and a
 // reload can even nil the provider. Snapshotting at Send makes each turn see
 // one consistent configuration.
+// fallbackTarget is somewhere to try when the current model cannot answer.
+// Resolved before the run starts, because the run loop has no way to build a
+// provider from config on its own.
+type fallbackTarget struct {
+	prov         provider.Provider
+	providerName string
+	model        string
+}
+
 type runSettings struct {
 	prov           provider.Provider
 	providerName   string
 	providerErr    string
 	model          string
+	fallbacks      []fallbackTarget
 	systemBase     string
 	goal           string
 	maxTokens      int
@@ -212,11 +226,26 @@ func (a *Agent) snapshot() runSettings {
 	}
 	return runSettings{
 		prov: a.Provider, providerName: a.ProviderName, providerErr: a.ProviderErr,
-		model: a.Model, systemBase: a.SystemPrompt, goal: a.Goal,
+		model: a.Model, fallbacks: a.Fallbacks, systemBase: a.SystemPrompt, goal: a.Goal,
 		maxTokens: a.MaxTokens, temperature: a.Temperature,
 		thinking: a.Thinking, thinkingBudget: a.ThinkingBudget,
 		toolsEnabled: a.ToolsEnabled, rounds: rounds,
 	}
+}
+
+// nextFallback moves the run settings to the next configured model and
+// reports whether there was one. It mutates rs because everything downstream —
+// the request, the usage attribution, the status line — reads the model from
+// there, and leaving them disagreeing about which model answered is worse than
+// the failure being recovered from.
+func nextFallback(rs *runSettings, at *int) (fallbackTarget, bool) {
+	if *at+1 >= len(rs.fallbacks) {
+		return fallbackTarget{}, false
+	}
+	*at++
+	t := rs.fallbacks[*at]
+	rs.prov, rs.providerName, rs.model = t.prov, t.providerName, t.model
+	return t, true
 }
 
 // System composes the effective system prompt (base + goal + cwd + mode).
@@ -345,6 +374,7 @@ func (a *Agent) run(ctx context.Context, rs runSettings, history []provider.Mess
 			}
 		}
 
+		fallbackAt := -1
 		var msg provider.Message
 		var streamErr error
 		var stopReason string
@@ -386,12 +416,26 @@ func (a *Agent) run(ctx context.Context, rs runSettings, history []provider.Mess
 			if streamErr == nil || ctx.Err() != nil || errors.Is(streamErr, context.Canceled) {
 				break
 			}
-			if attempt >= provider.RetryMaxAttempts || !provider.Retryable(streamErr) {
+			if !provider.Retryable(streamErr) {
 				break
 			}
 			delay, ok := provider.RetryDelay(attempt, streamErr)
-			if !ok {
-				break
+			if attempt >= provider.RetryMaxAttempts || !ok {
+				// Retrying this model is finished. The failure classes that
+				// get here — rate limits, exhausted quota, a provider having
+				// trouble — are rarely about the model, so somewhere else may
+				// well answer. A refusal or a bad request never reaches this
+				// point: those are answers, and asking a second model would
+				// only spend money to be told the same thing twice.
+				next, ok := nextFallback(&rs, &fallbackAt)
+				if !ok {
+					break
+				}
+				req.Model = rs.model
+				a.emit(Event{Kind: EvFallback, Err: streamErr,
+					Provider: next.providerName, Model: next.model})
+				attempt = -1 // the loop's ++ makes this the first attempt there
+				continue
 			}
 			if msg.Usage != nil {
 				lost.InputTokens += msg.Usage.InputTokens
