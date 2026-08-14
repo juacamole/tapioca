@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -171,10 +172,19 @@ func canonicalResource(raw string) (string, error) {
 	return u.String(), nil
 }
 
+// isLoopbackHost reports whether a host is this machine.
+//
+// It has to be an address literal or the name reserved for one. A prefix test
+// does not do it: "127.example.com" starts with "127." and resolves to whatever
+// its owner points it at, so anyone who can name a token endpoint could name one
+// that passes the https requirement and still crosses the network in the clear
+// — which is the entire thing that requirement is for.
 func isLoopbackHost(host string) bool {
-	switch host {
-	case "localhost", "127.0.0.1", "::1", "[::1]":
+	// RFC 6761 reserves localhost for the loopback interface, in both the bare
+	// and the fully qualified spelling.
+	if strings.EqualFold(strings.TrimSuffix(host, "."), "localhost") {
 		return true
 	}
-	return strings.HasPrefix(host, "127.")
+	ip, err := netip.ParseAddr(strings.Trim(host, "[]"))
+	return err == nil && ip.IsLoopback()
 }

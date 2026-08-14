@@ -718,10 +718,15 @@ func StartLogin(ctx context.Context, cfg config.MCPServerConfig) (*Authorization
 // that fails for no visible reason. When the old port is taken, a fresh one is
 // used and the client is registered again against it.
 func listenForRedirect(previous string) (net.Listener, string, error) {
+	// Only the port is taken from the stored URI, and it is rebuilt rather than
+	// echoed. What was read back is only as trustworthy as the file it came from,
+	// and a redirect_uri naming somewhere else entirely would send the code there
+	// while the listener sat waiting on a port nothing was ever going to hit.
 	if previous != "" {
-		if u, err := url.Parse(previous); err == nil && u.Port() != "" {
+		if u, err := url.Parse(previous); err == nil && u.Scheme == "http" &&
+			isLoopbackHost(u.Hostname()) && u.Port() != "" {
 			if ln, err := net.Listen("tcp", "127.0.0.1:"+u.Port()); err == nil {
-				return ln, previous, nil
+				return ln, "http://127.0.0.1:" + u.Port() + "/callback", nil
 			}
 		}
 	}
