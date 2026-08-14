@@ -36,6 +36,14 @@ const cancelGrace = 10 * time.Second
 // what makes a crash report worth reading.
 const stderrTail = 4 << 10
 
+// maxLineBytes bounds one message from the agent. A tool result carrying a file
+// is legitimately a megabyte or two, so the limit is generous; it is not absent
+// because the far end is another process, and a line that never ends is that
+// process spending this one's memory until something gives. A variable only so
+// a test can lower it — reaching the real one costs 32 MB of traffic to prove
+// what a few kilobytes prove just as well.
+var maxLineBytes = 32 << 20
+
 // Client drives one external agent over stdio.
 type Client struct {
 	Name string
@@ -126,7 +134,20 @@ func newClient(name string, out io.WriteCloser, gate *tools.Executor) *Client {
 // watch runs the read loop and records why it ended.
 func (c *Client) watch(in io.Reader, reason func() string) {
 	go func() {
-		c.readLoop(in)
+		err := c.readLoop(in)
+		if err != nil {
+			// The read gave up while the agent is still running — a line longer
+			// than the buffer is the way this happens. Nothing drains its stdout
+			// from here on, so it blocks on a full pipe and waiting on it would
+			// block on that: the tab would sit there with no turn and no error.
+			// Killing it first is what lets the wait return and the tab be told.
+			if c.proc != nil && c.proc.Process != nil {
+				_ = c.proc.Process.Kill()
+			}
+			_ = reason() // reaps it, now that the kill has let the wait return
+			c.disconnected(c.Name + ": " + err.Error())
+			return
+		}
 		c.disconnected(reason())
 	}()
 }
@@ -198,9 +219,12 @@ func (c *Client) exitError() error {
 	return errors.New(c.Name + " is not connected")
 }
 
-func (c *Client) readLoop(in io.Reader) {
+// readLoop reads messages until the stream ends. A returned error means the
+// reading stopped rather than the stream finishing, which the caller has to
+// tell apart: the agent is still alive in that case.
+func (c *Client) readLoop(in io.Reader) error {
 	sc := bufio.NewScanner(in)
-	sc.Buffer(make([]byte, 0, 64*1024), 32*1024*1024)
+	sc.Buffer(make([]byte, 0, 64*1024), maxLineBytes)
 	for sc.Scan() {
 		line := sc.Bytes()
 		if len(strings.TrimSpace(string(line))) == 0 {
@@ -217,6 +241,7 @@ func (c *Client) readLoop(in io.Reader) {
 		}
 		c.dispatch(&msg)
 	}
+	return sc.Err()
 }
 
 // dispatch handles one message from the agent. Notifications are handled on
