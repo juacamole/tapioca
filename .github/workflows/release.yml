@@ -44,7 +44,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
-        with: { go-version: "1.26" }
+        with: { go-version-file: go.mod }
       - run: go vet ./...
       - run: go test -race ./...
 
@@ -62,7 +62,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
-        with: { go-version: "1.26" }
+        with: { go-version-file: go.mod }
       - name: build both names
         env:
           GOOS: ${{ matrix.goos }}
