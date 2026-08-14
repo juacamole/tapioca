@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 
 	"tapioca/internal/provider"
@@ -13,7 +14,19 @@ import (
 type stubProvider struct {
 	name  string
 	reply string
-	saw   provider.Request
+
+	// saw is written on the streaming goroutine and read by the test, so it
+	// needs a lock. The race detector on CI caught this; it cannot run on an
+	// arm64 kernel with a 47-bit VMA, which is where this was written.
+	mu  sync.Mutex
+	saw provider.Request
+}
+
+// request returns a copy of what the provider was asked for.
+func (s *stubProvider) request() provider.Request {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.saw
 }
 
 func (s *stubProvider) Name() string { return s.name }
@@ -23,7 +36,9 @@ func (s *stubProvider) ListModels(context.Context) ([]string, error) {
 }
 
 func (s *stubProvider) Stream(ctx context.Context, req provider.Request, out chan<- provider.Event) (provider.Message, error) {
+	s.mu.Lock()
 	s.saw = req
+	s.mu.Unlock()
 	defer close(out)
 	for _, word := range strings.Fields(s.reply) {
 		select {
@@ -91,7 +106,7 @@ func TestAskSendsTheConversationAsContext(t *testing.T) {
 	cmdAsk(m, "what did I just ask you to do?")
 
 	// Let the goroutine run to the point it records the request.
-	for i := 0; i < 50 && st.saw.Model == ""; i++ {
+	for i := 0; i < 50 && st.request().Model == ""; i++ {
 		if m.ask == nil {
 			break
 		}
@@ -103,14 +118,15 @@ func TestAskSendsTheConversationAsContext(t *testing.T) {
 		}
 	}
 
-	if len(st.saw.Messages) < 3 {
-		t.Fatalf("the model saw %d messages, want the conversation plus the question", len(st.saw.Messages))
+	saw := st.request()
+	if len(saw.Messages) < 3 {
+		t.Fatalf("the model saw %d messages, want the conversation plus the question", len(saw.Messages))
 	}
-	last := st.saw.Messages[len(st.saw.Messages)-1].Text()
+	last := saw.Messages[len(saw.Messages)-1].Text()
 	if !strings.Contains(last, "what did I just ask you to do?") {
 		t.Errorf("the question did not reach the model: %q", last)
 	}
-	if !strings.Contains(st.saw.Messages[0].Text(), "refactor the parser") {
+	if !strings.Contains(saw.Messages[0].Text(), "refactor the parser") {
 		t.Error("the conversation was not sent as context")
 	}
 }
@@ -124,8 +140,8 @@ func TestAskOffersNoTools(t *testing.T) {
 			m.handleAsk(msg)
 		}
 	}
-	if len(st.saw.Tools) != 0 {
-		t.Errorf("/ask offered %d tools", len(st.saw.Tools))
+	if tools := st.request().Tools; len(tools) != 0 {
+		t.Errorf("/ask offered %d tools", len(tools))
 	}
 }
 
@@ -149,7 +165,7 @@ func TestAskWithNoQuestionDoesNotCallTheModel(t *testing.T) {
 	if m.ask != nil {
 		t.Error("an empty question opened the overlay")
 	}
-	if st.saw.Model != "" {
+	if st.request().Model != "" {
 		t.Error("an empty question reached the model")
 	}
 }
