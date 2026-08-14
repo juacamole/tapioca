@@ -3,8 +3,8 @@ package ui
 import (
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 )
 
 // pickerKind identifies what a picker selection means.
@@ -83,7 +83,7 @@ func (p *picker) selected() *pickerItem {
 }
 
 // handleKey processes a key; it returns (chosen, closed).
-func (p *picker) handleKey(msg tea.KeyMsg) (*pickerItem, bool) {
+func (p *picker) handleKey(msg tea.KeyPressMsg) (*pickerItem, bool) {
 	switch msg.String() {
 	case "esc":
 		return nil, true
@@ -111,8 +111,8 @@ func (p *picker) handleKey(msg tea.KeyMsg) (*pickerItem, bool) {
 			p.filter = string(r[:len(r)-1])
 		}
 	default:
-		if msg.Type == tea.KeyRunes && !msg.Alt {
-			p.filter += string(msg.Runes)
+		if msg.Text != "" {
+			p.filter += msg.Text
 			p.sel = 0
 		}
 	}

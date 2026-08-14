@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/viewport"
+	"charm.land/bubbles/v2/viewport"
 )
 
 // openHelp shows the keybind/command reference in a narrow scrollable
@@ -13,7 +13,7 @@ func (m *App) openHelp() {
 	w := min(56, m.w-6)
 	h := max(6, m.h-7)
 	m.textTitle = "help — j/k scroll, esc close"
-	m.textVP = viewport.New(w-4, h-4)
+	m.textVP = viewport.New(viewport.WithWidth(w-4), viewport.WithHeight(h-4))
 	m.textVP.SetContent(m.helpContent(w - 6))
 	m.overlay = overlayHelp
 }
@@ -60,7 +60,7 @@ func (m *App) helpContent(w int) string {
 		"mark chat text with the mouse — it is",
 		"  copied automatically",
 		"keybinds: [keys] in config (/settings)",
-		"shift+enter needs terminal support (README)",
+		"newline: shift+enter, or ctrl+j",
 	} {
 		b.WriteString(styDim.Render(truncate(n, w)) + "\n")
 	}

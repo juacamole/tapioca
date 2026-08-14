@@ -5,8 +5,8 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/textarea"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/textarea"
+	tea "charm.land/bubbletea/v2"
 )
 
 // Mouse text selection in the chat viewport: drag with the left button to
@@ -37,10 +37,10 @@ func (m *App) mouseToChat(x, y int) (selPoint, bool) {
 	}
 	innerX := x - chatLeft - 1
 	innerY := y - chatTop
-	if innerX < 0 || innerY < 0 || innerY >= m.vp.Height || innerX >= m.vp.Width {
+	if innerX < 0 || innerY < 0 || innerY >= m.vp.Height() || innerX >= m.vp.Width() {
 		return selPoint{}, false
 	}
-	line := m.vp.YOffset + innerY
+	line := m.vp.YOffset() + innerY
 	plain := m.plainLines()
 	if line < 0 || line >= len(plain) {
 		return selPoint{}, false
@@ -126,28 +126,54 @@ func (m *App) regionAt(x, y int) (region, int) {
 	if x < chatLeft || x >= chatLeft+chatW {
 		return regionNone, 0
 	}
-	vpTop := chatTop + 1
-	switch {
-	case y >= vpTop && y < vpTop+m.vp.Height:
-		return regionChat, 0
-	case y >= vpTop+m.vp.Height+1 && y < chatTop+chatH-1:
-		return regionInput, 0
+	if y < chatTop || y >= chatTop+chatH {
+		return regionNone, 0
 	}
-	return regionNone, 0
+	// Every row of the pane belongs to one half of it. The borders and the
+	// rule between the transcript and the input used to map to nothing, so a
+	// click landing on one silently did nothing — and whether you hit a border
+	// is a matter of a row or two, which is what made it look intermittent.
+	// A border is part of the thing it draws around.
+	if y < chatTop+1+m.vp.Height() {
+		return regionChat, 0
+	}
+	return regionInput, 0
 }
 
 // handleChatMouse processes clicks (focus follows the mouse) and selection
 // drags; it reports whether the event was consumed and any follow-up cmd.
+//
+// v2 delivers a distinct message per kind of mouse event rather than one
+// message with an action field, so the shape here follows that.
 func (m *App) handleChatMouse(msg tea.MouseMsg) (bool, tea.Cmd) {
 	if m.overlay != overlayNone {
 		return false, nil
 	}
-	switch msg.Action {
-	case tea.MouseActionPress:
-		if msg.Button != tea.MouseButtonLeft {
+	mouse := msg.Mouse()
+	switch msg.(type) {
+	case tea.MouseWheelMsg:
+		// The wheel over a panel scrolls that panel, whether or not it has
+		// focus — otherwise the only way to read a truncated panel is to focus
+		// it first, which is not how a wheel behaves anywhere else.
+		if r, idx := m.regionAt(mouse.X, mouse.Y); r == regionDash {
+			dir := -1
+			if mouse.Button == tea.MouseWheelDown {
+				dir = 1
+			}
+			defs := m.fittedPanels()
+			if idx < len(defs) {
+				total, visible := m.panelContentHeight(defs, idx)
+				m.scrollPanel(defs[idx].key, dir, total, visible)
+			}
+			return true, nil // over a panel: never scroll the transcript instead
+		}
+		return false, nil
+
+	case tea.MouseClickMsg:
+		if mouse.Button != tea.MouseLeft {
 			return false, nil
 		}
-		r, idx := m.regionAt(msg.X, msg.Y)
+		r, idx := m.regionAt(mouse.X, mouse.Y)
 		switch r {
 		case regionInput:
 			m.focus = focusInput
@@ -166,7 +192,7 @@ func (m *App) handleChatMouse(msg tea.MouseMsg) (bool, tea.Cmd) {
 			m.focus = focusInput
 			cmd := tea.Batch(m.ta.Focus(), textarea.Blink)
 			m.clearSelection() // drop any previous (still highlighted) mark
-			p, ok := m.mouseToChat(msg.X, msg.Y)
+			p, ok := m.mouseToChat(mouse.X, mouse.Y)
 			if !ok {
 				return true, cmd
 			}
@@ -181,16 +207,18 @@ func (m *App) handleChatMouse(msg tea.MouseMsg) (bool, tea.Cmd) {
 			return true, cmd
 		}
 		return false, nil
-	case tea.MouseActionMotion:
+
+	case tea.MouseMotionMsg:
 		if !m.selActive {
 			return false, nil
 		}
-		if p, ok := m.mouseToChat(msg.X, msg.Y); ok {
+		if p, ok := m.mouseToChat(mouse.X, mouse.Y); ok {
 			m.selEnd = p
 			m.applySelection()
 		}
 		return true, nil
-	case tea.MouseActionRelease:
+
+	case tea.MouseReleaseMsg:
 		if !m.selActive {
 			return false, nil
 		}
@@ -269,7 +297,7 @@ func (m *App) applySelection() {
 			stySelected.Render(string(runes[start:end])) +
 			string(runes[end:])
 	}
-	off := m.vp.YOffset
+	off := m.vp.YOffset()
 	m.vp.SetContent(strings.Join(lines, "\n"))
 	m.vp.SetYOffset(off)
 }
@@ -278,7 +306,7 @@ func (m *App) applySelection() {
 func (m *App) clearSelection() {
 	m.selActive = false
 	m.selStart, m.selEnd = selPoint{}, selPoint{}
-	off := m.vp.YOffset
+	off := m.vp.YOffset()
 	m.vp.SetContent(strings.Join(m.chatStyled, "\n"))
 	m.vp.SetYOffset(off)
 }

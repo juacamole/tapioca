@@ -105,6 +105,11 @@ and `CRUSH.md`, so instructions written for other tools work unchanged.
 Drop a markdown file in `~/.config/tapioca/commands/` or `.tapioca/commands/`
 and its name becomes a command of your own.
 
+### Newlines in the prompt
+
+`shift+enter` inserts a line break, and `ctrl+j` does the same in terminals
+without support for keyboard enhancements.
+
 ## CLI
 
 ```sh

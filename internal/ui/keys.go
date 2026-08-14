@@ -3,8 +3,8 @@ package ui
 import (
 	"strings"
 
-	"github.com/charmbracelet/bubbles/key"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/key"
+	tea "charm.land/bubbletea/v2"
 )
 
 // Action is one rebindable command.
@@ -20,7 +20,10 @@ type Action struct {
 // operations, ctrl keys the frequent ones, no alt anywhere.
 var actions = []Action{
 	{"send", "send prompt", "enter", "chat"},
-	{"newline", "insert newline (shift+enter needs terminal support; ctrl+j is its wire form)", "shift+enter,ctrl+j", "chat"},
+	// shift+enter works because the view asks for keyboard enhancements and
+	// Bubbletea v2 decodes them; a terminal without that support falls back to
+	// ctrl+j, which is the same key on the wire and needs no protocol.
+	{"newline", "insert newline", "shift+enter,ctrl+j", "chat"},
 	{"edit_prompt", "edit prompt in vim/$EDITOR", "ctrl+g", "chat"},
 	{"edit_system", "edit system prompt (use /systemprompt)", "", "chat"},
 	{"cancel", "stop generation / close overlay", "esc", "chat"},
@@ -92,7 +95,7 @@ func NewKeyMap(overrides map[string]string) *KeyMap {
 }
 
 // Is reports whether msg triggers the named action.
-func (k *KeyMap) Is(msg tea.KeyMsg, action string) bool {
+func (k *KeyMap) Is(msg tea.KeyPressMsg, action string) bool {
 	b, ok := k.bindings[action]
 	if !ok {
 		return false
