@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"tapioca/internal/config"
@@ -47,6 +48,50 @@ func (m *Manager) ProviderFor(name string) (provider.Provider, error) {
 	}
 	m.provs[name] = p
 	return p, nil
+}
+
+// ResolveFallbacks turns the configured "[provider:]model" chain for an agent
+// into providers it can actually use. Resolution happens here, once, because
+// the run loop has no access to config and no way to build a provider — and
+// because a chain that names something unbuildable should be reported when it
+// is set up, not in the middle of recovering from a failure.
+//
+// Entries that cannot be resolved are dropped rather than failing the agent: a
+// fallback list is a best effort by definition, and refusing to run because
+// the third choice is misconfigured would be worse than the outage it exists
+// to survive.
+func (m *Manager) ResolveFallbacks(a *Agent) []string {
+	a.Fallbacks = nil
+	var problems []string
+	for _, fb := range m.cfg.Fallbacks {
+		wantProv, wantModel := m.splitRef(fb.When, a.ProviderName)
+		if wantProv != a.ProviderName || wantModel != a.Model {
+			continue
+		}
+		for _, ref := range fb.Then {
+			provName, model := m.splitRef(ref, a.ProviderName)
+			p, err := m.ProviderFor(provName)
+			if err != nil {
+				problems = append(problems, ref+": "+err.Error())
+				continue
+			}
+			a.Fallbacks = append(a.Fallbacks, fallbackTarget{prov: p, providerName: provName, model: model})
+		}
+	}
+	return problems
+}
+
+// splitRef reads "[provider:]model", falling back to the given provider. A
+// prefix naming no configured provider belongs to the model name: gateway ids
+// look like "anthropic/claude-opus-5".
+func (m *Manager) splitRef(ref, fallbackProvider string) (provName, model string) {
+	provName, model = fallbackProvider, ref
+	if p, rest, ok := strings.Cut(ref, ":"); ok && rest != "" {
+		if _, exists := m.cfg.Providers[p]; exists {
+			provName, model = p, rest
+		}
+	}
+	return provName, model
 }
 
 // ReloadProviders drops the provider cache (after a config edit) and

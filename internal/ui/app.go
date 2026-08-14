@@ -537,6 +537,16 @@ func (m *App) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 	case agent.EvNotice:
 		m.setFlash(ev.Text, true)
 		cmds = append(cmds, m.flashCmd())
+	case agent.EvFallback:
+		a.ResetStream()
+		note := ev.Provider + ":" + ev.Model
+		if ev.Err != nil {
+			note += gl.sep + truncate(sanitizeLabel(ev.Err.Error()), 40)
+		}
+		a.ProviderName, a.Model = ev.Provider, ev.Model
+		m.setFlash("falling back to "+note, true)
+		cmds = append(cmds, m.flashCmd())
+
 	case agent.EvRetry:
 		a.ResetStream()
 		a.Status = agent.StatusWaiting
@@ -1642,6 +1652,11 @@ func (m *App) sendPrepared(a *agent.Agent, userMsg provider.Message) tea.Cmd {
 		}
 	}
 
+	// Resolved per turn rather than once: the config can change under a
+	// running session now that it reloads on disk change.
+	if problems := m.mgr.ResolveFallbacks(a); len(problems) > 0 {
+		m.setFlash("fallback: "+problems[0], true)
+	}
 	a.Messages = append(a.Messages, userMsg)
 	var titleCmd tea.Cmd
 	if m.sessName == "" {
