@@ -38,6 +38,33 @@ func (r *Registry) SetError(name, msg string) {
 	r.errors[name] = msg
 }
 
+// Replace swaps in a reconnected client, dropping any earlier one for the same
+// name along with the error that was recorded against it. A server connected a
+// second time — after a login, say — would otherwise be listed twice, with its
+// tools offered twice under one name, and go on showing the failure that the
+// reconnection has just fixed.
+func (r *Registry) Replace(c *Client) {
+	r.mu.Lock()
+	kept := r.clients[:0]
+	var old []*Client
+	for _, existing := range r.clients {
+		if existing.Name == c.Name {
+			old = append(old, existing)
+			continue
+		}
+		kept = append(kept, existing)
+	}
+	r.clients = append(kept, c)
+	delete(r.errors, c.Name)
+	r.mu.Unlock()
+	// Outside the lock: closing an HTTP client sends a request to end its
+	// session, and holding the registry for the length of that stalls every
+	// tool call in the app.
+	for _, o := range old {
+		o.Close()
+	}
+}
+
 // Clients returns a snapshot of connected clients.
 func (r *Registry) Clients() []*Client {
 	r.mu.Lock()
