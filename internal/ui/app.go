@@ -101,6 +101,7 @@ type App struct {
 	setEdit      *settingEdit // a numeric settings row being typed into
 	ask          *askState    // an in-flight /ask, kept out of the history
 	search       *searchState // an open transcript search
+	reloadSeen   string       // fingerprint of the watched files at the last reload
 	// dashScroll is each panel's scroll offset, by panel key. Per panel rather
 	// than one shared offset, so scrolling the tool list does not also move the
 	// settings you were part way down.
@@ -225,7 +226,7 @@ func (m *App) cwd() string {
 
 // Init implements tea.Model.
 func (m *App) Init() tea.Cmd {
-	cmds := []tea.Cmd{textarea.Blink, m.spin.Tick, autosaveTick(), gitTick(), fetchGitCmd(m.cwd())}
+	cmds := []tea.Cmd{textarea.Blink, m.spin.Tick, autosaveTick(), gitTick(), reloadTick(), fetchGitCmd(m.cwd())}
 	for _, a := range m.mgr.Agents {
 		cmds = append(cmds, waitAgent(a))
 	}
@@ -434,6 +435,9 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Batch(m.flashCmd(), fetchGitCmd(m.cwd()))
 
+	case reloadTickMsg:
+		return m, tea.Batch(m.checkReload(), reloadTick())
+
 	case autosaveMsg:
 		if m.cfg.Autosave && m.dirty {
 			m.saveSession(false)
@@ -632,43 +636,56 @@ func (m *App) handleEditorDone(msg editorDoneMsg) (tea.Model, tea.Cmd) {
 			m.setFlash(fmt.Sprintf("system prompt updated (%s)", humanTokens(len(a.SystemPrompt))), false)
 		}
 	case editTargetConfig:
-		newCfg, err := config.Load(m.cfg.Path())
-		if err != nil {
-			m.setFlash(err.Error()+" — fix with /settings", true)
-			return m, m.flashCmd()
-		}
-		*m.cfg = *newCfg
-		m.keys = NewKeyMap(m.cfg.Keys)
-		secretenv.SetExtra(m.cfg.SecretEnv)
-		m.cfg.Theme = SetTheme(m.cfg.Theme, m.cfg.Colors)
-		m.cfg.Glyphs = SetGlyphs(m.cfg.Glyphs)
-		m.cfg.Wordmark = SetWordmark(m.cfg.Wordmark)
-		m.spin.Spinner = gl.spinner
-		m.repaint()
-		if m.mgr.Exec != nil {
-			m.mgr.Exec.SetMode(m.cfg.PermissionMode)
-			m.mgr.Exec.SetBashPrefixes(m.cfg.BashAllow)
-			m.mgr.Exec.SetRules(m.cfg.Permissions.Allow, m.cfg.Permissions.Ask, m.cfg.Permissions.Deny)
-			m.mgr.Exec.SetSandbox(m.cfg.Sandbox)
-			m.mgr.Exec.SetSandboxNetwork(m.cfg.SandboxNetwork)
-			m.mgr.Exec.SetTimeout(time.Duration(m.cfg.BashTimeout) * time.Second)
-			m.reloadUserCmds()
-		}
-		m.mgr.ReloadProviders()
-		// Push the edited defaults onto existing agents too, so the file is
-		// the single source of truth after /settings.
-		for _, ag := range m.mgr.Agents {
-			ag.MaxTokens = m.cfg.MaxTokens
-			ag.Temperature = m.cfg.Temperature
-			ag.Thinking = m.cfg.Thinking
-			ag.ThinkingBudget = m.cfg.ThinkingBudget
-			ag.SystemPrompt = m.cfg.SystemPrompt
-		}
-		m.recalcLayout()
-		m.refreshChat(true)
-		m.setFlash("config reloaded", false)
+		m.applyReload()
 	}
 	return m, m.flashCmd()
+}
+
+// applyReload re-reads the config and applies it in place. One implementation
+// for all three ways in — leaving the editor, /reload, and the watcher — so
+// they cannot drift into meaning different things.
+//
+// A file that will not parse leaves everything as it was. Editors write
+// partial files constantly, and with a watcher that is no longer a rare case:
+// a half-saved config must not take a running session down.
+func (m *App) applyReload() bool {
+	newCfg, err := config.Load(m.cfg.Path())
+	if err != nil {
+		m.setFlash(err.Error()+" — the previous config is still running", true)
+		return false
+	}
+	*m.cfg = *newCfg
+	m.keys = NewKeyMap(m.cfg.Keys)
+	secretenv.SetExtra(m.cfg.SecretEnv)
+	m.cfg.Theme = SetTheme(m.cfg.Theme, m.cfg.Colors)
+	m.cfg.Glyphs = SetGlyphs(m.cfg.Glyphs)
+	m.cfg.Wordmark = SetWordmark(m.cfg.Wordmark)
+	m.spin.Spinner = gl.spinner
+	m.repaint()
+	if m.mgr.Exec != nil {
+		m.mgr.Exec.SetMode(m.cfg.PermissionMode)
+		m.mgr.Exec.SetBashPrefixes(m.cfg.BashAllow)
+		m.mgr.Exec.SetRules(m.cfg.Permissions.Allow, m.cfg.Permissions.Ask, m.cfg.Permissions.Deny)
+		m.mgr.Exec.SetSandbox(m.cfg.Sandbox)
+		m.mgr.Exec.SetSandboxNetwork(m.cfg.SandboxNetwork)
+		m.mgr.Exec.SetTimeout(time.Duration(m.cfg.BashTimeout) * time.Second)
+		m.reloadUserCmds()
+	}
+	m.mgr.ReloadProviders()
+	// Push the edited defaults onto existing agents too, so the file is
+	// the single source of truth after a reload.
+	for _, ag := range m.mgr.Agents {
+		ag.MaxTokens = m.cfg.MaxTokens
+		ag.Temperature = m.cfg.Temperature
+		ag.Thinking = m.cfg.Thinking
+		ag.ThinkingBudget = m.cfg.ThinkingBudget
+		ag.SystemPrompt = m.cfg.SystemPrompt
+	}
+	m.recalcLayout()
+	m.refreshChat(true)
+	m.noteReloadStamps()
+	m.setFlash("config reloaded", false)
+	return true
 }
 
 func (m *App) decidePerm(d tools.Decision) {
