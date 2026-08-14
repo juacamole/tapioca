@@ -1,6 +1,12 @@
 module tapioca
 
-go 1.26.6
+go 1.26.5
+
+// The standard-library advisories in go1.26.5 are fixed in 1.26.6, so that is
+// what builds here use. The `go` line stays at 1.26.5 because nixpkgs ships
+// 1.26.5 and builds with GOTOOLCHAIN=local, which cannot fetch a newer one — a
+// higher `go` line fails that build outright rather than downgrading it.
+toolchain go1.26.6
 
 require (
 	charm.land/bubbles/v2 v2.1.1
