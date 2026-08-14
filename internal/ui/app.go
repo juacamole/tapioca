@@ -368,6 +368,9 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.openConnectPicker(msg.entries)
 		return m, nil
 
+	case externalConnectedMsg:
+		return m.handleExternalConnected(msg)
+
 	case titleDoneMsg:
 		if msg.name != "" && msg.sessID == m.sessID && !m.sessTitled {
 			m.sessName, m.sessTitled = msg.name, true

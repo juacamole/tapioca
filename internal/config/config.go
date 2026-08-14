@@ -76,6 +76,26 @@ type MCPServerConfig struct {
 	Scopes   []string `toml:"scopes"` // oauth: overrides what the server advertises
 }
 
+// ExternalAgent is another agent Tapioca drives over the Agent Client
+// Protocol: a subprocess speaking ACP on stdio, which gets a tab of its own.
+//
+//	[[agents.external]]
+//	name    = "claude-code"
+//	command = "claude"
+//	args    = ["--acp"]
+type ExternalAgent struct {
+	Name    string            `toml:"name"`
+	Command string            `toml:"command"`
+	Args    []string          `toml:"args"`
+	Env     map[string]string `toml:"env"`
+}
+
+// Agents groups what can be driven besides the models: an [agents] table
+// rather than a top-level list, so later kinds have somewhere to go.
+type Agents struct {
+	External []ExternalAgent `toml:"external"`
+}
+
 // LSPServerConfig describes a language server used to check edited files.
 type LSPServerConfig struct {
 	Name       string   `toml:"name"`
@@ -124,6 +144,7 @@ type Config struct {
 	Providers   map[string]ProviderConfig `toml:"providers"`
 	MCP         []MCPServerConfig         `toml:"mcp"`
 	LSP         []LSPServerConfig         `toml:"lsp"`
+	Agents      Agents                    `toml:"agents"`
 	Dashboard   DashboardConfig           `toml:"dashboard"`
 	Keys        map[string]string         `toml:"keys"`
 	Colors      map[string]string         `toml:"colors"` // theme overrides: "#hex" or "#light/#dark"
@@ -577,6 +598,17 @@ panels = ["agents", "tokens", "todos", "git", "tools", "settings"]
 # command = "npx"
 # args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
 #   [mcp.env]
+#   EXAMPLE = "value"
+
+# Other agents to drive over the Agent Client Protocol. /connect lists them;
+# picking one gives it a tab, and its work streams into the transcript like any
+# other agent's. Whatever it asks to run goes through the permission rules
+# above — a deny still denies, even under bypass.
+# [[agents.external]]
+# name = "claude-code"
+# command = "claude"
+# args = ["--acp"]
+#   [agents.external.env]
 #   EXAMPLE = "value"
 
 # Keybinds. Values are Bubble Tea key names; separate alternatives with

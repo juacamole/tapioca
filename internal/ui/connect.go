@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -32,6 +33,10 @@ type connEntry struct {
 	name   string // the config key, when configured
 	state  connState
 	detail string // model count, or the actual error
+	// external is set when the entry is another agent to drive rather than a
+	// provider to send to. They share this screen because they answer the same
+	// question: what can this session talk to?
+	external *config.ExternalAgent
 }
 
 // connStatusMsg carries the probe results back to the update loop.
@@ -43,7 +48,8 @@ const connProbeTimeout = 5 * time.Second
 
 // probeConnections asks every catalog entry whether it works, concurrently.
 // Presence of a key proves nothing — a revoked key is present and useless — so
-// each configured provider gets a real ListModels call.
+// each configured provider gets a real ListModels call. Configured external
+// agents join the results: the screen is what this session can talk to.
 func probeConnections(cfg *config.Config) tea.Cmd {
 	// Config entries by the catalog type they belong to, so a provider named
 	// something other than its type is still recognised.
@@ -77,7 +83,7 @@ func probeConnections(cfg *config.Config) tea.Cmd {
 			}(i, k, names[0])
 		}
 		wg.Wait()
-		return connStatusMsg{entries: entries}
+		return connStatusMsg{entries: append(entries, externalEntries(cfg)...)}
 	}
 }
 
@@ -131,6 +137,15 @@ func (m *App) openConnectPicker(entries []connEntry) {
 
 	items := make([]pickerItem, 0, len(sorted))
 	for _, e := range sorted {
+		if e.external != nil {
+			items = append(items, pickerItem{
+				label:  e.mark() + " " + e.external.Name,
+				desc:   e.detail,
+				value:  externalPick + e.external.Name,
+				search: e.external.Name + " agent acp " + e.external.Command,
+			})
+			continue
+		}
 		label := e.mark() + " " + e.kind.Label
 		desc := e.detail
 		if e.state == connUnset && e.kind.Desc != "" {
@@ -144,23 +159,34 @@ func (m *App) openConnectPicker(entries []connEntry) {
 		})
 	}
 	m.conn = sorted
-	m.pick = newPicker(pickConnect, "providers", items)
+	title := "providers"
+	for _, e := range sorted {
+		if e.external != nil {
+			title = "providers and agents"
+			break
+		}
+	}
+	m.pick = newPicker(pickConnect, title, items)
 	m.overlay = overlayPicker
 }
 
 // connEntryFor returns the probed entry for a catalog type.
 func (m *App) connEntryFor(typ string) (connEntry, bool) {
 	for _, e := range m.conn {
-		if e.kind.Type == typ {
+		if e.external == nil && e.kind.Type == typ {
 			return e, true
 		}
 	}
 	return connEntry{}, false
 }
 
-// applyConnect acts on the selected provider. Each state has a different
-// useful answer, and none of them is closing the screen in silence.
+// applyConnect acts on the selection, which is a provider or an external
+// agent. Each state has a different useful answer, and none of them is closing
+// the screen in silence.
 func (m *App) applyConnect(typ string) tea.Cmd {
+	if name, ok := strings.CutPrefix(typ, externalPick); ok {
+		return m.connectExternal(name)
+	}
 	e, ok := m.connEntryFor(typ)
 	if !ok {
 		return nil
@@ -209,8 +235,12 @@ func (m *App) useProvider(name string) tea.Cmd {
 
 // cmdConnect starts the probe. It reports progress first because the sweep
 // takes as long as the slowest provider, and a screen that appears to hang is
-// worse than one that says what it is doing.
-func cmdConnect(m *App, _ string) tea.Cmd {
+// worse than one that says what it is doing. A named external agent skips the
+// screen: the user already said what they wanted.
+func cmdConnect(m *App, arg string) tea.Cmd {
+	if arg != "" {
+		return m.connectExternal(arg)
+	}
 	m.setFlash("checking providers…", false)
 	return tea.Batch(probeConnections(m.cfg), m.flashCmd())
 }

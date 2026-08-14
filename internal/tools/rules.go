@@ -344,3 +344,6 @@ func subjectOf(tool string, raw json.RawMessage) string {
 func deniedByRule(tool string) (string, bool, bool) {
 	return "denied: a permission rule in the config forbids " + tool + " for this call", true, true
 }
+
+// deniedByUser is what an unanswered or refused prompt hands back.
+const deniedByUser = "the user denied permission for this call"

@@ -569,8 +569,39 @@ func (e *Executor) Call(ctx context.Context, name string, raw json.RawMessage, a
 	return res.Text, res.IsErr, err
 }
 
-// CallDetailed is Call plus whatever the UI needs to render the call.
-func (e *Executor) CallDetailed(ctx context.Context, name string, raw json.RawMessage, ask AskFunc) (Result, error) {
+// ApproveExternal decides a call for a tool Tapioca does not implement: an MCP
+// server's, or one an external ACP agent is about to run in its own process.
+// There is no path or command to match on, so the rules see the raw arguments,
+// and the key carries where the tool came from — a grant for one server's
+// delete must not cover another's.
+func (e *Executor) ApproveExternal(key, args string, ask AskFunc) (denial string, allowed bool) {
+	act := e.ruleFor(key, args)
+	if act == RuleDeny {
+		out, _, _ := deniedByRule(key)
+		return out, false
+	}
+	// A rule that says ask outranks an earlier "always allow".
+	if act != RuleAsk && e.ExternalAllowed(key) {
+		return "", true
+	}
+	d := ask(key, args)
+	if !d.Allow {
+		return deniedByUser, false
+	}
+	if d.Always && act != RuleAsk {
+		e.GrantExternal(key)
+	}
+	return "", true
+}
+
+// Approve decides whether a call may happen, without running it: the rules, the
+// mode, the session grants and every prompt they imply. Split out of the call
+// it normally precedes because the decision is worth having on its own to a
+// caller that does not do the work here — an external agent over ACP asks
+// before it acts in its own process, and it has to answer to this gate rather
+// than to a second one written to be lenient. It reports the refusal to hand
+// back to the model.
+func (e *Executor) Approve(name string, raw json.RawMessage, ask AskFunc) (denial string, allowed bool) {
 	// A configured rule outranks everything, including bypass: "run whatever
 	// you like except this" is the point of writing one down. bash is the
 	// exception, judged segment by segment further down.
@@ -578,22 +609,22 @@ func (e *Executor) CallDetailed(ctx context.Context, name string, raw json.RawMe
 	if name != "bash" {
 		act = e.ruleFor(name, subjectOf(name, raw))
 		if act == RuleDeny {
-			out, isErr, _ := deniedByRule(name)
-			return Result{Text: out, IsErr: isErr}, nil
+			out, _, _ := deniedByRule(name)
+			return out, false
 		}
 	}
 	// Read-only tools skip the mutation gate, but two of them compose into
 	// exfiltration (read a secret, POST it to a URL), and prompt injection
 	// from fetched pages or repo files can drive exactly that. So they get
 	// their own narrow checks below.
-	if out, isErr, handled := e.gateReadOnly(name, raw, ask); handled {
-		return Result{Text: out, IsErr: isErr}, nil
+	if out, _, handled := e.gateReadOnly(name, raw, ask); handled {
+		return out, false
 	}
 	if act == RuleAsk && !mutates(name) {
 		// Nothing else would have prompted for these, so the rule is the only
 		// thing standing between the model and the call.
 		if d := ask(name, e.summary(name, raw)); !d.Allow {
-			return Result{Text: "the user denied permission for this call", IsErr: true}, nil
+			return deniedByUser, false
 		}
 	}
 	if mutates(name) { // mutating tools go through the permission gate
@@ -607,7 +638,7 @@ func (e *Executor) CallDetailed(ctx context.Context, name string, raw json.RawMe
 		switch mode {
 		case ModePlan:
 			if fileEdit {
-				return Result{Text: "denied: plan mode is active — do not modify files; present a plan instead", IsErr: true}, nil
+				return "denied: plan mode is active — do not modify files; present a plan instead", false
 			}
 			needAsk = true // bash still allowed for read-only inspection, but asks
 		case ModeManual:
@@ -657,8 +688,8 @@ func (e *Executor) CallDetailed(ctx context.Context, name string, raw json.RawMe
 				for i, seg := range segs {
 					acts[i] = e.ruleFor(name, seg)
 					if acts[i] == RuleDeny {
-						out, isErr, _ := deniedByRule(name)
-						return Result{Text: out + ": " + seg, IsErr: isErr}, nil
+						out, _, _ := deniedByRule(name)
+						return out + ": " + seg, false
 					}
 				}
 				for i, seg := range segs {
@@ -680,7 +711,7 @@ func (e *Executor) CallDetailed(ctx context.Context, name string, raw json.RawMe
 					}
 					d := ask(name, seg)
 					if !d.Allow {
-						return Result{Text: "the user denied permission for: " + seg, IsErr: true}, nil
+						return "the user denied permission for: " + seg, false
 					}
 					if d.Prefix != "" {
 						e.mu.Lock()
@@ -704,7 +735,7 @@ func (e *Executor) CallDetailed(ctx context.Context, name string, raw json.RawMe
 			}
 			d := ask(label, e.summary(name, raw))
 			if !d.Allow {
-				return Result{Text: "the user denied permission for this call", IsErr: true}, nil
+				return deniedByUser, false
 			}
 			if d.Always {
 				e.mu.Lock()
@@ -725,7 +756,14 @@ func (e *Executor) CallDetailed(ctx context.Context, name string, raw json.RawMe
 			cp(name + ": " + truncateLabel(stripControls(e.summary(name, raw))))
 		}
 	}
+	return "", true
+}
 
+// CallDetailed is Call plus whatever the UI needs to render the call.
+func (e *Executor) CallDetailed(ctx context.Context, name string, raw json.RawMessage, ask AskFunc) (Result, error) {
+	if denial, ok := e.Approve(name, raw, ask); !ok {
+		return Result{Text: denial, IsErr: true}, nil
+	}
 	// Everything above has decided that this call may happen. A pre_tool hook
 	// is the user's own last word on it, and it only ever narrows that
 	// decision: a call a rule denied returned long before this point.
