@@ -341,6 +341,12 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case mcpPromptMsg:
 		return m, m.handleMCPPrompt(msg)
 
+	case mcpAuthMsg:
+		return m, m.handleMCPAuth(msg)
+
+	case mcpAuthDoneMsg:
+		return m, m.handleMCPAuthDone(msg)
+
 	case modelsLoadedMsg:
 		if len(msg.items) == 0 {
 			// Nothing reachable. This is the moment the user most needs a way

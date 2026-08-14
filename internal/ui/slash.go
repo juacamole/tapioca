@@ -81,6 +81,7 @@ func buildSlashCmds() []slashCmd {
 		{"skills", "[name]", "list capability packs (name loads one now)", cmdSkills},
 		{"model", "[provider:]name", "switch model (no arg: picker)", cmdModel},
 		{"connect", "[agent]", "connect a provider, account or external agent", cmdConnect},
+		{"mcp", "[server]", "log in to an MCP server that needs OAuth", cmdMCPLogin},
 		{"log", "", "show recent messages and errors", cmdLog},
 		{"effort", "[level]", "set thinking effort (no arg: picker)", cmdEffort},
 		{"goal", "text | clear", "set a session goal for the agent", cmdGoal},
