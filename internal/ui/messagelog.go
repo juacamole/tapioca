@@ -4,7 +4,7 @@ import (
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 )
 
 // Every failure in this app arrives as a flash: provider errors, MCP failures,

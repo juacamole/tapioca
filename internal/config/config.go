@@ -529,7 +529,7 @@ panels = ["agents", "tokens", "todos", "git", "tools", "settings"]
 # (/model, /new, /save, /resume, /panels, /systemprompt, /settings).
 [keys]
 # send = "enter"
-# newline = "ctrl+j,shift+enter"
+# newline = "shift+enter,ctrl+j"
 # quit = "ctrl+c"
 # cancel = "esc"
 # verbose = "ctrl+o"

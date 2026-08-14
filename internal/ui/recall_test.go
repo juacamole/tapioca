@@ -1,7 +1,7 @@
 package ui
 
 import (
-	"github.com/charmbracelet/bubbles/textarea"
+	"charm.land/bubbles/v2/textarea"
 
 	"reflect"
 	"tapioca/internal/config"

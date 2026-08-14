@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
 
 	"tapioca/internal/agent"
 )
@@ -68,7 +68,7 @@ func (m *App) openSettingInput(key string, current string) {
 	in := textinput.New()
 	in.Prompt = ""
 	in.CharLimit = 12
-	in.Width = 10
+	in.SetWidth(10)
 	in.SetValue(strings.NewReplacer(",", "", " ", "").Replace(current))
 	in.CursorEnd()
 	in.Focus()
@@ -124,7 +124,7 @@ func (s numericSetting) format(v float64) string {
 
 // handleSettingInput drives the typed field. It owns every key while open, so
 // digits cannot leak out and step the value underneath.
-func (m *App) handleSettingInput(msg tea.KeyMsg, a *agent.Agent) (tea.Model, tea.Cmd) {
+func (m *App) handleSettingInput(msg tea.KeyPressMsg, a *agent.Agent) (tea.Model, tea.Cmd) {
 	switch {
 	case m.keys.Is(msg, "cancel"):
 		m.setEdit = nil

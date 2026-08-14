@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 )
 
 // The settings panel has ten rows and is routinely given two lines of space.
@@ -121,7 +121,7 @@ func TestWheelOverAPanelScrollsThatPanel(t *testing.T) {
 	x := m.w - dashW/2
 	before := m.panelScrollFor("settings", total, visible)
 
-	m.Update(tea.MouseMsg{X: x, Y: y, Action: tea.MouseActionPress, Button: tea.MouseButtonWheelDown})
+	m.Update(tea.MouseWheelMsg{X: x, Y: y, Button: tea.MouseWheelDown})
 
 	if after := m.panelScrollFor("settings", total, visible); after == before {
 		t.Errorf("the wheel over the settings panel did not scroll it (offset stayed %d)", before)
