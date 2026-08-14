@@ -3,6 +3,8 @@ package ui
 import (
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -19,6 +21,17 @@ func (m *App) startSpawn(parentID int, req *agent.SpawnReq) tea.Cmd {
 		return nil
 	}
 	na := m.mgr.Spawn(parent, req.Name)
+	// A requested model is resolved before anything is sent. Failing here
+	// means the parent gets a usable error; letting it through would run the
+	// task on the parent's model while the tab claimed otherwise, which is
+	// worse than refusing.
+	if req.Model != "" {
+		if err := m.applySpawnModel(na, parent, req.Model); err != nil {
+			m.mgr.Close(m.indexOf(na.ID))
+			req.Reply <- agent.SpawnResult{Err: err}
+			return nil
+		}
+	}
 	if na.Provider == nil {
 		err := errors.New("no provider configured for the subagent")
 		m.mgr.Close(m.indexOf(na.ID))
@@ -36,6 +49,39 @@ func (m *App) startSpawn(parentID int, req *agent.SpawnReq) tea.Cmd {
 	m.dirty = true
 	m.setFlash(fmt.Sprintf("%s delegated to %s", parent.Name, na.Name), false)
 	return tea.Batch(waitAgent(na), m.flashCmd())
+}
+
+// applySpawnModel points a subagent at a requested "[provider:]model". Only
+// the provider is checked here: whether a model name exists is a question only
+// the provider can answer, and asking would mean a network round trip inside a
+// tool call. A wrong name surfaces as that provider's own error on the first
+// request, which names the problem better than a guess would.
+func (m *App) applySpawnModel(na, parent *agent.Agent, ref string) error {
+	provName, model := m.splitModelRef(ref, parent.ProviderName)
+	// Staying on the parent's provider reuses the instance it is already
+	// using rather than building a second one from config. Rebuilding would
+	// fail whenever the parent is working from a credential the config cannot
+	// reproduce — which is the common case for "same provider, cheaper model".
+	p := parent.Provider
+	if provName != parent.ProviderName || p == nil {
+		var err error
+		if p, err = m.mgr.ProviderFor(provName); err != nil {
+			return fmt.Errorf("%s — configured providers: %s", err, strings.Join(m.providerNames(), ", "))
+		}
+	}
+	na.Provider, na.ProviderName, na.ProviderErr, na.Model = p, provName, "", model
+	return nil
+}
+
+// providerNames lists the configured providers, for an error that says what
+// could have been asked for instead.
+func (m *App) providerNames() []string {
+	names := make([]string, 0, len(m.cfg.Providers))
+	for name := range m.cfg.Providers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // finishSpawn hands a finished subagent's answer to the parent waiting on it.

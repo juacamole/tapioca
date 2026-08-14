@@ -257,6 +257,21 @@ func (m *App) busyGuard(a *agent.Agent) bool {
 	return false
 }
 
+// splitModelRef reads a "[provider:]model" reference, falling back to the
+// given provider when there is no prefix. A prefix that names no configured
+// provider is treated as part of the model name rather than as a provider:
+// gateway ids look like "anthropic/claude-opus-5", and "openai:gpt-4o" and
+// "anthropic/claude" must not be read the same way.
+func (m *App) splitModelRef(arg, fallbackProvider string) (provName, model string) {
+	provName, model = fallbackProvider, arg
+	if p, rest, ok := strings.Cut(arg, ":"); ok {
+		if _, exists := m.cfg.Providers[p]; exists && rest != "" {
+			provName, model = p, rest
+		}
+	}
+	return provName, model
+}
+
 func cmdModel(m *App, arg string) tea.Cmd {
 	if arg == "" {
 		m.setFlash("loading models…", false)
@@ -266,12 +281,7 @@ func cmdModel(m *App, arg string) tea.Cmd {
 	if a == nil {
 		return nil
 	}
-	provName, model := a.ProviderName, arg
-	if p, rest, ok := strings.Cut(arg, ":"); ok {
-		if _, exists := m.cfg.Providers[p]; exists && rest != "" {
-			provName, model = p, rest
-		}
-	}
+	provName, model := m.splitModelRef(arg, a.ProviderName)
 	p, err := m.mgr.ProviderFor(provName)
 	if err != nil {
 		m.setFlash(err.Error(), true)
