@@ -69,6 +69,11 @@ type MCPServerConfig struct {
 	Env     map[string]string `toml:"env"`
 	URL     string            `toml:"url"`     // streamable HTTP endpoint
 	Headers map[string]string `toml:"headers"` // sent on every request; ${VAR} expands
+	Auth    string            `toml:"auth"`    // "oauth": log in through the browser
+	// ClientID is only for an authorization server that refuses to register a
+	// client on the spot; with dynamic registration there is nothing to fill in.
+	ClientID string   `toml:"client_id"`
+	Scopes   []string `toml:"scopes"` // oauth: overrides what the server advertises
 }
 
 // LSPServerConfig describes a language server used to check edited files.
@@ -549,6 +554,14 @@ panels = ["agents", "tokens", "todos", "git", "tools", "settings"]
 # url = "https://mcp.example.com/mcp"
 # [mcp.headers]
 # Authorization = "Bearer ${EXAMPLE_MCP_TOKEN}"
+
+# A hosted server that wants an account rather than a token: auth = "oauth"
+# logs in through the browser once (/mcp <name>) and refreshes on its own
+# afterwards. The tokens are kept outside this file.
+# [[mcp]]
+# name = "linear"
+# url = "https://mcp.linear.app/mcp"
+# auth = "oauth"
 
 # Language servers. After every edit the file is checked and any errors are
 # attached to the tool result, so the agent fixes them straight away instead of
