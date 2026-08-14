@@ -186,6 +186,14 @@ func fail(err error) {
 	os.Exit(1)
 }
 
+// warn reports what a hook had to say. Nothing here is fatal: a refused or
+// failed hook must not be the reason a session cannot start.
+func warn(notes []string) {
+	for _, n := range notes {
+		fmt.Fprintln(os.Stderr, "warning:", n)
+	}
+}
+
 // Main is the whole program. It lives here rather than in package main so
 // that more than one binary name can share it: the Shopify tapioca gem also
 // installs a `tapioca`, so this ships as `tapio` too.
@@ -282,6 +290,12 @@ func Main() {
 	exec.SetSandbox(cfg.Sandbox)
 	exec.SetSandboxNetwork(cfg.SandboxNetwork)
 	exec.SetTimeout(time.Duration(cfg.BashTimeout) * time.Second)
+	warn(tools.ApplyHooks(exec, cfg, cwd))
+	warn(exec.RunSessionHooks(tools.HookSessionStart))
+	// Called by hand on the way out rather than deferred: --print leaves through
+	// os.Exit, and a session_end hook that fires for the TUI and not for
+	// headless runs is not something you can log with.
+	endSession := func() { warn(exec.RunSessionHooks(tools.HookSessionEnd)) }
 	if cfg.Sandbox && !tools.SandboxAvailable() {
 		fmt.Fprintln(os.Stderr, "warning: sandbox is enabled but bubblewrap (bwrap) was not found — bash calls will fail until it is installed")
 	}
@@ -388,6 +402,7 @@ func Main() {
 		})
 		// os.Exit skips deferred calls, which would leave background jobs and
 		// MCP servers running after the process is gone.
+		endSession()
 		exec.StopJobs()
 		reg.CloseAll()
 		os.Exit(code)
@@ -407,7 +422,9 @@ func Main() {
 	// Alt screen, mouse mode and keyboard enhancements are declared on the
 	// view now, not here — see App.View.
 	p := tea.NewProgram(app)
-	if _, err := p.Run(); err != nil {
-		fail(err)
+	_, runErr := p.Run()
+	endSession()
+	if runErr != nil {
+		fail(runErr)
 	}
 }

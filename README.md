@@ -57,7 +57,9 @@ Default keybinds avoid `alt`, so they work on macOS.
 **Safety nets for real work.** Edit a file in your own editor and the agent's
 stale writes are refused until it re-reads. Everything it writes is checked by
 your language servers, with errors attached to the tool result so they're fixed
-in the same turn. `/rewind` restores the worktree from a checkpoint.
+in the same turn. `/rewind` restores the worktree from a checkpoint. `[[hooks]]`
+runs commands of yours around tool calls — format after an edit, log what ran,
+or refuse a call outright when your own check says no.
 
 **One binary.** `tapioca --acp` speaks the
 [Agent Client Protocol](https://agentclientprotocol.com), so Zed and other ACP

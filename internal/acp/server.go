@@ -81,6 +81,7 @@ func (s *Server) closeAll() {
 			sess.reg.CloseAll()
 		}
 		if sess.exec != nil {
+			warn(sess.exec.RunSessionHooks(tools.HookSessionEnd))
 			sess.exec.StopJobs()
 		}
 	}
@@ -145,6 +146,10 @@ func (s *Server) handleNewSession(msg *rpcMsg) {
 	exec.SetRules(s.cfg.Permissions.Allow, s.cfg.Permissions.Ask, s.cfg.Permissions.Deny)
 	exec.SetSandbox(s.cfg.Sandbox)
 	exec.SetSandboxNetwork(s.cfg.SandboxNetwork)
+	// The editor picks the directory, so whether hooks may run is decided per
+	// session rather than once at startup. Warnings go to stderr because stdout
+	// is the protocol channel.
+	warn(tools.ApplyHooks(exec, s.cfg, cwd))
 
 	reg := mcp.NewRegistry()
 	servers := s.cfg.MCP
@@ -178,7 +183,16 @@ func (s *Server) handleNewSession(msg *rpcMsg) {
 	s.mu.Lock()
 	s.sessions[sess.id] = sess
 	s.mu.Unlock()
+	warn(exec.RunSessionHooks(tools.HookSessionStart))
 	s.conn.respond(msg.ID, map[string]any{"sessionId": sess.id})
+}
+
+// warn reports what a hook had to say. Nothing here is fatal: a refused or
+// failed hook must not be the reason an editor cannot open a session.
+func warn(notes []string) {
+	for _, n := range notes {
+		fmt.Fprintln(os.Stderr, "warning:", n)
+	}
 }
 
 func (s *Server) session(id string) *acpSession {

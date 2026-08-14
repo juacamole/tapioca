@@ -29,6 +29,7 @@ var valueTables = map[string]bool{
 	"lsp":       true,
 	"costs":     true,
 	"colors":    true,
+	"hooks":     true,
 }
 
 // minimize removes from full every line that only restates what defaults

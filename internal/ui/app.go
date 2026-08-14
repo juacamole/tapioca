@@ -637,6 +637,7 @@ func (m *App) handleEditorDone(msg editorDoneMsg) (tea.Model, tea.Cmd) {
 			m.setFlash(err.Error()+" — fix with /settings", true)
 			return m, m.flashCmd()
 		}
+		var hookNotes []string
 		*m.cfg = *newCfg
 		m.keys = NewKeyMap(m.cfg.Keys)
 		secretenv.SetExtra(m.cfg.SecretEnv)
@@ -652,6 +653,7 @@ func (m *App) handleEditorDone(msg editorDoneMsg) (tea.Model, tea.Cmd) {
 			m.mgr.Exec.SetSandbox(m.cfg.Sandbox)
 			m.mgr.Exec.SetSandboxNetwork(m.cfg.SandboxNetwork)
 			m.mgr.Exec.SetTimeout(time.Duration(m.cfg.BashTimeout) * time.Second)
+			hookNotes = tools.ApplyHooks(m.mgr.Exec, m.cfg, m.cwd())
 			m.reloadUserCmds()
 		}
 		m.mgr.ReloadProviders()
@@ -666,7 +668,13 @@ func (m *App) handleEditorDone(msg editorDoneMsg) (tea.Model, tea.Cmd) {
 		}
 		m.recalcLayout()
 		m.refreshChat(true)
-		m.setFlash("config reloaded", false)
+		// A hook that was refused or dropped has to say so here: after an edit
+		// to [[hooks]] the reload is the only moment the user is looking.
+		if len(hookNotes) > 0 {
+			m.setFlash(hookNotes[0], true)
+		} else {
+			m.setFlash("config reloaded", false)
+		}
 	}
 	return m, m.flashCmd()
 }
