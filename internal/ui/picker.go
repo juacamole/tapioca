@@ -21,6 +21,7 @@ const (
 	pickWordmark
 	pickEffort
 	pickConnect
+	pickQueue
 )
 
 type pickerItem struct {
