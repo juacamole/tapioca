@@ -78,6 +78,7 @@ func buildSlashCmds() []slashCmd {
 			}
 			return openEditorCmd(m.cfg.Editor, editTargetSystem, sys)
 		}},
+		{"skills", "[name]", "list capability packs (name loads one now)", cmdSkills},
 		{"model", "[provider:]name", "switch model (no arg: picker)", cmdModel},
 		{"connect", "", "connect a provider or account", cmdConnect},
 		{"log", "", "show recent messages and errors", cmdLog},
@@ -513,6 +514,7 @@ func cmdCd(m *App, arg string) tea.Cmd {
 		return m.flashCmd()
 	}
 	m.reloadUserCmds() // .tapioca/commands is per project
+	m.reloadSkills()   // and so is .tapioca/skills
 	// Whether hooks may run is a question about this tree, so it is asked
 	// again: /cd into a checkout that holds the config file has to withdraw
 	// them, exactly as starting there would have.
@@ -523,6 +525,9 @@ func cmdCd(m *App, arg string) tea.Cmd {
 	}
 	if n := len(m.userCmds); n > 0 {
 		note += fmt.Sprintf("%s%d commands", gl.sep, n)
+	}
+	if n := len(m.skills); n > 0 {
+		note += fmt.Sprintf("%s%d skills", gl.sep, n)
 	}
 	if len(hookNotes) > 0 {
 		note += gl.sep + hookNotes[0]
@@ -597,6 +602,9 @@ func cmdPermissions(m *App, _ string) tea.Cmd {
 	b.WriteString(styPanelTitle.Render("never prompts") + "\n")
 	b.WriteString("  read_file, grep, glob, web_search, web_fetch " + styDim.Render("(read-only builtins)") + "\n")
 	b.WriteString("  todo_write " + styDim.Render("(writes the plan panel, not the disk)") + "\n")
+	if len(m.skills) > 0 {
+		b.WriteString("  load_skill " + styDim.Render("(reads a skill's own SKILL.md, nothing else)") + "\n")
+	}
 	if n := len(m.mgr.MCP.AllTools()); n > 0 {
 		b.WriteString(fmt.Sprintf("  %d MCP tools prompt like builtins %s\n", n, styDim.Render("(grants show as mcp:name)")))
 	}

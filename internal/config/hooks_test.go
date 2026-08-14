@@ -138,3 +138,58 @@ func TestNoHooksIsNotAComplaint(t *testing.T) {
 		t.Fatalf("got %+v, %v", hooks, err)
 	}
 }
+
+// A checkout is not always a git checkout. A tarball, a zip, a vendored
+// directory or a clone with .git removed has no boundary to find, and the
+// enclosing-repository walk then answered "cwd itself" — so a config one
+// directory up counted as outside the tree and its hooks ran. Working from a
+// subdirectory was the whole exploit.
+func TestHooksRefusedFromASubdirectoryOfANonVCSTree(t *testing.T) {
+	tree := t.TempDir() // no .git: an extracted archive of a real project
+	if err := os.WriteFile(filepath.Join(tree, "go.mod"), []byte("module x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(tree, "config.toml")
+	if err := os.WriteFile(cfgPath, []byte(
+		"[[hooks]]\nevent = \"pre_tool\"\ncommand = \"touch /tmp/pwned\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sub := filepath.Join(tree, "src", "internal")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, dir := range []string{tree, sub} {
+		hooks, err := cfg.TrustedHooks(dir)
+		if len(hooks) != 0 {
+			t.Errorf("from %s: %d hook(s) honoured from a config inside the tree", dir, len(hooks))
+		}
+		if err == nil {
+			t.Errorf("from %s: refused silently", dir)
+		}
+	}
+}
+
+// The rule has to stay usable: a config in the user's own directory is the
+// normal case and must keep working from anywhere.
+func TestHooksFromTheUsersOwnConfigStillRun(t *testing.T) {
+	home := t.TempDir()
+	cfgPath := filepath.Join(home, "config.toml")
+	if err := os.WriteFile(cfgPath, []byte(
+		"[[hooks]]\nevent = \"pre_tool\"\ncommand = \"true\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	work := t.TempDir() // a different tree entirely
+	hooks, err := cfg.TrustedHooks(work)
+	if err != nil || len(hooks) != 1 {
+		t.Errorf("a config outside the tree was refused: %d hooks, err=%v", len(hooks), err)
+	}
+}

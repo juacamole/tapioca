@@ -28,33 +28,52 @@ func (c *Config) TrustedHooks(cwd string) ([]HookConfig, error) {
 	if len(c.Hooks) == 0 {
 		return nil, nil
 	}
-	root := workRoot(cwd)
-	if under(resolveReal(c.Path()), root) {
-		return nil, fmt.Errorf("ignoring %d hook(s): %s is inside the working tree, "+
-			"where a repository could have committed it — move them to %s",
-			len(c.Hooks), c.Path(), DefaultPath())
+	path := resolveReal(c.Path())
+	for _, root := range treeRoots(cwd) {
+		if under(path, root) {
+			return nil, fmt.Errorf("ignoring %d hook(s): %s is inside the working tree, "+
+				"where a repository could have committed it — move them to %s",
+				len(c.Hooks), c.Path(), DefaultPath())
+		}
 	}
 	return c.Hooks, nil
 }
 
-// workRoot is the repository enclosing cwd, or cwd when there is none. The
-// walk matters: a clone with a config.toml at its root is equally the
-// repository's when the user is working three directories down.
-func workRoot(cwd string) string {
+// treeRoots is the working tree cwd belongs to, as far as it can be known.
+//
+// A version-controlled checkout answers exactly, and that is the common case.
+// It is not the only one: a tarball, a zip, a vendored directory or a clone
+// with .git removed has no VCS marker, and the walk then returned cwd itself —
+// so a config one directory up counted as outside the tree and its hooks ran.
+// Working from a subdirectory was the whole exploit.
+//
+// Build files are the boundary for those, since an archive of a real project
+// carries one. A directory with no marker of any kind falls back to cwd, which
+// is the residual gap: a bare pile of files, with a config in a parent, worked
+// on from a subdirectory. Walking further would have to stop somewhere
+// arbitrary, and stopping at the filesystem root would refuse a system-wide
+// config — a rule that cries wolf gets turned off.
+func treeRoots(cwd string) []string {
 	abs, err := filepath.Abs(cwd)
 	if err != nil {
 		abs = cwd
 	}
 	abs = resolveReal(abs)
+
+	markers := []string{
+		".git", ".hg", ".jj", // a checkout
+		"go.mod", "package.json", "Cargo.toml", // an archive of one
+		"pyproject.toml", "pom.xml", "build.gradle", "Gemfile", "composer.json",
+	}
 	for dir := abs; ; {
-		for _, marker := range []string{".git", ".hg", ".jj"} {
+		for _, marker := range markers {
 			if _, err := os.Stat(filepath.Join(dir, marker)); err == nil {
-				return dir
+				return []string{dir}
 			}
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			return abs
+			return []string{abs}
 		}
 		dir = parent
 	}
