@@ -100,6 +100,7 @@ type App struct {
 	dashSel      int          // selected settings row while editing
 	setEdit      *settingEdit // a numeric settings row being typed into
 	ask          *askState    // an in-flight /ask, kept out of the history
+	search       *searchState // an open transcript search
 	// dashScroll is each panel's scroll offset, by panel key. Per panel rather
 	// than one shared offset, so scrolling the tool list does not also move the
 	// settings you were part way down.
@@ -695,6 +696,12 @@ func (m *App) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	// Search owns the keyboard while open: every printable key is part of the
+	// query, so nothing may fall through to the global shortcuts.
+	if m.search != nil && m.overlay == overlayNone {
+		return m.handleSearchKey(msg)
+	}
+
 	// The ask overlay owns the keyboard while open: it is a transient answer
 	// and every key should either scroll it or dismiss it.
 	if m.overlay == overlayAsk {
@@ -789,6 +796,10 @@ func (m *App) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	case m.keys.Is(msg, "help"):
 		m.openHelp()
+		return m, nil
+
+	case m.keys.Is(msg, "search"):
+		m.openSearch()
 		return m, nil
 
 	case m.keys.Is(msg, "cancel"):
@@ -2094,7 +2105,9 @@ func (m *App) renderTabs() string {
 
 func (m *App) renderStatus() string {
 	var left string
-	if m.flash != "" {
+	if s := m.searchStatus(); s != "" {
+		left = s
+	} else if m.flash != "" {
 		if m.flashErr {
 			// A provider's error body is routinely longer than the status
 			// line. Truncating in silence is what made these unreadable, so
