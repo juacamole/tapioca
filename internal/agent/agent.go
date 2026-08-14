@@ -15,6 +15,7 @@ import (
 	"tapioca/internal/mcp"
 	"tapioca/internal/project"
 	"tapioca/internal/provider"
+	"tapioca/internal/skills"
 	"tapioca/internal/stats"
 	"tapioca/internal/textenc"
 	"tapioca/internal/tools"
@@ -268,6 +269,12 @@ func composeSystem(base, goal string, exec *tools.Executor) string {
 		if mem := project.Memory(cwd); mem != "" {
 			sys += "\n\nProject memory (remembered facts):\n" + mem
 		}
+		// One line per skill and no more: the bodies are what would make this
+		// expensive, and load_skill fetches those only when one is relevant.
+		if list, _ := skills.Load(cwd); len(list) > 0 {
+			sys += "\n\nSkills installed here. Only these descriptions are loaded; " +
+				"call load_skill with a name to get the instructions behind it:\n" + skills.Catalog(list)
+		}
 		// Tool guidance belongs here rather than in the default system prompt:
 		// that one is user-editable and already saved in existing configs.
 		sys += "\n\nTool notes: use grep and glob to search, not bash grep/find/ls — " +
@@ -368,6 +375,11 @@ func (a *Agent) run(ctx context.Context, rs runSettings, history []provider.Mess
 			req.Tools = append(req.Tools, TodoTool)
 			if a.Depth == 0 && a.CanSpawn {
 				req.Tools = append(req.Tools, SpawnTool)
+			}
+			if a.Exec != nil {
+				if list, _ := skills.Load(a.Exec.Cwd()); len(list) > 0 {
+					req.Tools = append(req.Tools, SkillTool)
+				}
 			}
 			if a.MCP != nil {
 				req.Tools = append(req.Tools, a.MCP.AllTools()...)
@@ -553,6 +565,8 @@ func (a *Agent) run(ctx context.Context, rs runSettings, history []provider.Mess
 				text, isErr = a.writeTodos(tu.Input)
 			case tu.Name == SpawnTool.Name:
 				text, isErr = a.spawnAgent(ctx, tu.Input)
+			case tu.Name == SkillTool.Name:
+				text, isErr = a.loadSkill(tu.Input)
 			case a.Exec != nil && a.Exec.Has(tu.Name):
 				// No deadline here: the executor times the execution itself,
 				// after any permission prompt has been answered.

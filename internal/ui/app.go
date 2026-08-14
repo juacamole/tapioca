@@ -24,6 +24,7 @@ import (
 	"tapioca/internal/mcp"
 	"tapioca/internal/provider"
 	"tapioca/internal/secretenv"
+	"tapioca/internal/skills"
 	"tapioca/internal/tools"
 )
 
@@ -131,6 +132,8 @@ type App struct {
 	thinkOpen  map[string]bool         // explicit expand/collapse per thinking block
 	thinkAt    map[int]string          // transcript line -> thinking block key
 	userCmds   []userCmd               // commands loaded from markdown files
+	skills     []skills.Skill          // capability packs the model can load
+	skillProbs []skills.Problem        // packs that did not parse, for /skills
 
 	// Chat transcript caches for mouse selection.
 	chatStyled []string
@@ -179,7 +182,7 @@ func NewApp(cfg *config.Config, mgr *agent.Manager, sessID, sessName string, cre
 	sp := spinner.New(spinner.WithSpinner(gl.spinner))
 	sp.Style = styAccent
 
-	return &App{
+	app := &App{
 		cfg:         cfg,
 		keys:        NewKeyMap(cfg.Keys),
 		mgr:         mgr,
@@ -198,6 +201,15 @@ func NewApp(cfg *config.Config, mgr *agent.Manager, sessID, sessName string, cre
 		sessTitled:  sessName != "",
 		sessCreated: created,
 	}
+	app.reloadSkills()
+	// A pack that does not parse is skipped, and saying so once at startup is
+	// the difference between a typo in a SKILL.md and a skill that mysteriously
+	// never gets used. Error flashes are not cleared by the timer, so it stays
+	// until something replaces it.
+	if n := len(app.skillProbs); n > 0 {
+		app.setFlash(fmt.Sprintf("%d skill(s) skipped — /skills says why", n), true)
+	}
+	return app
 }
 
 // statusLabel returns the fine-grained stage label when one is active.
@@ -680,6 +692,7 @@ func (m *App) applyReload() bool {
 		m.mgr.Exec.SetSandboxNetwork(m.cfg.SandboxNetwork)
 		m.mgr.Exec.SetTimeout(time.Duration(m.cfg.BashTimeout) * time.Second)
 		m.reloadUserCmds()
+		m.reloadSkills()
 	}
 	m.mgr.ReloadProviders()
 	// Push the edited defaults onto existing agents too, so the file is
