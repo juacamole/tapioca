@@ -85,6 +85,7 @@ func buildSlashCmds() []slashCmd {
 		{"goal", "text | clear", "set a session goal for the agent", cmdGoal},
 		{"remember", "fact | clear", "persist a project fact for the model", cmdRemember},
 		{"btw", "note", "add context without asking for a reply", cmdBtw},
+		{"ask", "question", "answer from context, kept out of the conversation", cmdAsk},
 		{"cd", "dir", "change the working directory", cmdCd},
 		{"diff", "", "show git diff of the working directory", cmdDiff},
 		{"permissions", "", "show what runs without approval", cmdPermissions},
@@ -227,7 +228,12 @@ func (m *App) runSlash(text string) tea.Cmd {
 		m.setFlash("unknown command /"+name+" — /help lists commands", true)
 		return m.flashCmd()
 	}
-	m.noteSlash(text)
+	// /ask is the one command that leaves no note. Everything else should be
+	// visible in the transcript afterwards, so a session reads as what
+	// happened; /ask exists precisely so a passing question does not.
+	if c.name != "ask" {
+		m.noteSlash(text)
+	}
 	cmd := c.run(m, arg)
 	m.refreshChat(true)
 	return cmd
