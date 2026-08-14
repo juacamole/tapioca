@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/textarea"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/textarea"
+	tea "charm.land/bubbletea/v2"
 
 	"tapioca/internal/agent"
 	"tapioca/internal/checkpoint"
@@ -79,6 +79,8 @@ func buildSlashCmds() []slashCmd {
 			return openEditorCmd(m.cfg.Editor, editTargetSystem, sys)
 		}},
 		{"model", "[provider:]name", "switch model (no arg: picker)", cmdModel},
+		{"connect", "", "connect a provider or account", cmdConnect},
+		{"log", "", "show recent messages and errors", cmdLog},
 		{"effort", "[level]", "set thinking effort (no arg: picker)", cmdEffort},
 		{"goal", "text | clear", "set a session goal for the agent", cmdGoal},
 		{"remember", "fact | clear", "persist a project fact for the model", cmdRemember},
@@ -163,6 +165,13 @@ func findSlash(name string) *slashCmd {
 // slashMatches returns the commands matching the current input prefix, or nil
 // when the input is not in command-completion state.
 func (m *App) slashMatches() []*slashCmd {
+	// Recalling a slash command puts a "/…" in the box without anyone typing
+	// it. Completing it would open a popup that takes over up and down, which
+	// is how you get stuck cycling command names instead of walking back
+	// through history. Typing anything clears the recall and brings it back.
+	if m.recalling {
+		return nil
+	}
 	v := m.ta.Value()
 	if !strings.HasPrefix(v, "/") || strings.ContainsAny(v, "\n ") {
 		return nil

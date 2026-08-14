@@ -5,8 +5,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/spinner"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/spinner"
+	"charm.land/lipgloss/v2"
 )
 
 // A terminal owns its font, so "font" here means the glyph set the UI draws
@@ -32,6 +32,11 @@ type glyphSet struct {
 	gaugeFull  string
 	gaugeEmpty string
 	spark      []rune
+
+	// moreUp/moreDown mark a panel whose content continues past the edge. The
+	// ascii set has no colour to lean on, so these have to read as direction
+	// on their own.
+	moreUp, moreDown string
 
 	border      lipgloss.Border
 	focusBorder lipgloss.Border
@@ -64,6 +69,8 @@ var glyphSets = map[string]glyphSet{
 		gaugeFull:   "█",
 		gaugeEmpty:  "░",
 		spark:       []rune("▁▂▃▄▅▆▇█"),
+		moreUp:      "▲",
+		moreDown:    "▼",
 		border:      lipgloss.RoundedBorder(),
 		focusBorder: lipgloss.ThickBorder(),
 		spinner:     spinner.MiniDot,
@@ -87,6 +94,8 @@ var glyphSets = map[string]glyphSet{
 		gaugeFull:   "#",
 		gaugeEmpty:  ".",
 		spark:       []rune("._-=+*%#"),
+		moreUp:      "^",
+		moreDown:    "v",
 		border:      lipgloss.ASCIIBorder(),
 		focusBorder: asciiFocusBorder,
 		spinner: spinner.Spinner{
@@ -112,6 +121,8 @@ var glyphSets = map[string]glyphSet{
 		gaugeFull:   "█",
 		gaugeEmpty:  "░",
 		spark:       []rune("▁▂▃▄▅▆▇█"),
+		moreUp:      "▲",
+		moreDown:    "▼",
 		border:      lipgloss.RoundedBorder(),
 		focusBorder: lipgloss.ThickBorder(),
 		spinner:     spinner.Dot,

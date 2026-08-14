@@ -10,11 +10,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/spinner"
-	"github.com/charmbracelet/bubbles/textarea"
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/spinner"
+	"charm.land/bubbles/v2/textarea"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	rtrunc "github.com/muesli/reflow/truncate"
 	"github.com/muesli/reflow/wrap"
 
@@ -43,6 +43,7 @@ const (
 	overlayHelp
 	overlayPerm
 	overlayText
+	overlayCredential
 )
 
 // quitWindow is how long the second ctrl+c has to arrive to exit.
@@ -93,11 +94,19 @@ type App struct {
 	spin spinner.Model
 
 	focus        focusArea
-	dashPanelSel int  // focused panel when the dashboard has focus
-	dashEditing  bool // inside the settings panel, editing rows
-	dashSel      int  // selected settings row while editing
+	dashPanelSel int          // focused panel when the dashboard has focus
+	dashEditing  bool         // inside the settings panel, editing rows
+	dashSel      int          // selected settings row while editing
+	setEdit      *settingEdit // a numeric settings row being typed into
+	// dashScroll is each panel's scroll offset, by panel key. Per panel rather
+	// than one shared offset, so scrolling the tool list does not also move the
+	// settings you were part way down.
+	dashScroll map[string]int
 
 	overlay   overlayKind
+	conn      []connEntry // last provider probe, for the connect picker
+	cred      *credForm   // in-flight credential entry, nil when closed
+	msgLog    []logEntry  // every flash, kept so none is lost to its timer
 	pick      picker
 	perms     []permEntry
 	textTitle string
@@ -171,7 +180,7 @@ func NewApp(cfg *config.Config, mgr *agent.Manager, sessID, sessName string, cre
 		keys:        NewKeyMap(cfg.Keys),
 		mgr:         mgr,
 		ta:          ta,
-		vp:          viewport.New(0, 0),
+		vp:          viewport.New(viewport.WithWidth(0), viewport.WithHeight(0)),
 		spin:        sp,
 		mouseOn:     true,
 		probedCtx:   map[string]bool{},
@@ -278,7 +287,7 @@ func (m *App) openTextOverlay(title, content string) {
 	m.textTitle = title
 	w := min(m.w-8, 140)
 	h := max(5, m.h-9)
-	m.textVP = viewport.New(w-4, h-4)
+	m.textVP = viewport.New(viewport.WithWidth(w-4), viewport.WithHeight(h-4))
 	m.textVP.SetContent(content)
 	m.overlay = overlayText
 }
@@ -317,15 +326,23 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case modelsLoadedMsg:
 		if len(msg.items) == 0 {
-			e := "no models found"
-			if len(msg.errs) > 0 {
-				e = strings.Join(msg.errs, ""+gl.sep+"")
-			}
-			m.setFlash(e, true)
-			return m, m.flashCmd()
+			// Nothing reachable. This is the moment the user most needs a way
+			// in, and a flash naming whichever provider happened to be in the
+			// default config is the opposite of one: it expires, it reads as a
+			// guess, and it leaves nothing to act on. Open the connection
+			// manager, which shows each provider's own failure next to it.
+			m.setFlash("no models — checking providers…", false)
+			return m, tea.Batch(probeConnections(m.cfg), m.flashCmd())
 		}
 		m.pick = newPicker(pickModel, "switch model", msg.items)
 		m.overlay = overlayPicker
+		return m, nil
+
+	case credTestedMsg:
+		return m, m.handleCredentialTested(msg)
+
+	case connStatusMsg:
+		m.openConnectPicker(msg.entries)
 		return m, nil
 
 	case titleDoneMsg:
@@ -375,7 +392,13 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleEditorDone(msg)
 
 	case flashClearMsg:
-		if msg.seq == m.flashSeq {
+		// Errors stay until something replaces them. They are the messages
+		// most worth reading and the least likely to be read in four seconds —
+		// often a provider's whole error body — and the reader has no way to
+		// ask for them back once the timer has run. Informational flashes
+		// still expire, since those are confirmations of something the user
+		// just did and clutter the line once read.
+		if msg.seq == m.flashSeq && !m.flashErr {
 			m.flash = ""
 		}
 		return m, nil
@@ -424,7 +447,7 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, gitTick()
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 
 	case tea.MouseMsg:
@@ -657,7 +680,16 @@ func (m *App) decidePerm(d tools.Decision) {
 	}
 }
 
-func (m *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m *App) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	// The credential overlay owns the keyboard while open: every printable key
+	// is part of a secret being typed, so nothing may fall through to the
+	// global shortcuts.
+	if m.overlay == overlayCredential {
+		if cmd, handled := m.handleCredentialKey(msg); handled {
+			return m, cmd
+		}
+	}
+
 	// Permission prompts take absolute priority.
 	if m.overlay == overlayPerm && len(m.perms) > 0 {
 		switch msg.String() {
@@ -681,13 +713,13 @@ func (m *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.overlay == overlayText || m.overlay == overlayHelp {
 		switch {
 		case m.keys.Is(msg, "scroll_up"):
-			m.textVP.SetYOffset(m.textVP.YOffset - 1)
+			m.textVP.SetYOffset(m.textVP.YOffset() - 1)
 		case m.keys.Is(msg, "scroll_down"):
-			m.textVP.SetYOffset(m.textVP.YOffset + 1)
+			m.textVP.SetYOffset(m.textVP.YOffset() + 1)
 		case m.keys.Is(msg, "page_up"):
-			m.textVP.SetYOffset(m.textVP.YOffset - m.textVP.Height)
+			m.textVP.SetYOffset(m.textVP.YOffset() - m.textVP.Height())
 		case m.keys.Is(msg, "page_down"):
-			m.textVP.SetYOffset(m.textVP.YOffset + m.textVP.Height)
+			m.textVP.SetYOffset(m.textVP.YOffset() + m.textVP.Height())
 		case m.keys.Is(msg, "scroll_top"):
 			m.textVP.GotoTop()
 		case m.keys.Is(msg, "scroll_bottom"):
@@ -715,8 +747,16 @@ func (m *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		chosen, closed := m.pick.handleKey(msg)
 		if chosen != nil {
+			// A selection may open something of its own: an unconfigured
+			// provider opens the credential form, one with a login opens a
+			// second picker. Closing must not close what the selection just
+			// opened, and checking the overlay alone is not enough — a new
+			// picker leaves it as overlayPicker. The picker's kind is what
+			// actually distinguishes "still the same screen".
+			wasKind := m.pick.kind
 			cmd := m.applyPick(*chosen)
-			if closed {
+			opened := m.overlay != overlayPicker || m.pick.kind != wasKind
+			if closed && !opened {
 				m.dismissOverlay()
 			}
 			return m, cmd
@@ -738,6 +778,13 @@ func (m *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case m.keys.Is(msg, "cancel"):
+		// The innermost open thing gets escape first: a typed field, then
+		// editing mode. This case was reached before the dashboard ever saw
+		// the key, so the settings panel's own "esc done" did nothing.
+		// Generation is still stoppable with ctrl+c.
+		if m.focus == focusDash && (m.setEdit != nil || m.dashEditing) {
+			return m.handleDashKey(msg, a)
+		}
 		if a != nil {
 			if c := m.compacting[a.ID]; c != nil {
 				c()
@@ -780,12 +827,14 @@ func (m *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case m.keys.Is(msg, "toggle_mouse"):
 		m.mouseOn = !m.mouseOn
+		// The mode is declared on the view, so flipping the flag is the whole
+		// change — v2 turns reporting on and off from the next render.
 		if m.mouseOn {
 			m.setFlash("mouse captured — wheel scrolls the chat again", false)
-			return m, tea.Batch(tea.EnableMouseCellMotion, m.flashCmd())
+			return m, m.flashCmd()
 		}
 		m.setFlash("mouse released — select & copy text with your terminal, "+m.keys.FirstKey("toggle_mouse")+" to re-capture", false)
-		return m, tea.Batch(tea.DisableMouse, m.flashCmd())
+		return m, m.flashCmd()
 
 	case m.keys.Is(msg, "toggle_dashboard"):
 		m.cfg.Dashboard.Visible = !m.cfg.Dashboard.Visible
@@ -887,10 +936,10 @@ func (m *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// puts you in write mode, so the focus-scoped scroll keys were never
 	// reachable while typing.
 	case m.keys.Is(msg, "output_up"):
-		m.vp.SetYOffset(m.vp.YOffset - m.vp.Height/2)
+		m.vp.SetYOffset(m.vp.YOffset() - m.vp.Height()/2)
 		return m, nil
 	case m.keys.Is(msg, "output_down"):
-		m.vp.SetYOffset(m.vp.YOffset + m.vp.Height/2)
+		m.vp.SetYOffset(m.vp.YOffset() + m.vp.Height()/2)
 		return m, nil
 	}
 
@@ -905,13 +954,13 @@ func (m *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case m.keys.Is(msg, "copy_all"):
 			return m, m.copyAll()
 		case m.keys.Is(msg, "scroll_up"):
-			m.vp.SetYOffset(m.vp.YOffset - 1)
+			m.vp.SetYOffset(m.vp.YOffset() - 1)
 		case m.keys.Is(msg, "scroll_down"):
-			m.vp.SetYOffset(m.vp.YOffset + 1)
+			m.vp.SetYOffset(m.vp.YOffset() + 1)
 		case m.keys.Is(msg, "page_up"):
-			m.vp.SetYOffset(m.vp.YOffset - m.vp.Height)
+			m.vp.SetYOffset(m.vp.YOffset() - m.vp.Height())
 		case m.keys.Is(msg, "page_down"):
-			m.vp.SetYOffset(m.vp.YOffset + m.vp.Height)
+			m.vp.SetYOffset(m.vp.YOffset() + m.vp.Height())
 		case m.keys.Is(msg, "scroll_top"):
 			m.vp.GotoTop()
 		case m.keys.Is(msg, "scroll_bottom"):
@@ -928,7 +977,7 @@ func (m *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // handleInputKey processes keys while the prompt input is focused: slash
 // command completion, @-mention completion, prompt history recall, sending,
 // and typing.
-func (m *App) handleInputKey(msg tea.KeyMsg, a *agent.Agent) (tea.Model, tea.Cmd) {
+func (m *App) handleInputKey(msg tea.KeyPressMsg, a *agent.Agent) (tea.Model, tea.Cmd) {
 	if fs := m.mentionMatches(); len(fs) > 0 {
 		switch msg.String() {
 		case "up":
@@ -983,7 +1032,7 @@ func (m *App) handleInputKey(msg tea.KeyMsg, a *agent.Agent) (tea.Model, tea.Cmd
 	if a != nil {
 		s := msg.String()
 		if s == "up" && (m.recalling || strings.TrimSpace(m.ta.Value()) == "") {
-			prompts := userPrompts(a)
+			prompts := recallHistory(a)
 			if len(prompts) > 0 {
 				if !m.recalling {
 					m.recalling = true
@@ -1003,7 +1052,7 @@ func (m *App) handleInputKey(msg tea.KeyMsg, a *agent.Agent) (tea.Model, tea.Cmd
 			}
 		}
 		if s == "down" && m.recalling {
-			prompts := userPrompts(a)
+			prompts := recallHistory(a)
 			m.recallIdx--
 			if m.recallIdx > len(prompts) {
 				m.recallIdx = len(prompts)
@@ -1022,7 +1071,7 @@ func (m *App) handleInputKey(msg tea.KeyMsg, a *agent.Agent) (tea.Model, tea.Cmd
 	var cmd tea.Cmd
 	before := strings.Count(m.ta.Value(), "\n")
 	m.ta, cmd = m.ta.Update(msg)
-	if msg.Type == tea.KeyRunes || msg.String() == "backspace" {
+	if msg.Text != "" || msg.String() == "backspace" {
 		m.recalling = false
 	}
 	if strings.Count(m.ta.Value(), "\n") != before {
@@ -1031,14 +1080,22 @@ func (m *App) handleInputKey(msg tea.KeyMsg, a *agent.Agent) (tea.Model, tea.Cmd
 	return m, cmd
 }
 
-// userPrompts lists the agent's past user prompts, oldest first.
-func userPrompts(a *agent.Agent) []string {
+// recallHistory lists everything the user typed at this agent, oldest first:
+// prompts and slash commands together. They are stored differently — a prompt
+// is a user message, a slash command is a "note" written by noteSlash — but
+// from the input box they were one sequence of things typed, and recall that
+// silently drops half of them means retyping a command to fix a typo in it.
+func recallHistory(a *agent.Agent) []string {
 	var out []string
 	for _, msg := range a.Messages {
-		if msg.Role == "user" && !msg.IsToolResult() && !msg.Hidden {
-			if t := msg.Text(); strings.TrimSpace(t) != "" {
-				out = append(out, t)
-			}
+		switch {
+		case msg.Role == "user" && !msg.IsToolResult() && !msg.Hidden:
+		case msg.Role == "note":
+		default:
+			continue
+		}
+		if t := strings.TrimSpace(msg.Text()); t != "" {
+			out = append(out, t)
 		}
 	}
 	return out
@@ -1184,7 +1241,7 @@ func (m *App) fittedPanels() []*panelDef {
 
 // handleDashKey drives the dashboard: panel-level focus (move/reorder), and
 // row editing inside the settings panel.
-func (m *App) handleDashKey(msg tea.KeyMsg, a *agent.Agent) (tea.Model, tea.Cmd) {
+func (m *App) handleDashKey(msg tea.KeyPressMsg, a *agent.Agent) (tea.Model, tea.Cmd) {
 	defs := m.fittedPanels()
 	if len(defs) == 0 {
 		return m, nil
@@ -1197,6 +1254,11 @@ func (m *App) handleDashKey(msg tea.KeyMsg, a *agent.Agent) (tea.Model, tea.Cmd)
 	}
 
 	if m.dashEditing {
+		// A typed field owns the keyboard while it is open, or digits would
+		// leak through and step the value underneath at the same time.
+		if m.setEdit != nil {
+			return m.handleSettingInput(msg, a)
+		}
 		n := len(settingsRows)
 		switch {
 		case m.keys.Is(msg, "cancel"):
@@ -1204,9 +1266,11 @@ func (m *App) handleDashKey(msg tea.KeyMsg, a *agent.Agent) (tea.Model, tea.Cmd)
 			return m, nil
 		case m.keys.Is(msg, "scroll_up"):
 			m.dashSel = (m.dashSel - 1 + n) % n
+			m.revealSettingsRow(defs)
 			return m, nil
 		case m.keys.Is(msg, "scroll_down"):
 			m.dashSel = (m.dashSel + 1) % n
+			m.revealSettingsRow(defs)
 			return m, nil
 		case m.keys.Is(msg, "send"):
 			return m, m.activateSetting(a)
@@ -1222,6 +1286,12 @@ func (m *App) handleDashKey(msg tea.KeyMsg, a *agent.Agent) (tea.Model, tea.Cmd)
 
 	// Panel level.
 	switch {
+	case m.keys.Is(msg, "page_up"), m.keys.Is(msg, "output_up"):
+		m.scrollFocusedPanel(defs, -1)
+		return m, nil
+	case m.keys.Is(msg, "page_down"), m.keys.Is(msg, "output_down"):
+		m.scrollFocusedPanel(defs, +1)
+		return m, nil
 	case m.keys.Is(msg, "move_panel_prev"):
 		m.moveFocusedPanel(defs, -1)
 		return m, nil
@@ -1270,13 +1340,25 @@ func (m *App) activateSetting(a *agent.Agent) tea.Cmd {
 	if a == nil {
 		return nil
 	}
-	switch settingsRows[m.dashSel].key {
-	case "model":
+	key := settingsRows[m.dashSel].key
+	switch {
+	case key == "model":
 		m.setFlash("loading models…", false)
 		return tea.Batch(m.loadModelsCmd(), m.flashCmd())
+	case isNumericSetting(key):
+		// Enter opens the value for typing. Stepping is still on the arrows,
+		// which suits a nudge; enter is for when you know the number.
+		m.openSettingInput(key, m.settingValue(key, a))
+		return nil
 	default:
 		return m.adjustSetting(a, +1)
 	}
+}
+
+// isNumericSetting reports whether a settings row takes a typed number.
+func isNumericSetting(key string) bool {
+	_, ok := numericSettings[key]
+	return ok
 }
 
 // adjustSetting changes the selected settings row, applies it to the active
@@ -1377,6 +1459,9 @@ func (m *App) applyPick(it pickerItem) tea.Cmd {
 
 	case pickEffort:
 		return m.applyEffort(it.value)
+
+	case pickConnect:
+		return m.applyConnect(it.value)
 
 	case pickSession:
 		return m.loadSessionByID(it.value)
@@ -1589,6 +1674,10 @@ func (m *App) setFlash(text string, isErr bool) {
 	m.flash = sanitizeLabel(text)
 	m.flashErr = isErr
 	m.flashSeq++
+	// Recorded here rather than at each call site: this is the one place every
+	// message passes through, and it is already sanitized, so nothing can
+	// reach the history by a route that skips the scrubbing.
+	m.record(m.flash, isErr)
 }
 
 func (m *App) flashCmd() tea.Cmd {
@@ -1662,8 +1751,8 @@ func (m *App) recalcLayout() {
 	}
 	m.ta.SetWidth(innerW)
 	m.ta.SetHeight(taH)
-	m.vp.Width = innerW
-	m.vp.Height = max(1, chatH-2-taH-1-attach)
+	m.vp.SetWidth(innerW)
+	m.vp.SetHeight(max(1, chatH-2-taH-1-attach))
 }
 
 func (m *App) refreshChat(force bool) {
@@ -1676,7 +1765,7 @@ func (m *App) refreshChat(force bool) {
 	atBottom := m.vp.AtBottom()
 	// Finalized messages arrive pre-wrapped from the message cache; only the
 	// streaming tail needs the overflow hard-wrap here.
-	content := wrap.String(renderConversation(a, max(10, m.vp.Width-1), m.spin.View(), m.cfg.Verbose, m.thinkingOpen), max(10, m.vp.Width))
+	content := wrap.String(renderConversation(a, max(10, m.vp.Width()-1), m.spin.View(), m.cfg.Verbose, m.thinkingOpen), max(10, m.vp.Width()))
 	m.chatStyled = strings.Split(content, "\n")
 	// Stripping ANSI from the whole transcript costs milliseconds and this
 	// runs on every spinner tick, so it is deferred until something actually
@@ -1704,8 +1793,23 @@ func (m *App) refreshChat(force bool) {
 
 // View --------------------------------------------------------------------
 
-// View implements tea.Model.
-func (m *App) View() string {
+// View implements tea.Model. v2 returns a View struct rather than a string;
+// the content is the same, wrapped.
+func (m *App) View() tea.View {
+	v := tea.NewView(m.render())
+	// v2 declares screen state on the view rather than through startup
+	// options. Keyboard enhancements are what make shift+enter a distinct key
+	// at all: the terminal is asked to encode modifiers, and v2 decodes them.
+	v.AltScreen = true
+	v.MouseMode = tea.MouseModeCellMotion
+	if !m.mouseOn {
+		v.MouseMode = tea.MouseModeNone
+	}
+	return v
+}
+
+// render builds the screen.
+func (m *App) render() string {
 	if !m.ready {
 		return "loading…"
 	}
@@ -1722,6 +1826,8 @@ func (m *App) View() string {
 		body = m.renderPerm(m.w, bodyH)
 	case overlayText:
 		body = m.renderTextOverlay(m.w, bodyH)
+	case overlayCredential:
+		body = lipgloss.Place(m.w, bodyH, lipgloss.Center, lipgloss.Center, m.viewCredential())
 	case overlayPicker:
 		checked := func(v string) bool {
 			for _, p := range m.cfg.Dashboard.Panels {
@@ -1773,7 +1879,11 @@ func (m *App) renderBody(bodyH int) string {
 		content += styTool.Render("attached: "+strings.Join(labels, ", ")) + "\n"
 	}
 	content += m.ta.View()
-	chat := borderStyle(m.focus == focusInput || m.focus == focusChat).Width(innerW).Height(chatH - 2).Render(content)
+	// lipgloss v2 counts the border in Width and Height: they are the outer
+	// size of the frame, where v1 measured the content inside it. Passing the
+	// inner size here made every box two columns narrow, which showed up as
+	// the rule under the transcript wrapping onto a second line.
+	chat := borderStyle(m.focus == focusInput || m.focus == focusChat).Width(chatW).Height(chatH).Render(content)
 
 	switch {
 	case dashW == 0 && dashH == 0:
@@ -1882,7 +1992,7 @@ func (m *App) renderPerm(w, h int) string {
 }
 
 func (m *App) renderTextOverlay(w, h int) string {
-	content := styPanelTitle.Render(truncate(m.textTitle, m.textVP.Width)) + "\n" + m.textVP.View()
+	content := styPanelTitle.Render(truncate(m.textTitle, m.textVP.Width())) + "\n" + m.textVP.View()
 	if !zenMode {
 		content += "\n" + styDim.Render("j/k scroll"+gl.sep+"u/d page"+gl.sep+"g/G top/bottom"+gl.sep+"esc close")
 	}
@@ -1970,7 +2080,16 @@ func (m *App) renderStatus() string {
 	var left string
 	if m.flash != "" {
 		if m.flashErr {
-			left = " " + styErr.Render(m.flash)
+			// A provider's error body is routinely longer than the status
+			// line. Truncating in silence is what made these unreadable, so
+			// when it happens the line says where the rest is.
+			hint := gl.sep + "/log"
+			avail := m.w - 2 - lipgloss.Width(hint)
+			if avail > 10 && lipgloss.Width(m.flash) > avail {
+				left = " " + styErr.Render(truncate(m.flash, avail)) + styDim.Render(hint)
+			} else {
+				left = " " + styErr.Render(m.flash)
+			}
 		} else {
 			left = " " + styFlash.Render(m.flash)
 		}

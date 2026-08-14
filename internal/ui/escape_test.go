@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 
@@ -19,8 +20,17 @@ const (
 	nameIn = "srv__lookup"
 )
 
-// hasEscape reports whether anything a terminal would act on survived.
+// sgrRe matches the colour sequences lipgloss itself emits. Since v2 a style
+// always carries them and the writer strips them for a destination that has no
+// colour, so they are expected in a rendered string and are not what this is
+// hunting for.
+var sgrRe = regexp.MustCompile("\x1b\\[[0-9;:]*m")
+
+// hasEscape reports whether anything a terminal would act on survived, once
+// our own colouring is discounted. Anything else — a clipboard write, a screen
+// clear, a C1 introducer — is attacker-controlled and must not be there.
 func hasEscape(s string) bool {
+	s = sgrRe.ReplaceAllString(s, "")
 	if strings.ContainsAny(s, "\x1b\x07") {
 		return true
 	}

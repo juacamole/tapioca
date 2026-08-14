@@ -18,13 +18,13 @@
 
 buildGoModule rec {
   pname = "tapioca";
-  version = "1.0.0";
+  version = "1.1.0";
 
   src = fetchFromGitHub {
     owner = "juacamole";
     repo = "tapioca";
     rev = "v${version}";
-    # nix-prefetch-url --unpack https://github.com/juacamole/tapioca/archive/refs/tags/v1.0.0.tar.gz
+    # nix-prefetch-url --unpack https://github.com/juacamole/tapioca/archive/refs/tags/v1.1.0.tar.gz
     # then: nix hash convert --hash-algo sha256 --to sri <base32>
     hash = "sha256-K7uAlHuLbcnvha76XfteG0IZxarNuIsU2bkeF5C6RsM=";
   };

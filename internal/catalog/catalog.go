@@ -163,11 +163,38 @@ func normalize(id string) string {
 }
 
 // Lookup finds hosted metadata for a model id (tag suffixes ignored).
+//
+// Gateways namespace ids by vendor — "anthropic/claude-opus-5" from the Vercel
+// AI Gateway, OpenRouter and others — while models.dev keys the same model
+// bare, so the vendor-qualified form is tried again as its last segment. The
+// exact id wins when it exists: stripping is a fallback, not a rewrite, so a
+// catalog that does key a full vendor/model id is not shadowed by its own tail.
+//
+// The stripping happens here rather than in normalize because normalize also
+// builds the keys in parse, where changing the shape would move every entry.
 func Lookup(id string) (Model, bool) {
 	mu.RLock()
 	defer mu.RUnlock()
-	m, ok := hosted[normalize(id)]
-	return m, ok
+	key := normalize(id)
+	if m, ok := hosted[key]; ok {
+		return m, true
+	}
+	if bare := Bare(key); bare != key {
+		m, ok := hosted[bare]
+		return m, ok
+	}
+	return Model{}, false
+}
+
+// Bare strips a gateway's vendor prefix from a model id, returning the id
+// unchanged when it has none. One definition of the rule, because the prefix
+// scans that price a model need the stripped string itself rather than a
+// lookup.
+func Bare(id string) string {
+	if i := strings.LastIndexByte(id, '/'); i >= 0 && i < len(id)-1 {
+		return id[i+1:]
+	}
+	return id
 }
 
 // LookupLocal finds runtime-probed metadata for a local model.

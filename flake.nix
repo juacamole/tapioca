@@ -14,7 +14,7 @@
       {
         packages.default = pkgs.buildGoModule {
           pname = "tapioca";
-          version = "1.0.0"; # kept in step with internal/version by CI
+          version = "1.1.0"; # kept in step with internal/version by CI
           src = ./.;
           vendorHash = "sha256-oeW8Am7NCkHGlTj2M0gBQqQzxKAGqxgIWLaZFIpY+Pc=";
           # Both names, one program: Shopify's tapioca gem installs a

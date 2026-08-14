@@ -12,16 +12,21 @@ import (
 
 // ProviderConfig describes one LLM backend.
 type ProviderConfig struct {
-	Type            string `toml:"type"`             // "ollama" | "anthropic" | "openai"
-	BaseURL         string `toml:"base_url"`         // optional override
-	APIKey          string `toml:"api_key"`          // literal key (discouraged; prefer env)
-	APIKeyEnv       string `toml:"api_key_env"`      // env var holding the key
-	ContextWindow   int    `toml:"context_window"`   // tokens; 0 = per-type default
-	APIVersion      string `toml:"api_version"`      // azure only; defaults to a known-good one
-	Region          string `toml:"region"`           // bedrock, vertex
-	Profile         string `toml:"profile"`          // bedrock: AWS shared-credentials profile
-	Project         string `toml:"project"`          // vertex: GCP project
-	CredentialsFile string `toml:"credentials_file"` // vertex: service account JSON
+	Type            string            `toml:"type"`             // "ollama" | "anthropic" | "openai"
+	BaseURL         string            `toml:"base_url"`         // optional override
+	APIKey          string            `toml:"api_key"`          // literal key (discouraged; prefer env)
+	APIKeyEnv       string            `toml:"api_key_env"`      // env var holding the key
+	Auth            string            `toml:"auth"`             // "oauth" authenticates from the provider CLI profile
+	AuthStyle       string            `toml:"auth_style"`       // custom: bearer | header | query | none
+	AuthHeader      string            `toml:"auth_header"`      // custom: header name when auth_style = header
+	AuthQuery       string            `toml:"auth_query"`       // custom: query parameter when auth_style = query
+	Headers         map[string]string `toml:"headers"`          // custom: sent on every request
+	ContextWindow   int               `toml:"context_window"`   // tokens; 0 = per-type default
+	APIVersion      string            `toml:"api_version"`      // azure only; defaults to a known-good one
+	Region          string            `toml:"region"`           // bedrock, vertex
+	Profile         string            `toml:"profile"`          // bedrock: AWS shared-credentials profile
+	Project         string            `toml:"project"`          // vertex: GCP project
+	CredentialsFile string            `toml:"credentials_file"` // vertex: service account JSON
 }
 
 // Cost is the price per million tokens for a model prefix.
@@ -125,7 +130,10 @@ func Default() *Config {
 		Verbose:        false,
 		Autosave:       true,
 		AutoCompact:    true,
-		PermissionMode: "ask",
+		// "manual", not the legacy "ask": Load migrates that name away, so a
+		// default of "ask" was a value the loader immediately rewrote — which
+		// made a saved config differ from the default it was saved from.
+		PermissionMode: "manual",
 		// Sandboxing is opt-in, but once on, network access stays unless the
 		// user turns it off — a silent loss of network reads as a broken build.
 		SandboxNetwork: true,
@@ -262,9 +270,23 @@ func (c *Config) Save() error {
 	if err := toml.NewEncoder(&buf).Encode(&tosave); err != nil {
 		return err
 	}
-	text := buf.String()
-	if existing, err := os.ReadFile(path); err == nil {
-		text = applyComments(text, harvestComments(string(existing)))
+	// Write only what differs from the defaults. Load starts from Default()
+	// and decodes over it, so an omitted key returns as the value that was
+	// omitted — see minimize.go for why the rule cannot be "drop empties".
+	var defBuf bytes.Buffer
+	if err := toml.NewEncoder(&defBuf).Encode(Default()); err != nil {
+		return err
+	}
+	// The existing file is read before minimizing, not after: minimize needs to
+	// know which keys carry comments so it can keep them.
+	existing, readErr := os.ReadFile(path)
+	var comments commentMap
+	if readErr == nil {
+		comments = harvestComments(string(existing))
+	}
+	text := minimize(buf.String(), defBuf.String(), comments)
+	if readErr == nil {
+		text = applyComments(text, comments)
 	} else {
 		text = "# Tapioca configuration.\n" +
 			"# Managed by the app (settings dashboard writes here); manual edits are\n" +
@@ -304,8 +326,30 @@ func WriteDefault(path string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	return os.WriteFile(path, []byte(defaultTOML), 0o600)
+	// The annotated example goes beside the config rather than into it. It is
+	// two hundred lines of documentation, and a config that opens with two
+	// hundred lines of settings already at their defaults hides the two the
+	// user actually changed — every one of them also had to be kept forever,
+	// since a commented line is a line someone might have written.
+	example := filepath.Join(filepath.Dir(path), exampleName)
+	_ = os.WriteFile(example, []byte(defaultTOML), 0o600) // best effort
+	return os.WriteFile(path, []byte(starterTOML), 0o600)
 }
+
+// exampleName is the annotated reference written next to the config.
+const exampleName = "config.example.toml"
+
+// starterTOML is a fresh config: nothing but a pointer to where the options
+// are. Every setting has a default in code, so an empty file is a working one.
+const starterTOML = `# Tapioca configuration.
+#
+# Everything has a default, so this file only needs the things you change.
+# Settings changed in the app — tab to the dashboard, or /settings — are
+# written back here, and only where they differ from the defaults.
+#
+# Every available option, with comments, is in ` + exampleName + ` beside
+# this file. Copy the lines you want.
+`
 
 const defaultTOML = `# Tapioca configuration
 # You rarely need to edit this by hand: focus the dashboard inside the app
@@ -385,6 +429,26 @@ type = "anthropic"
 api_key_env = "ANTHROPIC_API_KEY"
 # api_key = "sk-ant-..."        # or put the key inline (not recommended)
 # base_url = "https://api.anthropic.com"
+
+# Models from every vendor behind one key, through the Vercel AI Gateway. The
+# address is built in; model ids are vendor-qualified, e.g.
+# "anthropic/claude-opus-5".
+# [providers.vercel]
+# type = "vercel"
+# api_key_env = "AI_GATEWAY_API_KEY"
+
+# Any server speaking the OpenAI API — a gateway, a proxy, a local model.
+# auth_style says where the credential goes, since the same wire format is
+# served behind all four of these.
+# [providers.mygateway]
+# type = "custom"
+# base_url = "https://api.example.com/v1"
+# api_key_env = "MY_GATEWAY_KEY"
+# auth_style = "bearer"         # bearer | header | query | none
+# auth_header = "X-API-Key"     # only for auth_style = "header"
+# auth_query = "key"            # only for auth_style = "query"
+#   [providers.mygateway.headers]   # sent on every request
+#   X-Org-Id = "org_123"
 
 # Anthropic models on AWS Bedrock. Credentials come from the usual AWS
 # environment variables or ~/.aws/credentials; the model is a Bedrock id.

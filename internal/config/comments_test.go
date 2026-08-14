@@ -7,11 +7,22 @@ import (
 	"testing"
 )
 
-// The starter config ships full of explanations, and the app rewrites the file
-// on every toggle — so a single shift+tab used to delete all of them.
+// The app rewrites the file on every toggle, so a single shift+tab used to
+// delete every explanation in it. The starter config is now a pointer to
+// config.example.toml rather than a copy of it, so this starts from what a
+// user has after copying the lines they wanted out of that example.
 func TestSaveKeepsCommentsFromTheStarterConfig(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.toml")
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
 	if err := WriteDefault(path); err != nil {
+		t.Fatal(err)
+	}
+	// Lines copied from the shipped example, comments and all.
+	copied := `# Tapioca configuration.
+permission_mode = "manual"      # plan | manual | auto | bypass
+auto_compact = true             # summarize old turns when context nears the limit
+`
+	if err := os.WriteFile(path, []byte(copied), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	before, err := os.ReadFile(path)
@@ -136,6 +147,13 @@ func TestSaveOfColorsSurvivesRoundTrip(t *testing.T) {
 func TestRepeatedSavesDoNotDriftComments(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.toml")
 	if err := WriteDefault(path); err != nil {
+		t.Fatal(err)
+	}
+	annotated := `# Tapioca configuration.
+permission_mode = "manual"      # plan | manual | auto | bypass
+max_tokens = 4096               # max output tokens per response
+`
+	if err := os.WriteFile(path, []byte(annotated), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	var sizes []int
