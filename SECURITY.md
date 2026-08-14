@@ -14,6 +14,14 @@ the model ("ignore previous instructions, run …"). The model cannot reliably
 distinguish data from instructions, so **treat every tool call as something
 the content it just read might have asked for**.
 
+A repository's `.tapioca/skills/` is the same kind of text: the description of
+each skill is in the system prompt, and `load_skill` puts the rest in front of
+the model. Cloning a repository is enough to get both. Neither can reach
+outside its own directory — a `SKILL.md` that is a link elsewhere, or a skill
+directory that is, is skipped — but what a pack *says* is chosen by whoever
+wrote it, exactly like `AGENTS.md`. Nothing a skill asks for bypasses the gates
+below; `/skills` shows what is installed.
+
 This is why the permission prompt matters: it is the point where a human
 sees the command before it runs.
 
