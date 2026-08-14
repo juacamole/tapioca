@@ -103,6 +103,7 @@ type App struct {
 	ask          *askState    // an in-flight /ask, kept out of the history
 	search       *searchState // an open transcript search
 	reloadSeen   string       // fingerprint of the watched files at the last reload
+	hookNotes    []string     // what the last reload refused about [[hooks]]
 	// dashScroll is each panel's scroll offset, by panel key. Per panel rather
 	// than one shared offset, so scrolling the tool list does not also move the
 	// settings you were part way down.
@@ -676,6 +677,7 @@ func (m *App) applyReload() bool {
 		m.setFlash(err.Error()+" — the previous config is still running", true)
 		return false
 	}
+	m.hookNotes = nil
 	*m.cfg = *newCfg
 	m.keys = NewKeyMap(m.cfg.Keys)
 	secretenv.SetExtra(m.cfg.SecretEnv)
@@ -691,6 +693,7 @@ func (m *App) applyReload() bool {
 		m.mgr.Exec.SetSandbox(m.cfg.Sandbox)
 		m.mgr.Exec.SetSandboxNetwork(m.cfg.SandboxNetwork)
 		m.mgr.Exec.SetTimeout(time.Duration(m.cfg.BashTimeout) * time.Second)
+		m.hookNotes = tools.ApplyHooks(m.mgr.Exec, m.cfg, m.cwd())
 		m.reloadUserCmds()
 		m.reloadSkills()
 	}
@@ -707,8 +710,18 @@ func (m *App) applyReload() bool {
 	m.recalcLayout()
 	m.refreshChat(true)
 	m.noteReloadStamps()
-	m.setFlash("config reloaded", false)
+	m.flashReloaded("config reloaded")
 	return true
+}
+
+// flashReloaded announces a reload, carrying whatever it had to say about
+// [[hooks]]. Every caller goes through this: a refused hook is the one thing a
+// reload must not swallow, and each of them sets a message of its own.
+func (m *App) flashReloaded(text string) {
+	if len(m.hookNotes) > 0 {
+		text += gl.sep + m.hookNotes[0]
+	}
+	m.setFlash(text, len(m.hookNotes) > 0)
 }
 
 func (m *App) decidePerm(d tools.Decision) {

@@ -51,6 +51,15 @@ type Permissions struct {
 	Deny  []string `toml:"deny"`
 }
 
+// HookConfig is one lifecycle hook: a command run at a defined point around a
+// tool call. Where it may come from is decided by TrustedHooks.
+type HookConfig struct {
+	Event   string `toml:"event"`   // pre_tool | post_tool | session_start | session_end
+	Match   string `toml:"match"`   // glob over the tool name; empty matches every tool
+	Command string `toml:"command"` // run with sh -c, like a bash call
+	Timeout int    `toml:"timeout"` // seconds it may run; 0 = the built-in default
+}
+
 // MCPServerConfig describes one MCP server: a child process over stdio, or an
 // HTTP endpoint when URL is set.
 type MCPServerConfig struct {
@@ -106,6 +115,7 @@ type Config struct {
 	BashAllow   []string                  `toml:"bash_allow"`  // always-allowed bash command words
 	Permissions Permissions               `toml:"permissions"` // per-tool rules, checked before the mode
 	SecretEnv   []string                  `toml:"secret_env"`  // extra env vars hidden from tools
+	Hooks       []HookConfig              `toml:"hooks"`       // commands run around tool calls
 	Providers   map[string]ProviderConfig `toml:"providers"`
 	MCP         []MCPServerConfig         `toml:"mcp"`
 	LSP         []LSPServerConfig         `toml:"lsp"`
@@ -398,6 +408,24 @@ model_catalog = true            # fetch model prices/context sizes from
 # deny  = ["read_file(**/.env)", "bash(rm *)", "mcp:*__delete_*"]
 # secret_env = ["MY_TOKEN"]     # extra env vars hidden from tools and MCP servers
                                 # (provider API keys are always hidden)
+
+# Hooks run a command of yours around tool calls. event is pre_tool,
+# post_tool, session_start or session_end; match globs the tool name
+# (mcp:server__tool for MCP tools) and covers every tool when omitted.
+# The call is described in TAPIOCA_EVENT, TAPIOCA_TOOL, TAPIOCA_TOOL_PATH
+# (file tools), TAPIOCA_TOOL_COMMAND (bash), TAPIOCA_TOOL_ERROR (post_tool)
+# and TAPIOCA_CWD, with the exact arguments as JSON on stdin.
+# A pre_tool hook that exits non-zero BLOCKS the call and its stderr is shown
+# as the reason — including when it is missing or times out, so a policy that
+# cannot run refuses rather than waves things through. A hook can only refuse:
+# it never overrides a deny rule or skips a prompt. Provider keys are scrubbed
+# from its environment. See SECURITY.md.
+# [[hooks]]
+# event = "post_tool"
+# match = "edit_file"
+# command = 'gofmt -w "$TAPIOCA_TOOL_PATH"'
+# timeout = 30                  # seconds; 0 = 30
+
 editor = ""                     # prompt editor; falls back to $VISUAL, $EDITOR, nvim, vim
 # title_model = "ollama:qwen3"  # cheap model for session titles; empty = the agent's own
 

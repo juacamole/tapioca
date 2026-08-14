@@ -98,7 +98,7 @@ func (m *App) checkReload() tea.Cmd {
 	// what tries again.
 	m.reloadSeen = now
 	if m.applyReload() {
-		m.setFlash("reloaded — config changed on disk", false)
+		m.flashReloaded("reloaded — config changed on disk")
 	}
 	return m.flashCmd()
 }
@@ -116,7 +116,7 @@ func (m *App) commandDirs() []string {
 // cmdReload re-reads everything now, without opening an editor.
 func cmdReload(m *App, _ string) tea.Cmd {
 	if m.applyReload() {
-		m.setFlash("reloaded", false)
+		m.flashReloaded("reloaded")
 	}
 	return m.flashCmd()
 }

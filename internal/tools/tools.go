@@ -82,6 +82,7 @@ type Executor struct {
 	sandboxNet   bool
 	diagnose     func(path string) string // language-server check after an edit
 	rules        []rule                   // per-tool permission rules from the config
+	hooks        []Hook                   // user commands run around tool calls
 	jobs         map[string]*job          // background bash, by id
 	jobSeq       int
 	checkpoint   func(label string)
@@ -725,8 +726,25 @@ func (e *Executor) CallDetailed(ctx context.Context, name string, raw json.RawMe
 		}
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, e.callTimeout(name, raw))
+	// Everything above has decided that this call may happen. A pre_tool hook
+	// is the user's own last word on it, and it only ever narrows that
+	// decision: a call a rule denied returned long before this point.
+	if reason, blocked := e.RunPreToolHooks(ctx, name, raw); blocked {
+		return Result{Text: reason, IsErr: true}, nil
+	}
+	callCtx, cancel := context.WithTimeout(ctx, e.callTimeout(name, raw))
 	defer cancel()
+	res, err := e.dispatch(callCtx, name, raw)
+	// The call's own deadline is spent by now, so the hook gets the turn's
+	// context instead — a formatter must not inherit whatever is left of it.
+	if note := e.RunPostToolHooks(ctx, name, raw, err != nil || res.IsErr); note != "" {
+		res.Text = strings.TrimRight(res.Text, "\n") + "\n" + note
+	}
+	return res, err
+}
+
+// dispatch runs a tool that has already been approved.
+func (e *Executor) dispatch(ctx context.Context, name string, raw json.RawMessage) (Result, error) {
 	switch name {
 	case "bash":
 		return plain(e.runBash(ctx, raw))

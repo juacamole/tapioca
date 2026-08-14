@@ -597,11 +597,25 @@ func (a *Agent) run(ctx context.Context, rs runSettings, history []provider.Mess
 				}
 				if !allowed {
 					text, isErr = "the user denied permission for this call", true
-				} else {
-					toolStart = time.Now()
-					callCtx, cancelCall := context.WithTimeout(ctx, toolCallTimeout)
-					text, isErr, callErr = a.MCP.Call(callCtx, tu.Name, tu.Input)
-					cancelCall()
+					break
+				}
+				// Hooks run here for the same reason the rules do: a policy
+				// that covered the built-ins and skipped every tool an MCP
+				// server offers would be a policy with a hole in it.
+				if a.Exec != nil {
+					if reason, blocked := a.Exec.RunPreToolHooks(ctx, key, tu.Input); blocked {
+						text, isErr = reason, true
+						break
+					}
+				}
+				toolStart = time.Now()
+				callCtx, cancelCall := context.WithTimeout(ctx, toolCallTimeout)
+				text, isErr, callErr = a.MCP.Call(callCtx, tu.Name, tu.Input)
+				cancelCall()
+				if a.Exec != nil {
+					if note := a.Exec.RunPostToolHooks(ctx, key, tu.Input, isErr || callErr != nil); note != "" {
+						text = strings.TrimRight(text, "\n") + "\n" + note
+					}
 				}
 			default:
 				callErr = fmt.Errorf("no handler for tool %q", tu.Name)
