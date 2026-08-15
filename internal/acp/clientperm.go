@@ -60,6 +60,12 @@ var subjectKeys = map[string][]string{
 	"web_fetch":  {"url", "uri"},
 }
 
+// deniedUnreported is the refusal an agent gets back when the user turns down
+// a call it described only in prose. It says which part was missing, because
+// an agent that resends the same call with its arguments filled in is judged
+// on those instead.
+const deniedUnreported = "the user denied permission for this call: its arguments were not reported"
+
 // permissionRequest is what the agent sends to ask.
 type permissionRequest struct {
 	SessionID string         `json:"sessionId"`
@@ -116,7 +122,7 @@ func (c *Client) decide(ctx context.Context, req permissionRequest) (denial stri
 		// refused rather than waved through.
 		return "no permission gate is configured", false
 	}
-	name, subject := requestSubject(req.ToolCall)
+	name, subject, reported := requestSubject(req.ToolCall)
 	external := strings.HasPrefix(name, "acp:")
 	// What the gate and the hooks are handed: the arguments a built-in of this
 	// name would have been called with, or the agent's own for a tool with no
@@ -125,7 +131,8 @@ func (c *Client) decide(ctx context.Context, req permissionRequest) (denial stri
 	if external && len(req.ToolCall.Raw) > 0 {
 		raw = req.ToolCall.Raw
 	}
-	ask := c.asker(ctx)
+	asked := false
+	ask := c.asker(ctx, &asked)
 	if external {
 		denial, allowed = c.gate.ApproveExternal(name, subject, ask)
 	} else {
@@ -133,6 +140,23 @@ func (c *Client) decide(ctx context.Context, req permissionRequest) (denial stri
 	}
 	if !allowed {
 		return denial, false
+	}
+	// The rules were matched against a title written for a human, because the
+	// agent did not report the command or the path anywhere this can read it.
+	// A rule that matches one anyway still refuses above — but a rule that
+	// does not match has decided nothing, and passing that off as permission
+	// is how deny = ["bash(rm *)"] comes to allow an rm titled "Tidy up".
+	// So the one thing that can still judge the call is asked to: the user.
+	// Under bypass too, which asks for nothing else — bypass waives the
+	// prompt for calls the rules have cleared, and these are calls the rules
+	// could not read.
+	if !reported && !asked {
+		// Not remembered, however the user answers. A standing grant for a
+		// call whose arguments could not be read is a standing grant for
+		// anything the next one turns out to be.
+		if d := ask(name, subject+" — the agent did not report what this call runs"); !d.Allow {
+			return deniedUnreported, false
+		}
 	}
 	// A pre_tool hook is the user's own last word on a call, and leaving it
 	// out for the one agent Tapioca did not write would be the hole it exists
@@ -152,9 +176,10 @@ func (c *Client) decide(ctx context.Context, req permissionRequest) (denial stri
 //
 // The context bounds the wait: a cancelled turn, or an agent that died
 // mid-question, releases the prompt as a refusal.
-func (c *Client) asker(ctx context.Context) tools.AskFunc {
+func (c *Client) asker(ctx context.Context, asked *bool) tools.AskFunc {
 	a := c.tab()
 	return func(tool, summary string) tools.Decision {
+		*asked = true
 		if a == nil {
 			return tools.Decision{}
 		}
@@ -163,25 +188,28 @@ func (c *Client) asker(ctx context.Context) tools.AskFunc {
 }
 
 // requestSubject works out which tool the request should be judged as, and
-// what the rules should match against.
-func requestSubject(call toolCallUpdate) (name, subject string) {
+// what the rules should match against. It also reports whether that subject is
+// the call's own — an argument or a declared location — or the title standing
+// in for one, which is prose and matches a rule only by luck.
+func requestSubject(call toolCallUpdate) (name, subject string, reported bool) {
 	name = toolNameFor(call.Kind)
 	if strings.HasPrefix(name, "acp:") {
 		// Nothing of Tapioca's does this, so the rules see the arguments
-		// whole, as they do for an MCP tool.
+		// whole, as they do for an MCP tool. These ask on every call that has
+		// no standing grant, so the distinction changes nothing here.
 		if len(call.Raw) > 0 {
-			return name, string(call.Raw)
+			return name, string(call.Raw), true
 		}
-		return name, call.Title
+		return name, call.Title, true
 	}
 	if s := firstField(call.Raw, subjectKeys[name]...); s != "" {
-		return name, s
+		return name, s, true
 	}
 	// A file tool's locations say what it is about when its arguments do not.
 	if len(call.Locations) > 0 && call.Locations[0].Path != "" {
-		return name, call.Locations[0].Path
+		return name, call.Locations[0].Path, true
 	}
-	return name, strings.TrimSpace(call.Title)
+	return name, strings.TrimSpace(call.Title), false
 }
 
 // subjectJSON rebuilds the arguments the built-in gate reads, so a mapped call
