@@ -280,6 +280,15 @@ your own config or transcripts prompts like any other secret.
   the working directory. That is not an escalation (a process that can spawn
   Tapioca can already run anything as you), but do not expose an `--acp`
   process's stdin to anything you would not trust with a shell.
+- **An external agent is judged on what it reports.** `/connect` puts every
+  permission request from an agent you configured through your rules, but the
+  call itself runs in that agent's process: what Tapioca matches a rule
+  against is the command the agent said it was about to run, not the one it
+  runs. An agent that describes a call only in prose gets a prompt every time
+  and is never granted standing permission, because there is nothing specific
+  to grant — but the rules protect you from the agent's *model*, not from the
+  agent's *binary*. Connect ones you would trust with a shell, which is what
+  launching one already is.
 - **Grants are coarse.** `[p]` grants a command word, not a subcommand:
   allowing `git` allows `git push`. Tools that can execute code through
   configuration (`git -c`, `make`, build scripts) inherit that power.

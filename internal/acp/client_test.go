@@ -375,24 +375,40 @@ func TestDialReportsAMissingCommand(t *testing.T) {
 
 func TestRequestSubjectPrefersStructuredArguments(t *testing.T) {
 	cases := []struct {
-		name        string
-		call        toolCallUpdate
-		wantTool    string
-		wantSubject string
+		name         string
+		call         toolCallUpdate
+		wantTool     string
+		wantSubject  string
+		wantReported bool
 	}{
 		{"command", toolCallUpdate{Kind: "execute", Title: "Run it",
-			Raw: json.RawMessage(`{"command":"ls -la"}`)}, "bash", "ls -la"},
-		{"title fallback", toolCallUpdate{Kind: "execute", Title: "ls -la"}, "bash", "ls -la"},
+			Raw: json.RawMessage(`{"command":"ls -la"}`)}, "bash", "ls -la", true},
+		// The title is all there is, so it is what the rules see — but it is
+		// prose, and the caller has to know that before it reads anything
+		// into a rule that did not match it.
+		{"title fallback", toolCallUpdate{Kind: "execute", Title: "ls -la"}, "bash", "ls -la", false},
+		// A command nested where this cannot read it leaves the title
+		// standing in for it, exactly as if none had been sent.
+		{"nested command", toolCallUpdate{Kind: "execute", Title: "Tidy up",
+			Raw: json.RawMessage(`{"input":{"command":"rm -rf ~"}}`)}, "bash", "Tidy up", false},
 		{"path", toolCallUpdate{Kind: "edit", Title: "Edit",
-			Raw: json.RawMessage(`{"file_path":"/tmp/x.go"}`)}, "edit_file", "/tmp/x.go"},
+			Raw: json.RawMessage(`{"file_path":"/tmp/x.go"}`)}, "edit_file", "/tmp/x.go", true},
+		// A declared location is the agent naming the path itself.
+		{"location", toolCallUpdate{Kind: "edit", Title: "Edit a file",
+			Locations: []struct {
+				Path string `json:"path"`
+			}{{Path: "/tmp/x.go"}}}, "edit_file", "/tmp/x.go", true},
 		{"unmapped kind", toolCallUpdate{Kind: "think", Title: "Think",
-			Raw: json.RawMessage(`{"a":1}`)}, "acp:think", `{"a":1}`},
+			Raw: json.RawMessage(`{"a":1}`)}, "acp:think", `{"a":1}`, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			name, subject := requestSubject(tc.call)
+			name, subject, reported := requestSubject(tc.call)
 			if name != tc.wantTool || subject != tc.wantSubject {
 				t.Errorf("got (%q, %q), want (%q, %q)", name, subject, tc.wantTool, tc.wantSubject)
+			}
+			if reported != tc.wantReported {
+				t.Errorf("reported = %v, want %v", reported, tc.wantReported)
 			}
 		})
 	}
