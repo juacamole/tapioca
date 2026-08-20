@@ -188,6 +188,22 @@ func configEnv(base []string, pins []cfg) []string {
 	return out
 }
 
+// Pin is one config override for a git run built outside this package.
+type Pin struct{ Key, Value string }
+
+// WithPins returns base with pins delivered as GIT_CONFIG_* variables, which
+// is the same mechanism env() uses and for the same reason: `-c` cannot carry
+// a key containing '='. A caller that builds its own git invocation — the
+// checkpoint repo, which sets GIT_DIR itself — still has to neutralise the
+// keys that name programs.
+func WithPins(base []string, pins ...Pin) []string {
+	cs := make([]cfg, 0, len(pins))
+	for _, p := range pins {
+		cs = append(cs, cfg{p.Key, p.Value})
+	}
+	return configEnv(base, cs)
+}
+
 func build(dir string, args []string) []string {
 	full := append([]string{"-C", dir}, staticFlags...)
 	return append(full, args...)

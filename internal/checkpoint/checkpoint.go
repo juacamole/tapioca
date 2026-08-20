@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"tapioca/internal/config"
+	"tapioca/internal/gitcmd"
 	"tapioca/internal/secretenv"
 )
 
@@ -42,13 +43,23 @@ func gitDir(workTree string) string {
 func run(workTree string, args ...string) (string, error) {
 	cmd := exec.Command("git", args...)
 	// Its git dir is a predictable path under the data dir, so a planted
-	// pre-commit hook runs on the next mutating tool call. It gets the same
-	// filtered environment as every other child.
-	cmd.Env = append(secretenv.Scrubbed(),
+	// pre-commit hook runs on the next mutating tool call — in this session and
+	// in every later one, which makes it a way to keep execution that a single
+	// approved write bought. hooksPath is pinned away for that, and fsmonitor
+	// because `add -A` would run it too. Signing is turned off rather than left
+	// alone: a user whose global config signs every commit does not want gpg
+	// invoked by a snapshot, and pinning gpg.program instead would only make
+	// the commit fail. It gets the same filtered environment as every other
+	// child.
+	cmd.Env = gitcmd.WithPins(append(secretenv.Scrubbed(),
 		"GIT_DIR="+gitDir(workTree),
 		"GIT_WORK_TREE="+workTree,
 		"GIT_AUTHOR_NAME=tapioca", "GIT_AUTHOR_EMAIL=checkpoint@tapioca",
 		"GIT_COMMITTER_NAME=tapioca", "GIT_COMMITTER_EMAIL=checkpoint@tapioca",
+	),
+		gitcmd.Pin{Key: "core.hooksPath", Value: "/dev/null"},
+		gitcmd.Pin{Key: "core.fsmonitor", Value: "false"},
+		gitcmd.Pin{Key: "commit.gpgSign", Value: "false"},
 	)
 	out, err := cmd.CombinedOutput()
 	if err != nil {

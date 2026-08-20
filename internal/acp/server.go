@@ -141,18 +141,24 @@ func (s *Server) handleNewSession(msg *rpcMsg) {
 		return
 	}
 
-	exec := tools.NewExecutor(cwd, s.cfg.PermissionMode)
-	exec.SetBashPrefixes(s.cfg.BashAllow)
-	exec.SetRules(s.cfg.Permissions.Allow, s.cfg.Permissions.Ask, s.cfg.Permissions.Deny)
-	exec.SetSandbox(s.cfg.Sandbox)
-	exec.SetSandboxNetwork(s.cfg.SandboxNetwork)
-	// The editor picks the directory, so whether hooks may run is decided per
-	// session rather than once at startup. Warnings go to stderr because stdout
-	// is the protocol channel.
-	warn(tools.ApplyHooks(exec, s.cfg, cwd))
+	// The editor picks the directory, so what the config may be trusted for is
+	// decided per session rather than once at startup — on a copy, because two
+	// sessions can be open on different trees. Hooks were already decided here;
+	// the other keys that start a program or hand out a standing approval
+	// answer to the same rule and were still being read from the startup
+	// decision. Warnings go to stderr because stdout is the protocol channel.
+	cfg := *s.cfg
+	warn(cfg.RestrictIfInsideTree(cwd))
+
+	exec := tools.NewExecutor(cwd, cfg.PermissionMode)
+	exec.SetBashPrefixes(cfg.BashAllow)
+	exec.SetRules(cfg.Permissions.Allow, cfg.Permissions.Ask, cfg.Permissions.Deny)
+	exec.SetSandbox(cfg.Sandbox)
+	exec.SetSandboxNetwork(cfg.SandboxNetwork)
+	warn(tools.ApplyHooks(exec, &cfg, cwd))
 
 	reg := mcp.NewRegistry()
-	servers := s.cfg.MCP
+	servers := cfg.MCP
 	if len(p.MCPServers) > 0 {
 		// The editor's list replaces ours: it knows what this project needs.
 		servers = p.MCPServers
@@ -166,7 +172,7 @@ func (s *Server) handleNewSession(msg *rpcMsg) {
 		reg.Add(client)
 	}
 
-	mgr := agent.NewManager(s.cfg, reg, exec)
+	mgr := agent.NewManager(&cfg, reg, exec)
 	a := mgr.NewAgent()
 	if a.ProviderErr != "" {
 		reg.CloseAll()
