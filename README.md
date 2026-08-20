@@ -17,10 +17,11 @@ It also installs as **`tapio`**, because Shopify's `tapioca` gem claims the same
 name and whichever is later on your PATH wins. Both are the same program:
 `go build -o tapio ./cmd/tapio`, or `nix build .` for both at once.
 
-With [Ollama](https://ollama.com) running it works out of the box — no key, no
-account, no network beyond localhost. Anthropic, Bedrock, Vertex AI, Azure
-OpenAI, Gemini and any OpenAI-compatible server also work; switching is one
-`/model`. Needs Go 1.26.5+ to build.
+With [Ollama](https://ollama.com) or a
+[llama.cpp](https://github.com/ggml-org/llama.cpp) `llama-server` running it
+works out of the box — no key, no account, no network beyond localhost.
+Anthropic, Bedrock, Vertex AI, Azure OpenAI, Gemini and any OpenAI-compatible
+server also work; switching is one `/model`. Needs Go 1.26.5+ to build.
 
 Linux, macOS and Windows. The shell tools expect a POSIX `sh`, so on Windows
 install Git for Windows or WSL — `cmd.exe` is a fallback and most commands the

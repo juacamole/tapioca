@@ -12,7 +12,7 @@ import (
 
 // ProviderConfig describes one LLM backend.
 type ProviderConfig struct {
-	Type            string            `toml:"type"`             // "ollama" | "anthropic" | "openai"
+	Type            string            `toml:"type"`             // "ollama" | "llamacpp" | "anthropic" | "openai" | …
 	BaseURL         string            `toml:"base_url"`         // optional override
 	APIKey          string            `toml:"api_key"`          // literal key (discouraged; prefer env)
 	APIKeyEnv       string            `toml:"api_key_env"`      // env var holding the key
@@ -485,6 +485,14 @@ commands instead of describing what the user should do. Keep answers concise.
 type = "ollama"
 base_url = "http://localhost:11434"
 # context_window = 8192         # used for the context gauge
+
+# llama.cpp's llama-server. Older builds need --jinja or tool calls are
+# refused; recent ones have it on by default:
+#   llama-server --jinja -m model.gguf
+# [providers.llamacpp]
+# type = "llamacpp"
+# base_url = "http://localhost:8080"
+# api_key_env = "LLAMA_API_KEY" # only if the server was started with --api-key
 
 [providers.anthropic]
 type = "anthropic"

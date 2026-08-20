@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -33,10 +34,12 @@ type OpenAI struct {
 const (
 	flavorAzure  = "azure"
 	flavorGemini = "gemini"
+	flavorLlama  = "llamacpp"
 
 	geminiBase       = "https://generativelanguage.googleapis.com/v1beta/openai"
 	azureAPIVersion  = "2024-10-21"
 	openAIDefaultURL = "https://api.openai.com"
+	llamaDefaultURL  = "http://localhost:8080"
 )
 
 // NewOpenAI builds the provider. The API key is optional (local servers).
@@ -64,6 +67,13 @@ func NewGemini(name string, cfg config.ProviderConfig) *OpenAI {
 	return newOpenAILike(name, cfg, flavorGemini, geminiBase, "GEMINI_API_KEY")
 }
 
+// NewLlamaCpp targets llama.cpp's llama-server, which speaks the OpenAI wire
+// format on port 8080 with no credentials — the key matters only when the
+// server was started with --api-key.
+func NewLlamaCpp(name string, cfg config.ProviderConfig) *OpenAI {
+	return newOpenAILike(name, cfg, flavorLlama, llamaDefaultURL, "LLAMA_API_KEY")
+}
+
 func newOpenAILike(name string, cfg config.ProviderConfig, flavor, defaultBase, defaultEnv string) *OpenAI {
 	key := cfg.APIKey
 	if key == "" {
@@ -77,7 +87,7 @@ func newOpenAILike(name string, cfg config.ProviderConfig, flavor, defaultBase, 
 	if base == "" {
 		base = defaultBase
 	}
-	if flavor == "" {
+	if flavor == "" || flavor == flavorLlama {
 		base = trimVersionSuffix(base)
 	}
 	return &OpenAI{name: name, baseURL: base, apiKey: key, flavor: flavor, client: httpClient}
@@ -317,7 +327,13 @@ func (o *OpenAI) Stream(ctx context.Context, req Request, out chan<- Event) (Mes
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return Message{}, newAPIError(o.name, resp, data)
+		apiErr := newAPIError(o.name, resp, data)
+		// Tool definitions go out on every request, and a llama-server started
+		// without --jinja refuses them all — the raw 500 does not say what to do.
+		if o.flavor == flavorLlama && bytes.Contains(bytes.ToLower(data), []byte("jinja")) {
+			return Message{}, fmt.Errorf("%w (tool calls need the chat template: restart as `llama-server --jinja -m <model>`)", apiErr)
+		}
+		return Message{}, apiErr
 	}
 
 	msg := Message{Role: "assistant", Model: req.Model, Time: time.Now()}
@@ -448,6 +464,43 @@ func (o *OpenAI) Stream(ctx context.Context, req Request, out chan<- Event) (Mes
 	return finish(), nil
 }
 
+// ContextLength probes llama-server's /props for the context actually
+// allocated per slot, which is what generation runs against — the model's
+// trained window says nothing about what this server was started with.
+// Only the llama.cpp flavour has the endpoint.
+func (o *OpenAI) ContextLength(ctx context.Context, model string) (int, error) {
+	if o.flavor != flavorLlama {
+		return 0, fmt.Errorf("%s: no context probe for this provider", o.name)
+	}
+	req, err := http.NewRequestWithContext(ctx, "GET", o.baseURL+"/props", nil)
+	if err != nil {
+		return 0, err
+	}
+	if err := o.setAuth(req); err != nil {
+		return 0, err
+	}
+	resp, err := o.client.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("%s: HTTP %d", o.name, resp.StatusCode)
+	}
+	var body struct {
+		Settings struct {
+			NCtx int `json:"n_ctx"`
+		} `json:"default_generation_settings"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&body); err != nil {
+		return 0, err
+	}
+	if body.Settings.NCtx <= 0 {
+		return 0, fmt.Errorf("%s: no n_ctx in /props", o.name)
+	}
+	return body.Settings.NCtx, nil
+}
+
 // ListModels implements Provider.
 func (o *OpenAI) ListModels(ctx context.Context) ([]string, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", o.modelsURL(), nil)
@@ -476,6 +529,13 @@ func (o *OpenAI) ListModels(ctx context.Context) ([]string, error) {
 	}
 	models := make([]string, 0, len(body.Data))
 	for _, m := range body.Data {
+		// A single-model llama-server reports the GGUF's full path as the id
+		// and ignores the model field on requests, so the path only clutters
+		// the picker. A router's model names and --alias have no slash and
+		// pass through untouched.
+		if o.flavor == flavorLlama && strings.ContainsRune(m.ID, os.PathSeparator) {
+			m.ID = strings.TrimSuffix(filepath.Base(m.ID), ".gguf")
+		}
 		models = append(models, m.ID)
 	}
 	return models, nil

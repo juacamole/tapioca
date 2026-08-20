@@ -43,6 +43,15 @@ var Catalog = []Kind{
 		},
 	},
 	{
+		Type:  "llamacpp",
+		Label: "llama.cpp",
+		Desc:  "a llama-server on this machine — no account, no key",
+		Fields: []Field{
+			{Key: "base_url", Label: "address", Help: "where llama-server is listening", Optional: true, Default: "http://localhost:8080"},
+			{Key: "api_key", Label: "API key", Help: "only if the server was started with --api-key", Secret: true, Optional: true},
+		},
+	},
+	{
 		Type:  "anthropic",
 		Label: "anthropic",
 		Desc:  "Claude models, billed as API usage",
@@ -172,6 +181,8 @@ func KindFor(typ string) (Kind, bool) {
 		typ = "gemini"
 	case "openai-compatible":
 		typ = "openai"
+	case "llama.cpp", "llama-cpp":
+		typ = "llamacpp"
 	}
 	for _, k := range Catalog {
 		if k.Type == typ {

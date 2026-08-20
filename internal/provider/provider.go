@@ -171,6 +171,8 @@ func New(name string, cfg config.ProviderConfig) (Provider, error) {
 	switch cfg.Type {
 	case "ollama", "":
 		return NewOllama(name, cfg), nil
+	case "llamacpp", "llama.cpp", "llama-cpp":
+		return NewLlamaCpp(name, cfg), nil
 	case "anthropic":
 		return NewAnthropic(name, cfg)
 	case "openai", "openai-compatible":
@@ -190,4 +192,14 @@ func New(name string, cfg config.ProviderConfig) (Provider, error) {
 	default:
 		return nil, fmt.Errorf("provider %q: unknown type %q", name, cfg.Type)
 	}
+}
+
+// IsLocal reports whether a provider type runs inference on this machine —
+// free, and serving model names that must never match hosted catalog ids.
+func IsLocal(typ string) bool {
+	switch typ {
+	case "", "ollama", "llamacpp", "llama.cpp", "llama-cpp":
+		return true
+	}
+	return false
 }
