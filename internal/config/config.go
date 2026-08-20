@@ -153,6 +153,10 @@ type Config struct {
 
 	path    string // where this config was loaded from
 	presave func(*Config)
+	// unrestrict puts back what RestrictIfInsideTree refused to honour, so
+	// changing a setting in the app does not delete keys from the file just
+	// because this run declined to act on them.
+	unrestrict func(*Config)
 }
 
 // SetPresave registers a transform applied to a copy of the config before
@@ -294,6 +298,37 @@ func (c *Config) Path() string {
 	return c.path
 }
 
+// SecretEnvNames returns every environment variable this config turns into a
+// credential: the ones named outright in secret_env, the api_key_env of each
+// provider, and the ${VAR} an mcp header expands.
+//
+// A fixed table of well-known names in the secretenv package was not enough,
+// and could not be: a variable holds a key because the config says to read it,
+// not because someone thought of its name while writing that table. So
+// api_key_env = "MY_GATEWAY_KEY" and an mcp header of "Bearer ${MCP_TOKEN}"
+// went to every stdio MCP server, every language server and every bash call,
+// which is exactly the exfiltration the scrubbing exists to stop.
+func (c *Config) SecretEnvNames() []string {
+	names := append([]string(nil), c.SecretEnv...)
+	for _, p := range c.Providers {
+		if p.APIKeyEnv != "" {
+			names = append(names, p.APIKeyEnv)
+		}
+	}
+	for _, s := range c.MCP {
+		for _, v := range s.Headers {
+			// os.Expand with a collecting function, so this reads exactly the
+			// references the transport will substitute — no second parser to
+			// drift from the first.
+			os.Expand(v, func(name string) string {
+				names = append(names, name)
+				return ""
+			})
+		}
+	}
+	return names
+}
+
 // Save writes the current configuration back to the file it was loaded from.
 // In-app settings changes call this, so users never have to edit the file by
 // hand — and comments in the existing file are carried across, since a toggle
@@ -309,6 +344,11 @@ func (c *Config) Save() error {
 	tosave := *c
 	if c.presave != nil {
 		c.presave(&tosave)
+	}
+	// After presave, not before: the flag exclusions it applies were composed
+	// from values this run had already restricted, so they must not win here.
+	if c.unrestrict != nil {
+		c.unrestrict(&tosave)
 	}
 	var buf bytes.Buffer
 	if err := toml.NewEncoder(&buf).Encode(&tosave); err != nil {

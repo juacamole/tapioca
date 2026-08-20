@@ -72,7 +72,7 @@ func namesProgram(key string) bool {
 		return true
 	}
 	for _, suffix := range []string{
-		".clean", ".smudge", ".process", ".command", ".textconv", ".driver",
+		".clean", ".smudge", ".process", ".command", ".cmd", ".textconv", ".driver",
 		".program", ".helper", ".hook", ".uploadpack", ".receivepack", ".askpass",
 	} {
 		if strings.HasSuffix(k, suffix) {

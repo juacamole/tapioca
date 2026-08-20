@@ -20,6 +20,9 @@ var secretEnvNames = map[string]bool{
 	"TOGETHER_API_KEY": true, "PERPLEXITY_API_KEY": true, "CEREBRAS_API_KEY": true,
 	"AWS_SECRET_ACCESS_KEY": true, "AWS_SESSION_TOKEN": true, "AWS_ACCESS_KEY_ID": true,
 	"AZURE_OPENAI_API_KEY": true, "HF_TOKEN": true,
+	// The default variables of built-in providers that were not on this list:
+	// a key does not stop being one because nobody wrote its name down here.
+	"AI_GATEWAY_API_KEY": true, "LLAMA_API_KEY": true,
 	// Tapioca reads this one itself for Vertex, so it is a live bearer token
 	// sitting in the environment of every tool call.
 	"GOOGLE_ACCESS_TOKEN": true, "GOOGLE_APPLICATION_CREDENTIALS": true,

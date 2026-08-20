@@ -364,9 +364,16 @@ func runsOtherPrograms(word string) bool {
 // git -c alias.x='!cmd' x was verified to run with output on a pipe; git's
 // pager needs a terminal and cannot be reached this way.
 var execFlags = map[string][]string{
-	"git":    {"-c", "--config-env", "--exec-path", "--upload-pack", "--receive-pack"},
-	"find":   {"-exec", "-execdir", "-ok", "-okdir"},
-	"go":     {"run", "generate"},
+	"git": {"-c", "--config-env", "--exec-path", "--upload-pack", "--receive-pack",
+		// Verified to run a program with output on a pipe: `git rebase -x`,
+		// `git difftool -y -x` / `--extcmd`, and filter-branch's filters.
+		"-x", "--exec", "--extcmd", "--to-command", "--smtp-server",
+		"--tree-filter", "--index-filter", "--parent-filter", "--msg-filter",
+		"--commit-filter", "--tag-name-filter", "--env-filter"},
+	"find": {"-exec", "-execdir", "-ok", "-okdir"},
+	// -toolexec runs its argument around every compiler invocation, which
+	// `go build` alone reaches; run and generate are not the only two.
+	"go":     {"run", "generate", "-toolexec", "-exec", "-vettool"},
 	"cargo":  {"run"},
 	"npm":    {"exec"},
 	"yarn":   {"exec"},
@@ -381,18 +388,116 @@ var execFlags = map[string][]string{
 	"ffmpeg": {"-f"},
 }
 
+// execSubcommands are subcommands whose whole job is to run a program the
+// caller names, so no flag has to be spotted for the grant to be worthless:
+// `git bisect run <cmd>`, `git submodule foreach <cmd>`, and difftool and
+// mergetool, which take theirs from config the repository may have written.
+//
+// This list and execFlags above are both lists, and a blanket grant on git is
+// weaker than either can make it look: `git commit` runs .git/hooks/pre-commit,
+// which in an extracted tarball is a file the archive chose. What they buy is
+// that the command a user pressed [p] on cannot be turned into an arbitrary one
+// by adding a flag to it — not that git in a hostile tree is safe.
+var execSubcommands = map[string][]string{
+	"git": {"bisect", "filter-branch", "difftool", "mergetool", "submodule",
+		"send-email", "p4", "svn", "daemon", "instaweb", "web--browse", "help"},
+}
+
+// valueOptions take the next word as their value, so that word is not the
+// subcommand. -c and --exec-path are absent on purpose: they are exec flags, so
+// the segment is already refused before the subcommand matters.
+var valueOptions = map[string]bool{
+	"-C": true, "--git-dir": true, "--work-tree": true,
+	"--namespace": true, "--super-prefix": true,
+}
+
+// runsExecSubcommand reports whether a segment's first non-option word is one
+// of its command's exec subcommands. Only the first is looked at: matching the
+// name anywhere would refuse `git commit -m "fix submodule"`.
+func runsExecSubcommand(name string, words []string) bool {
+	subs, ok := execSubcommands[name]
+	if !ok {
+		return false
+	}
+	for i := 0; i < len(words); i++ {
+		w := unquoteWord(words[i])
+		if strings.HasPrefix(w, "-") || (i > 0 && valueOptions[unquoteWord(words[i-1])]) {
+			continue
+		}
+		for _, s := range subs {
+			if w == s {
+				return true
+			}
+		}
+		return false // this is the subcommand and it is not one of them
+	}
+	return false
+}
+
+// expandsWord reports whether the shell will rewrite a word before the command
+// sees it: a substitution, a glob, a brace list, a leading tilde, or bash's
+// ANSI-C and locale quoting. Quoting is tracked, so a star inside single
+// quotes is a literal star.
+//
+// Reading such a word is not possible, and unquoting it is not enough. Both
+// `git $"-c" alias.p='!touch /tmp/pwned' p` and — in a directory holding a file
+// the repository named "-c" — `git -? alias.p='!touch /tmp/pwned' p` reach git
+// as `git -c`, while spelling themselves as something the scan below does not
+// recognise. A blanket grant on git covered them.
+func expandsWord(w string) bool {
+	inSingle, inDouble := false, false
+	for i := 0; i < len(w); i++ {
+		switch c := w[i]; c {
+		case '\\':
+			if !inSingle {
+				i++ // the next byte is literal, whatever it is
+			}
+		case '\'':
+			if !inDouble {
+				inSingle = !inSingle
+			}
+		case '"':
+			if !inSingle {
+				inDouble = !inDouble
+			}
+		case '$', '`':
+			if !inSingle {
+				return true // double quotes do not stop substitution
+			}
+		case '*', '?', '[', '{':
+			if !inSingle && !inDouble {
+				return true
+			}
+		case '~':
+			if i == 0 && !inSingle && !inDouble {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // usesExecFlag reports whether a segment reaches for one of its command's
-// exec flags. Words are unquoted first, since git '-c' is git -c.
+// exec flags. Words are unquoted first, since git '-c' is git -c, and a word
+// the shell would expand counts as reaching for one: what it becomes is not
+// knowable here, and the answer has to be the safe one.
 func usesExecFlag(segment string) bool {
 	f := strings.Fields(segment)
 	if len(f) == 0 {
 		return false
 	}
-	flags, ok := execFlags[strings.ToLower(filepath.Base(unquoteWord(f[0])))]
+	name := strings.ToLower(filepath.Base(unquoteWord(f[0])))
+	if runsExecSubcommand(name, f[1:]) {
+		return true
+	}
+	flags, ok := execFlags[name]
 	if !ok {
 		return false
 	}
 	for _, w := range f[1:] {
+		if expandsWord(w) {
+			return true
+		}
 		w = unquoteWord(w)
 		for _, fl := range flags {
 			if w == fl || strings.HasPrefix(w, fl+"=") {

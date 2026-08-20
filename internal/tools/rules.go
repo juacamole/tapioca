@@ -167,17 +167,24 @@ func (e *Executor) cwdLocked() string {
 	return e.cwd
 }
 
-// normalized rewrites a command into the form a rule is written in, so the
-// spellings a shell treats as identical are matched identically. A rule says
-// "rm *"; the shell also accepts "rm\t-rf", "\rm -rf", "'rm' -rf" and
+// normalizedForms rewrites a command into the forms a rule is written in, so
+// the spellings a shell treats as identical are matched identically. A rule
+// says "rm *"; the shell also accepts "rm\t-rf", "\rm -rf", "'rm' -rf" and
 // "/bin/rm -rf", and every one of those walked past a deny rule matched on raw
 // text. Whitespace runs collapse to one space, the first word loses its
-// quoting and its directory, and the result is matched alongside the original.
+// quoting and its directory, and the results are matched alongside the
+// original.
 //
-// Only denials and prompts are matched against it. Widening an allow the same
-// way would let a stray executable named like a trusted one inherit its
+// There is more than one form because a wrapper's options may or may not take
+// a value, and no list of wrappers can say which: guessing that -u in
+// `env -u FOO touch x` stood alone left "FOO" as the command word and the touch
+// unmatched by any rule for touch. Every reading of the wrapper's arguments is
+// emitted instead, and a rule that matches any of them wins.
+//
+// Only denials and prompts are matched against these. Widening an allow the
+// same way would let a stray executable named like a trusted one inherit its
 // permission.
-func normalized(command string) string {
+func normalizedForms(command string) []string {
 	// A line continuation is whitespace to the shell.
 	command = strings.ReplaceAll(command, "\\\n", " ")
 	fields := strings.Fields(command) // splits on any run of whitespace
@@ -186,16 +193,30 @@ func normalized(command string) string {
 	for i := range fields {
 		fields[i] = unquoteWord(fields[i])
 	}
+	var forms []string
+	seen := map[string]bool{}
+	emit := func(f []string) {
+		if len(f) == 0 {
+			return
+		}
+		g := append([]string(nil), f...)
+		g[0] = filepath.Base(strings.TrimRight(g[0], ")};"))
+		if s := strings.Join(g, " "); !seen[s] {
+			seen[s] = true
+			forms = append(forms, s)
+		}
+	}
 	// Drop everything a shell steps over before it reaches the command:
-	// environment assignments, a subshell or brace group, negation,
-	// redirections, and wrappers that run their arguments.
+	// environment assignments, a subshell or brace group, negation, the
+	// keywords that introduce a command, redirections, and wrappers that run
+	// their arguments.
 	for len(fields) > 0 {
 		w := fields[0]
-		if w == "(" || w == "{" || w == "!" || isRedirection(w) {
+		if w == "(" || w == "{" || w == "!" || reservedWords[w] || isRedirection(w) {
 			fields = fields[1:]
 			continue
 		}
-		if i := strings.IndexByte(w, '='); i > 0 && isName(w[:i]) {
+		if isAssignment(w) {
 			fields = fields[1:]
 			continue
 		}
@@ -205,35 +226,67 @@ func normalized(command string) string {
 		}
 		if len(fields) > 1 && transparentWrappers[filepath.Base(w)] {
 			fields = fields[1:]
-			for len(fields) > 1 && isWrapperArg(fields[0]) {
-				fields = fields[1:]
+			prev := ""
+			for len(fields) > 1 {
+				emit(fields) // this word may already be the command
+				// Stop at a word that is neither an option, an operand of the
+				// wrapper, nor the possible value of the option before it.
+				if !isWrapperArg(fields[0]) && !strings.HasPrefix(prev, "-") {
+					break
+				}
+				prev, fields = fields[0], fields[1:]
 			}
 			continue
 		}
 		break
 	}
-	if len(fields) == 0 {
-		return command
-	}
-	fields[0] = filepath.Base(strings.TrimRight(fields[0], ")};"))
-	return strings.Join(fields, " ")
+	emit(fields)
+	return forms
 }
 
-// isName reports whether s is a shell variable name, so that FOO=1 is
-// recognised as an assignment and ./x=y is not.
-func isName(s string) bool {
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		ok := c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (i > 0 && c >= '0' && c <= '9')
-		if !ok {
+// reservedWords are shell keywords that stand in front of a command instead of
+// being one. segments() hands over `then touch x` and `until touch x` with the
+// keyword still attached, and a deny rule for touch matched neither.
+// Only keywords a command word can directly follow are listed: `for` and `case`
+// are followed by a name.
+var reservedWords = map[string]bool{
+	"if": true, "then": true, "elif": true, "else": true,
+	"while": true, "until": true, "do": true, "coproc": true,
+}
+
+// isAssignment reports whether a word is a variable assignment standing in
+// front of a command, so that FOO=1 is stepped over and ./x=y is not. Matching
+// only sh's name=value was not enough: bash also takes name+=value and
+// name[index]=value in that position, and `FOO+=1 rm -rf ~` therefore reached
+// the shell as an rm that no deny rule for rm had matched.
+func isAssignment(w string) bool {
+	i := 0
+	for i < len(w) {
+		c := w[i]
+		alpha := c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+		if !alpha && !(i > 0 && c >= '0' && c <= '9') {
+			break
+		}
+		i++
+	}
+	if i == 0 {
+		return false // no name: not an assignment
+	}
+	if i < len(w) && w[i] == '[' { // an array element: a[0]=1, a[$k]=1
+		j := strings.IndexByte(w[i:], ']')
+		if j < 0 {
 			return false
 		}
+		i += j + 1
 	}
-	return s != ""
+	if i < len(w) && w[i] == '+' { // append: FOO+=1
+		i++
+	}
+	return i < len(w) && w[i] == '='
 }
 
 // unquoteWord strips the quoting a shell removes before looking a command up:
-// \rm, 'rm', "rm" and $'rm' all run rm.
+// \rm, 'rm', "rm", $'rm' and $"rm" all run rm.
 func unquoteWord(w string) string {
 	var b strings.Builder
 	for i := 0; i < len(w); i++ {
@@ -244,8 +297,11 @@ func unquoteWord(w string) string {
 				b.WriteByte(w[i])
 			}
 		case '$':
-			// $'...' is ANSI-C quoting; the $ is not part of the word.
-			if i+1 >= len(w) || w[i+1] != '\'' {
+			// $'...' is ANSI-C quoting and $"..." is locale translation, which
+			// yields the string itself when nothing is translated. In both the
+			// $ is not part of the word, and treating $"push" as a word
+			// containing a '$' is what let it past a deny rule for git push.
+			if i+1 >= len(w) || (w[i+1] != '\'' && w[i+1] != '"') {
 				b.WriteByte(w[i])
 			}
 		case '\'', '"':
@@ -260,7 +316,7 @@ func unquoteWord(w string) string {
 // ends up running is not the first word. They are dropped before matching, so
 // a deny rule for a program also covers `env <program>`.
 var transparentWrappers = map[string]bool{
-	"env": true, "command": true, "builtin": true, "exec": true,
+	"env": true, "command": true, "builtin": true, "exec": true, "eval": true,
 	"nohup": true, "setsid": true, "nice": true, "ionice": true,
 	"stdbuf": true, "time": true, "timeout": true, "xargs": true,
 	"sudo": true, "doas": true,
@@ -304,8 +360,10 @@ func (e *Executor) ruleFor(tool, subject string) string {
 			return r.act
 		}
 		if tool == "bash" && (r.act == RuleDeny || r.act == RuleAsk) {
-			if norm := normalized(subject); norm != subject && e.matchSubject(r, tool, norm) {
-				return r.act
+			for _, norm := range normalizedForms(subject) {
+				if norm != subject && e.matchSubject(r, tool, norm) {
+					return r.act
+				}
 			}
 		}
 	}
