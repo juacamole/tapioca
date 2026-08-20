@@ -192,6 +192,7 @@ func Default() *Config {
 		Wordmark:       "auto",
 		Providers: map[string]ProviderConfig{
 			"ollama":    {Type: "ollama", BaseURL: "http://localhost:11434"},
+			"llamacpp":  {Type: "llamacpp", BaseURL: "http://localhost:8080"},
 			"anthropic": {Type: "anthropic", APIKeyEnv: "ANTHROPIC_API_KEY"},
 		},
 		Dashboard: DashboardConfig{
@@ -529,9 +530,9 @@ base_url = "http://localhost:11434"
 # llama.cpp's llama-server. Older builds need --jinja or tool calls are
 # refused; recent ones have it on by default:
 #   llama-server --jinja -m model.gguf
-# [providers.llamacpp]
-# type = "llamacpp"
-# base_url = "http://localhost:8080"
+[providers.llamacpp]
+type = "llamacpp"
+base_url = "http://localhost:8080"
 # api_key_env = "LLAMA_API_KEY" # only if the server was started with --api-key
 
 [providers.anthropic]

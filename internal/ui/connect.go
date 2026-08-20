@@ -37,6 +37,9 @@ type connEntry struct {
 	// provider to send to. They share this screen because they answer the same
 	// question: what can this session talk to?
 	external *config.ExternalAgent
+	// detected marks a server found listening that no config mentions, so
+	// choosing it writes the entry rather than switching to one already there.
+	detected bool
 }
 
 // connStatusMsg carries the probe results back to the update loop.
@@ -72,19 +75,44 @@ func probeConnections(cfg *config.Config) tea.Cmd {
 		var wg sync.WaitGroup
 		for i, k := range provider.Catalog {
 			names := byType[k.Type]
-			if len(names) == 0 {
+			if len(names) == 0 && !k.Detectable() {
 				entries[i] = connEntry{kind: k, state: connUnset, detail: "not configured"}
 				continue
 			}
 			wg.Add(1)
-			go func(i int, k provider.Kind, name string) {
+			go func(i int, k provider.Kind, names []string) {
 				defer wg.Done()
-				entries[i] = probeOne(k, name, configs[name])
-			}(i, k, names[0])
+				if len(names) == 0 {
+					entries[i] = detectOne(k)
+					return
+				}
+				entries[i] = probeOne(k, names[0], configs[names[0]])
+			}(i, k, names)
 		}
 		wg.Wait()
 		return connStatusMsg{entries: append(entries, externalEntries(cfg)...)}
 	}
+}
+
+// detectOne looks for a local server nobody has written into the config yet.
+// A llama-server on its usual port is either listening or it is not, and
+// answering that question costs one connection to this machine — cheaper than
+// making the user describe it in a file first, and the answer is the same.
+//
+// Not finding one is reported as "not configured" rather than as a failure:
+// nothing is wrong with a machine that is not running a local model server,
+// and a red mark against it would say there was.
+func detectOne(k provider.Kind) connEntry {
+	pc := config.ProviderConfig{Type: k.Type, BaseURL: k.DefaultAddress()}
+	e := probeOne(k, k.Type, pc)
+	if e.state != connReady {
+		return connEntry{kind: k, state: connUnset, detail: "not configured"}
+	}
+	// Named so that choosing it is obviously an addition, not a switch to
+	// something already set up.
+	e.detail += gl.sep + "found on " + k.DefaultAddress()
+	e.detected = true
+	return e
 }
 
 func probeOne(k provider.Kind, name string, pc config.ProviderConfig) connEntry {
@@ -192,6 +220,9 @@ func (m *App) applyConnect(typ string) tea.Cmd {
 		return nil
 	}
 	if e.state == connReady {
+		if e.detected {
+			return m.addDetected(e)
+		}
 		return m.useProvider(e.name)
 	}
 
@@ -211,6 +242,33 @@ func (m *App) applyConnect(typ string) tea.Cmd {
 	}
 	m.openCredentialEntry(e.kind)
 	return nil
+}
+
+// addDetected writes the entry for a server that was found listening and then
+// uses it. The address is the one it answered on, so there is nothing left to
+// ask: a form whose every field already has the right value is a form that
+// only exists to be dismissed.
+func (m *App) addDetected(e connEntry) tea.Cmd {
+	name := m.addProviderEntry(e.kind)
+	m.saveCfg()
+	m.mgr.ReloadProviders()
+	return m.useProvider(name)
+}
+
+// addProviderEntry writes a found server into the config and returns the name
+// it was written under.
+func (m *App) addProviderEntry(k provider.Kind) string {
+	if m.cfg.Providers == nil {
+		m.cfg.Providers = map[string]config.ProviderConfig{}
+	}
+	// A name already in use belongs to something else the user set up, and
+	// taking it would silently repoint their provider at this one.
+	name := k.Type
+	for _, taken := m.cfg.Providers[name]; taken; _, taken = m.cfg.Providers[name] {
+		name += "-local"
+	}
+	m.cfg.Providers[name] = config.ProviderConfig{Type: k.Type, BaseURL: k.DefaultAddress()}
+	return name
 }
 
 // useProvider points the active agent at a provider that is known to work.
