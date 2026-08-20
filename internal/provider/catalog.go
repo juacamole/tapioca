@@ -1,6 +1,11 @@
 package provider
 
-import "strings"
+import (
+	"net/url"
+	"strings"
+
+	"tapioca/internal/config"
+)
 
 // The config only lists providers someone has already set up, which is no help
 // to the person who has set up none: there was no way to learn what Tapioca can
@@ -30,6 +35,47 @@ type Kind struct {
 // NeedsSetup reports whether this kind requires anything at all — Ollama is
 // the one that works with nothing.
 func (k Kind) NeedsSetup() bool { return len(k.Fields) > 0 }
+
+// NeedsCredentials reports whether anything has to be supplied before this
+// kind can be tried. A field that is optional is a field with a working
+// default, so a kind with none that are required can simply be asked.
+func (k Kind) NeedsCredentials() bool {
+	for _, f := range k.Fields {
+		if !f.Optional {
+			return true
+		}
+	}
+	return false
+}
+
+// DefaultAddress is where this kind listens when nothing is configured, or ""
+// when it has no address of its own.
+func (k Kind) DefaultAddress() string {
+	for _, f := range k.Fields {
+		if f.Key == "base_url" {
+			return f.Default
+		}
+	}
+	return ""
+}
+
+// Detectable reports whether an unconfigured provider of this kind can simply
+// be looked for. A local server is either listening or it is not, and asking
+// costs one connection to this machine — which is the whole reason a
+// llama-server on its usual port should not have to be described in a file
+// before Tapioca will admit it exists.
+//
+// Restricted to an address on this machine on purpose: probing a default that
+// points off-machine would send an unprompted request to a third party, and
+// without credentials it could not succeed anyway.
+func (k Kind) Detectable() bool {
+	addr := k.DefaultAddress()
+	if k.NeedsCredentials() || addr == "" {
+		return false
+	}
+	u, err := url.Parse(addr)
+	return err == nil && config.IsLoopbackHost(u.Hostname())
+}
 
 // Catalog is every provider type that can be connected, in the order the UI
 // offers them: local first, then the ones most people reach for.
