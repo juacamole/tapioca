@@ -213,14 +213,17 @@ func NewApp(cfg *config.Config, mgr *agent.Manager, sessID, sessName string, cre
 	return app
 }
 
-// statusLabel returns the fine-grained stage label when one is active.
+// statusLabel returns the fine-grained stage label when one is active. It is
+// the one place the chat header, the agents panel and the status bar all go
+// through, so the cleaning happens here: the retry note is built from a
+// provider's error text and the detail from a tool call, and neither is ours.
 func statusLabel(a *agent.Agent) string {
 	if a.Status.Busy() {
 		if left := time.Until(a.RetryAt); left > 0 {
-			return fmt.Sprintf("retry in %ds (%s)", int(left.Seconds())+1, a.RetryNote)
+			return fmt.Sprintf("retry in %ds (%s)", int(left.Seconds())+1, sanitizeLabel(a.RetryNote))
 		}
 		if a.StatusDetail != "" {
-			return a.StatusDetail
+			return sanitizeLabel(a.StatusDetail)
 		}
 	}
 	return a.Status.String()
@@ -301,7 +304,10 @@ func (m *App) dismissOverlay() {
 // so it is sanitized like anything else from outside the program.
 func (m *App) openTextOverlay(title, content string) {
 	content = sanitizeText(content)
-	m.textTitle = title
+	// The heading gets the same treatment as the body: /diff and /remember both
+	// build theirs out of the working directory, which an extracted tarball
+	// named.
+	m.textTitle = sanitizeLabel(title)
 	w := min(m.w-8, 140)
 	h := max(5, m.h-9)
 	m.textVP = viewport.New(viewport.WithWidth(w-4), viewport.WithHeight(h-4))
@@ -686,10 +692,12 @@ func (m *App) applyReload() bool {
 		m.setFlash(err.Error()+" — the previous config is still running", true)
 		return false
 	}
-	m.hookNotes = nil
+	// A reload is a second chance to apply a config the tree wrote, and the
+	// watcher makes it one the agent can trigger by editing the file.
+	m.hookNotes = newCfg.RestrictIfInsideTree(m.cwd())
 	*m.cfg = *newCfg
 	m.keys = NewKeyMap(m.cfg.Keys)
-	secretenv.SetExtra(m.cfg.SecretEnv)
+	secretenv.SetExtra(m.cfg.SecretEnvNames())
 	m.cfg.Theme = SetTheme(m.cfg.Theme, m.cfg.Colors)
 	m.cfg.Glyphs = SetGlyphs(m.cfg.Glyphs)
 	m.cfg.Wordmark = SetWordmark(m.cfg.Wordmark)
@@ -702,7 +710,7 @@ func (m *App) applyReload() bool {
 		m.mgr.Exec.SetSandbox(m.cfg.Sandbox)
 		m.mgr.Exec.SetSandboxNetwork(m.cfg.SandboxNetwork)
 		m.mgr.Exec.SetTimeout(time.Duration(m.cfg.BashTimeout) * time.Second)
-		m.hookNotes = tools.ApplyHooks(m.mgr.Exec, m.cfg, m.cwd())
+		m.hookNotes = append(m.hookNotes, tools.ApplyHooks(m.mgr.Exec, m.cfg, m.cwd())...)
 		m.reloadUserCmds()
 		m.reloadSkills()
 	}
@@ -2024,10 +2032,12 @@ func (m *App) renderMentionMenu(fs []string, w int) string {
 	end := min(len(fs), start+maxRows)
 	var lines []string
 	for i := start; i < end; i++ {
+		// A file name is whatever the archive was built with.
+		name := sanitizeLabel(fs[i])
 		if i == sel {
-			lines = append(lines, stySelected.Render(padRight(truncate("> @"+fs[i], w), w)))
+			lines = append(lines, stySelected.Render(padRight(truncate("> @"+name, w), w)))
 		} else {
-			lines = append(lines, "  "+styAccent.Render(truncate("@"+fs[i], w-2)))
+			lines = append(lines, "  "+styAccent.Render(truncate("@"+name, w-2)))
 		}
 	}
 	if !zenMode {
@@ -2078,8 +2088,21 @@ func (m *App) renderPerm(w, h int) string {
 	b.WriteString(styTool.Render("tool: "+sanitizeLabel(e.req.Tool)) + "\n")
 	summary := sanitizeText(e.req.Summary)
 	lines := strings.Split(wrapPlain(summary, min(80, w-16)), "\n")
-	if len(lines) > 10 {
-		lines = append(lines[:10], styDim.Render(gl.ellipsis))
+	// The box cannot grow past the screen, so a long enough command has a part
+	// nobody sees, and the model chooses which part that is: `printf '<1200
+	// A's>' > ~/.ssh/authorized_keys` drew ten lines of padding and a quiet
+	// ellipsis, with the redirect target nowhere on screen, while [y] ran the
+	// whole thing. Keeping both ends puts a padded tail back in view, and the
+	// gap is stated in full and in the error colour for the case that is left —
+	// a payload in the middle. Being asked to approve bytes you cannot read is
+	// something you have to be told is happening.
+	if limit := max(10, h-14); len(lines) > limit {
+		head := append([]string(nil), lines[:limit-3]...)
+		tail := lines[len(lines)-2:]
+		hidden := len(lines) - len(head) - len(tail)
+		head = append(head, styErr.Render(fmt.Sprintf("%s %d line(s) not shown, of %d characters in total %s",
+			gl.ellipsis, hidden, len(summary), gl.ellipsis)))
+		lines = append(head, tail...)
 	}
 	for _, l := range lines {
 		b.WriteString("  " + styCode.Render(" "+l+" ") + "\n")
@@ -2120,9 +2143,11 @@ func (m *App) renderTitle() string {
 	if name == "" {
 		name = m.sessID
 	}
-	left := " " + styAppTitle.Render("tapioca") + styDim.Render(""+gl.sep+""+truncate(name, 32))
+	// The session name is written by a model and the working directory by
+	// whoever produced the tree; this bar is redrawn on every frame.
+	left := " " + styAppTitle.Render("tapioca") + styDim.Render(""+gl.sep+""+truncate(sanitizeLabel(name), 32))
 	if m.mgr.Exec != nil {
-		left += styDim.Render("" + gl.sep + "" + shortPath(m.mgr.Exec.Cwd()))
+		left += styDim.Render("" + gl.sep + "" + sanitizeLabel(shortPath(m.mgr.Exec.Cwd())))
 	}
 
 	a := m.mgr.ActiveAgent()

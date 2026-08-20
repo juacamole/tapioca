@@ -231,6 +231,14 @@ func Main() {
 	if err != nil {
 		fail(err)
 	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		cwd, _ = os.UserHomeDir()
+	}
+	// Before anything reads a key that starts a process or hands out a standing
+	// approval: a config file found inside the tree being worked on may have
+	// been committed there.
+	warn(cfg.RestrictIfInsideTree(cwd))
 	catalog.Load()
 	if cfg.ModelCatalog {
 		// One request to models.dev for pricing and context sizes; disable
@@ -259,11 +267,7 @@ func Main() {
 	if args.permMode != "" {
 		mode = tools.NormalizeMode(args.permMode)
 	}
-	cwd, err := os.Getwd()
-	if err != nil {
-		cwd, _ = os.UserHomeDir()
-	}
-	secretenv.SetExtra(cfg.SecretEnv)
+	secretenv.SetExtra(cfg.SecretEnvNames())
 	exec := tools.NewExecutor(cwd, mode)
 	exec.SetExtraDirs(args.addDirs)
 	exec.SetBashPrefixes(cfg.BashAllow)

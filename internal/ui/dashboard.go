@@ -541,7 +541,9 @@ func renderToolsPanel(m *App, a *agent.Agent, w, h int) []string {
 		if !tc.Running {
 			dur = fmt.Sprintf(" %.1fs", tc.Dur.Seconds())
 		}
-		head := fmt.Sprintf("%s %s%s", icon, tc.Name, styDim.Render(dur))
+		// The name comes from the model or an MCP server, like the arguments
+		// two lines down that were already being cleaned.
+		head := fmt.Sprintf("%s %s%s", icon, sanitizeLabel(tc.Name), styDim.Render(dur))
 		lines = append(lines, head)
 		if len(lines) < h && tc.Args != "" && tc.Args != "{}" {
 			lines = append(lines, styDim.Render("  "+truncate(sanitizeText(tc.Args), w-3)))

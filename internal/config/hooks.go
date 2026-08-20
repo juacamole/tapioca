@@ -28,15 +28,82 @@ func (c *Config) TrustedHooks(cwd string) ([]HookConfig, error) {
 	if len(c.Hooks) == 0 {
 		return nil, nil
 	}
-	path := resolveReal(c.Path())
-	for _, root := range treeRoots(cwd) {
-		if under(path, root) {
-			return nil, fmt.Errorf("ignoring %d hook(s): %s is inside the working tree, "+
-				"where a repository could have committed it — move them to %s",
-				len(c.Hooks), c.Path(), DefaultPath())
-		}
+	if c.insideTree(cwd) {
+		return nil, fmt.Errorf("ignoring %d hook(s): %s is inside the working tree, "+
+			"where a repository could have committed it — move them to %s",
+			len(c.Hooks), c.Path(), DefaultPath())
 	}
 	return c.Hooks, nil
+}
+
+// insideTree reports whether the file this config was loaded from lives in the
+// tree being worked on, and so was possibly written by whoever produced that
+// tree.
+func (c *Config) insideTree(cwd string) bool {
+	path := resolveReal(c.Path())
+	// The config at the home-directory location is the user's own by
+	// construction: an extracted archive cannot write there, because getting a
+	// file read as the config is exactly what redirecting XDG_CONFIG_HOME or
+	// aiming --settings elsewhere achieves. Without this, working in a
+	// directory that merely contains the config — a home directory is the
+	// ordinary case — read as a repository having supplied it, and answered by
+	// telling the user to move the file to where it already was.
+	if home, err := os.UserHomeDir(); err == nil {
+		if path == resolveReal(filepath.Join(home, ".config", "tapioca", "config.toml")) {
+			return false
+		}
+	}
+	for _, root := range treeRoots(cwd) {
+		if under(path, root) {
+			return true
+		}
+	}
+	return false
+}
+
+// RestrictIfInsideTree drops everything in an in-tree config that decides what
+// executes, or what executes without asking, and returns one note per key
+// dropped. Nothing happens for a config outside the tree, which is the normal
+// case.
+//
+// A hook was never the only key in that file with the power the paragraph at
+// the top of this file describes. `command` under [[mcp]], [[lsp]] and
+// [[agents.external]] is a program started at launch — a committed config.toml
+// with `[[lsp]] command = "sh"` ran before the first keystroke, while its
+// [[hooks]] were being refused two lines away. bash_allow and permissions.allow
+// hand out standing approvals, and permission_mode = "bypass" removes the gate
+// altogether. Gating one of the seven was not a policy.
+//
+// Ask and deny rules are kept. A repository can only narrow with those, and a
+// narrowing it chose is not a narrowing anyone has to be protected from.
+func (c *Config) RestrictIfInsideTree(cwd string) []string {
+	if !c.insideTree(cwd) {
+		return nil
+	}
+	orig := *c
+	c.unrestrict = func(save *Config) {
+		save.MCP, save.LSP, save.Agents = orig.MCP, orig.LSP, orig.Agents
+		save.BashAllow, save.Permissions = orig.BashAllow, orig.Permissions
+		save.PermissionMode = orig.PermissionMode
+	}
+	var notes []string
+	drop := func(cond bool, what string, clear func()) {
+		if !cond {
+			return
+		}
+		clear()
+		notes = append(notes, fmt.Sprintf("ignoring %s: %s is inside the working tree, "+
+			"where a repository could have committed it — move it to %s",
+			what, c.Path(), DefaultPath()))
+	}
+	drop(len(c.MCP) > 0, "mcp server(s)", func() { c.MCP = nil })
+	drop(len(c.LSP) > 0, "language server(s)", func() { c.LSP = nil })
+	drop(len(c.Agents.External) > 0, "external agent(s)", func() { c.Agents.External = nil })
+	drop(len(c.BashAllow) > 0, "bash_allow", func() { c.BashAllow = nil })
+	drop(len(c.Permissions.Allow) > 0, "permissions.allow", func() { c.Permissions.Allow = nil })
+	drop(c.PermissionMode == "auto" || c.PermissionMode == "bypass",
+		"permission_mode = "+c.PermissionMode, func() { c.PermissionMode = "manual" })
+	return notes
 }
 
 // treeRoots is the working tree cwd belongs to, as far as it can be known.
@@ -65,18 +132,32 @@ func treeRoots(cwd string) []string {
 		"go.mod", "package.json", "Cargo.toml", // an archive of one
 		"pyproject.toml", "pom.xml", "build.gradle", "Gemfile", "composer.json",
 	}
+	// Every ancestor that carries a marker counts, not the nearest one. The
+	// archive chooses where its markers are, so stopping at the first put the
+	// boundary where the archive wanted it: a go.mod dropped in the
+	// subdirectory being worked in makes that subdirectory the tree, and a
+	// config committed one level above it is then "outside".
+	var roots []string
 	for dir := abs; ; {
 		for _, marker := range markers {
 			if _, err := os.Stat(filepath.Join(dir, marker)); err == nil {
-				return []string{dir}
+				roots = append(roots, dir)
+				break
 			}
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			return []string{abs}
+			break
 		}
 		dir = parent
 	}
+	if len(roots) == 0 {
+		// Nothing says where the tree ends, so the directory being worked in is
+		// treated as all of it: an archive that ships no marker at all must not
+		// thereby escape the check.
+		return []string{abs}
+	}
+	return roots
 }
 
 // under reports whether a resolved path is dir or inside it.

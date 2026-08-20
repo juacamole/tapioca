@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -322,7 +323,7 @@ func (o *OpenAI) Stream(ctx context.Context, req Request, out chan<- Event) (Mes
 	}
 	resp, err := o.client.Do(httpReq)
 	if err != nil {
-		return Message{}, fmt.Errorf("%s: %w", o.name, err)
+		return Message{}, fmt.Errorf("%s: %w", o.name, o.hideKey(err))
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -481,7 +482,7 @@ func (o *OpenAI) ContextLength(ctx context.Context, model string) (int, error) {
 	}
 	resp, err := o.client.Do(req)
 	if err != nil {
-		return 0, err
+		return 0, o.hideKey(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -512,7 +513,7 @@ func (o *OpenAI) ListModels(ctx context.Context) ([]string, error) {
 	}
 	resp, err := o.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", o.name, err)
+		return nil, fmt.Errorf("%s: %w", o.name, o.hideKey(err))
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -539,4 +540,23 @@ func (o *OpenAI) ListModels(ctx context.Context) ([]string, error) {
 		models = append(models, m.ID)
 	}
 	return models, nil
+}
+
+// hideKey removes the credential from an error before anyone reads it. With
+// auth_style = "query" the key is a query parameter, and net/http puts the URL
+// it failed on into *url.Error as written — stripPassword there only touches
+// userinfo. That error reaches the status line and gets pasted into bug
+// reports, so the key travelled with it.
+func (o *OpenAI) hideKey(err error) error {
+	if err == nil || o.apiKey == "" {
+		return err
+	}
+	msg := err.Error()
+	for _, form := range []string{o.apiKey, url.QueryEscape(o.apiKey)} {
+		msg = strings.ReplaceAll(msg, form, "REDACTED")
+	}
+	if msg == err.Error() {
+		return err
+	}
+	return errors.New(msg)
 }

@@ -35,7 +35,10 @@ func TestOrdinaryCommandsStayGrantable(t *testing.T) {
 	for _, c := range []string{
 		"ls -la", "cat f.txt", "grep -r x .", "rg foo", "/usr/bin/ls",
 		"git status", "git diff HEAD", "go test ./...", "make build",
-		"find . -name *.go", "tar -czf a.tgz .", "npm test",
+		// The glob is quoted: an unquoted one in a command that has exec flags
+		// is expanded against a directory the repository wrote, so what find
+		// ends up being handed is not what anybody read.
+		"find . -name '*.go'", "tar -czf a.tgz .", "npm test",
 	} {
 		if !PrefixGrantable(c) {
 			t.Errorf("%q should be grantable", c)
