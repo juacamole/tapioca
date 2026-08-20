@@ -505,6 +505,30 @@ func expandsWord(w string) bool {
 	return false
 }
 
+// tildeHead strips a leading ~ expansion — ~, ~user, ~+, ~- — up to and
+// including the first '/'.
+//
+// A tilde is an expansion, but a uniquely readable one: it replaces the part
+// of the word before that first '/' with a directory path, so the last
+// component of the word is untouched and the result can never begin with a
+// '-'. Both callers of expandsWord are asking "can I tell what this word
+// becomes", and for a tilde the answer is yes. Treating it like $ and * was
+// what made `~/go/bin/golangci-lint run` an unreadable command — so a deny
+// rule about rm refused it — and what made `go build -o ~/bin/app ./...` look
+// like it was reaching for an exec flag, so no [p] grant on go covered it.
+//
+// A ~ with no '/' after it is a home directory rather than a path into one:
+// its last component is not the word's, so it is left alone.
+func tildeHead(w string) string {
+	if !strings.HasPrefix(w, "~") {
+		return w
+	}
+	if i := strings.IndexByte(w, '/'); i > 0 {
+		return w[i+1:]
+	}
+	return w
+}
+
 // usesExecFlag reports whether a segment reaches for one of its command's
 // exec flags. Words are unquoted first, since git '-c' is git -c, and a word
 // the shell would expand counts as reaching for one: what it becomes is not
@@ -523,7 +547,7 @@ func usesExecFlag(segment string) bool {
 		return false
 	}
 	for _, w := range f[1:] {
-		if expandsWord(w) {
+		if expandsWord(tildeHead(w)) {
 			return true
 		}
 		w = unquoteWord(w)
@@ -1164,7 +1188,18 @@ func under(clean, dir string) bool {
 // file in the project then read as outside it, so auto mode prompted for each
 // ordinary edit with "outside the working directory" and grep asked before
 // searching the tree it was pointed at.
+// realPath says an unresolvable path "never lies inside a work area", and
+// nothing here made that true: a root that is itself unresolvable — an
+// --add-dir naming a link chain long enough to exhaust the budget, or a path
+// with more missing components than that — resolves to the same sentinel, and
+// under(unresolvable, unresolvable) is an exact match. The one value the
+// resolver hands back to mean "I could not tell" would then have meant "inside
+// the working directory", and in auto mode that is a write with no prompt. A
+// sentinel is only fail-closed where it is checked for.
 func (e *Executor) inWorkArea(clean string) bool {
+	if clean == unresolvable {
+		return false
+	}
 	if under(clean, realPath(filepath.Clean(e.Cwd()))) {
 		return true
 	}

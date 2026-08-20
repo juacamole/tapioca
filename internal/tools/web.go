@@ -8,9 +8,11 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"regexp"
 	"strings"
+	"syscall"
 	"time"
 
 	"tapioca/internal/textenc"
@@ -24,7 +26,8 @@ import (
 // endpoint or anything else on the local network. Redirects must stay on the
 // approved host and may never land on an internal address.
 var webClient = &http.Client{
-	Timeout: 25 * time.Second,
+	Timeout:   25 * time.Second,
+	Transport: screenedTransport(),
 	CheckRedirect: func(req *http.Request, via []*http.Request) error {
 		if len(via) >= 5 {
 			return fmt.Errorf("too many redirects")
@@ -43,6 +46,53 @@ var webClient = &http.Client{
 
 func sameHost(a, b string) bool {
 	return strings.EqualFold(strings.TrimPrefix(a, "www."), strings.TrimPrefix(b, "www."))
+}
+
+// screenedTransport is the default transport with the address it is about to
+// connect to screened first.
+//
+// A check on the host name cannot be the boundary. webFetch resolves the name
+// to decide whether to allow it and then hands the name to the transport,
+// which resolves it again; nothing makes the two answers the same. A record
+// with a zero TTL, or a name server that simply answers differently the second
+// time, is screened as one address and connected to as another — the ordinary
+// DNS rebinding move, and 169.254.169.254 is what it is worth here. Control
+// runs after resolution and before connect, with the address that will
+// actually be used, which is the only place the answer cannot change again.
+//
+// A clone of the default rather than a fresh Transport, so proxies, HTTP/2 and
+// the connection pooling a plain http.Client would have had all stay in place.
+func screenedTransport() http.RoundTripper {
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.DialContext = (&net.Dialer{
+		Timeout:   15 * time.Second,
+		KeepAlive: 30 * time.Second,
+		Control:   refuseLinkLocal,
+	}).DialContext
+	return tr
+}
+
+// refuseLinkLocal is the policy webFetch states, applied to the address rather
+// than to the name. Only link-local, matching linkLocalHost: loopback and the
+// private ranges are refused nowhere, because a dev server on localhost and a
+// machine on the LAN are the ordinary reasons to fetch a private address.
+//
+// An address that does not parse is refused. Control is only ever handed a
+// literal, so a value that is not one means something upstream is not what
+// this assumes, and that is not a state to connect in.
+func refuseLinkLocal(_, address string, _ syscall.RawConn) error {
+	host := address
+	if h, _, err := net.SplitHostPort(address); err == nil {
+		host = h
+	}
+	ip, err := netip.ParseAddr(strings.Trim(host, "[]"))
+	if err != nil {
+		return fmt.Errorf("refusing to connect to %q: not an address", address)
+	}
+	if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+		return fmt.Errorf("refusing to connect to the link-local address %s (cloud metadata lives there)", ip)
+	}
+	return nil
 }
 
 // internalHost reports addresses that only mean something inside this machine
