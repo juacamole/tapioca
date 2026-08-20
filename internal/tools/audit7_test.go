@@ -42,7 +42,12 @@ func deniedEndToEnd(t *testing.T, command string) {
 		t.Fatalf("control: %q was refused with no rules configured", command)
 	}
 	if _, err := os.Stat(marker); err != nil {
-		t.Fatalf("control: %q did not create the marker, so this test cannot show anything: %v", command, err)
+		// Not a failure: the spelling is a shell feature, and /bin/sh is dash on
+		// Debian and its derivatives, where $'…' is not ANSI-C quoting at all.
+		// A shell that cannot write the command that way has nothing to be
+		// tricked into, and asserting the refusal without the control would be
+		// asserting that a command which never ran did not run.
+		t.Skipf("this shell does not run %q, so there is nothing here to prove: %v", command, err)
 	}
 
 	strict := t.TempDir()
