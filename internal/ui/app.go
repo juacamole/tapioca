@@ -1714,9 +1714,15 @@ func (m *App) sendPrepared(a *agent.Agent, userMsg provider.Message) tea.Cmd {
 	return tea.Batch(m.maybeProbeCtx(a), titleCmd)
 }
 
-// maybeProbeCtx asks Ollama for the model's true context window once per
-// model. Hosted catalog entries never preempt the probe — local model names
-// collide with hosted ids and would inherit wrong windows.
+// ctxProber is a local backend that can be asked for the model's true context
+// window — Ollama via /api/show, llama.cpp via /props.
+type ctxProber interface {
+	ContextLength(ctx context.Context, model string) (int, error)
+}
+
+// maybeProbeCtx asks a local backend for the model's true context window once
+// per model. Hosted catalog entries never preempt the probe — local model
+// names collide with hosted ids and would inherit wrong windows.
 func (m *App) maybeProbeCtx(a *agent.Agent) tea.Cmd {
 	if a.Model == "" || m.probedCtx[a.Model] {
 		return nil
@@ -1724,8 +1730,8 @@ func (m *App) maybeProbeCtx(a *agent.Agent) tea.Cmd {
 	if _, ok := catalog.LookupLocal(a.Model); ok {
 		return nil
 	}
-	ol, isOllama := a.Provider.(*provider.Ollama)
-	if !isOllama {
+	p, canProbe := a.Provider.(ctxProber)
+	if !canProbe || !m.localProvider(a.ProviderName) {
 		return nil
 	}
 	m.probedCtx[a.Model] = true
@@ -1733,7 +1739,7 @@ func (m *App) maybeProbeCtx(a *agent.Agent) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if n, err := ol.ContextLength(ctx, model); err == nil && n > 0 {
+		if n, err := p.ContextLength(ctx, model); err == nil && n > 0 {
 			catalog.Store(model, catalog.Model{Context: n})
 		}
 		return nil

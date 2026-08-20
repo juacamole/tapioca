@@ -9,6 +9,7 @@ import (
 
 	"tapioca/internal/agent"
 	"tapioca/internal/catalog"
+	"tapioca/internal/provider"
 )
 
 // panelDef describes one dashboard panel type.
@@ -341,8 +342,7 @@ type costRates struct{ In, Out, CacheR, CacheW float64 }
 // localProvider reports whether a provider entry is a local backend, whose
 // inference is free and whose model names must not match hosted catalog ids.
 func (m *App) localProvider(name string) bool {
-	t := m.cfg.Providers[name].Type
-	return t == "ollama" || t == ""
+	return provider.IsLocal(m.cfg.Providers[name].Type)
 }
 
 // costFor resolves $/Mtok rates: explicit config overrides always win, the
