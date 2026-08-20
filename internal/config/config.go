@@ -190,9 +190,14 @@ func Default() *Config {
 		Theme:          "taro",
 		Glyphs:         "unicode",
 		Wordmark:       "auto",
+		// No llama.cpp entry, deliberately. Every configured provider is asked
+		// for its models each time /model opens, and llama-server's port is
+		// 8080 — the one a Spring Boot app, a Tomcat, a Jenkins or any dev
+		// server takes first. Shipping the entry would send a request to
+		// whatever that is and put its 404 on screen, for everyone who does not
+		// run llama.cpp. /connect finds a real one instead, and adds it then.
 		Providers: map[string]ProviderConfig{
 			"ollama":    {Type: "ollama", BaseURL: "http://localhost:11434"},
-			"llamacpp":  {Type: "llamacpp", BaseURL: "http://localhost:8080"},
 			"anthropic": {Type: "anthropic", APIKeyEnv: "ANTHROPIC_API_KEY"},
 		},
 		Dashboard: DashboardConfig{
@@ -527,12 +532,13 @@ type = "ollama"
 base_url = "http://localhost:11434"
 # context_window = 8192         # used for the context gauge
 
-# llama.cpp's llama-server. Older builds need --jinja or tool calls are
-# refused; recent ones have it on by default:
+# llama.cpp's llama-server. /connect finds one that is already running, so
+# this is only needed for a port other than the usual 8080. Older builds need
+# --jinja or tool calls are refused; recent ones have it on by default:
 #   llama-server --jinja -m model.gguf
-[providers.llamacpp]
-type = "llamacpp"
-base_url = "http://localhost:8080"
+# [providers.llamacpp]
+# type = "llamacpp"
+# base_url = "http://localhost:8080"
 # api_key_env = "LLAMA_API_KEY" # only if the server was started with --api-key
 
 [providers.anthropic]

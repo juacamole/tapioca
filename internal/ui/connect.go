@@ -104,9 +104,29 @@ func probeConnections(cfg *config.Config) tea.Cmd {
 // and a red mark against it would say there was.
 func detectOne(k provider.Kind) connEntry {
 	pc := config.ProviderConfig{Type: k.Type, BaseURL: k.DefaultAddress()}
+	absent := connEntry{kind: k, state: connUnset, detail: "not configured"}
+
+	// The port belongs to whoever got there first, so the server has to say
+	// what it is before anything it returns is believed. A model list will not
+	// do it: {"data":[{"id":…}]} is an ordinary REST shape, and an app serving
+	// a directory of users read as a directory of models.
+	p, err := provider.New(k.Type, pc)
+	if err != nil {
+		return absent
+	}
+	id, ok := p.(provider.Identifier)
+	if !ok {
+		return absent
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), connProbeTimeout)
+	defer cancel()
+	if err := id.Identify(ctx); err != nil {
+		return absent
+	}
+
 	e := probeOne(k, k.Type, pc)
 	if e.state != connReady {
-		return connEntry{kind: k, state: connUnset, detail: "not configured"}
+		return absent
 	}
 	// Named so that choosing it is obviously an addition, not a switch to
 	// something already set up.

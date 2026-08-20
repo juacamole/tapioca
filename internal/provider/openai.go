@@ -465,11 +465,11 @@ func (o *OpenAI) Stream(ctx context.Context, req Request, out chan<- Event) (Mes
 	return finish(), nil
 }
 
-// ContextLength probes llama-server's /props for the context actually
-// allocated per slot, which is what generation runs against — the model's
-// trained window says nothing about what this server was started with.
+// props reads llama-server's own description of itself. n_ctx is the context
+// actually allocated per slot, which is what generation runs against — the
+// model's trained window says nothing about what this server was started with.
 // Only the llama.cpp flavour has the endpoint.
-func (o *OpenAI) ContextLength(ctx context.Context, model string) (int, error) {
+func (o *OpenAI) props(ctx context.Context) (int, error) {
 	if o.flavor != flavorLlama {
 		return 0, fmt.Errorf("%s: no context probe for this provider", o.name)
 	}
@@ -500,6 +500,24 @@ func (o *OpenAI) ContextLength(ctx context.Context, model string) (int, error) {
 		return 0, fmt.Errorf("%s: no n_ctx in /props", o.name)
 	}
 	return body.Settings.NCtx, nil
+}
+
+// ContextLength implements the context probe for the gauge.
+func (o *OpenAI) ContextLength(ctx context.Context, _ string) (int, error) {
+	return o.props(ctx)
+}
+
+// Identify implements Identifier. /props is llama-server's own endpoint, and
+// reporting a context size it allocated is not something another program
+// serves by accident.
+//
+// The model list cannot answer this question. 8080 is the most contested port
+// there is — Spring Boot, Tomcat, Jenkins, any dev server picks it — and
+// {"data":[{"id":…}]} is an ordinary REST shape, so a directory of users read
+// as a directory of models and the address was offered as a model server.
+func (o *OpenAI) Identify(ctx context.Context) error {
+	_, err := o.props(ctx)
+	return err
 }
 
 // ListModels implements Provider.
