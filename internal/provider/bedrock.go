@@ -37,6 +37,10 @@ func NewBedrock(name string, cfg config.ProviderConfig) (*Bedrock, error) {
 	if region == "" {
 		return nil, fmt.Errorf("provider %q: bedrock needs a region (set region, AWS_REGION or AWS_DEFAULT_REGION)", name)
 	}
+	// The region becomes part of the hostname below when no base_url is set.
+	if err := CheckRegion(region); err != nil {
+		return nil, fmt.Errorf("provider %q: %w", name, err)
+	}
 	return &Bedrock{
 		name: name, region: region, profile: cfg.Profile,
 		baseURL: strings.TrimSuffix(cfg.BaseURL, "/"),

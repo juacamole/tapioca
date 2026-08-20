@@ -253,14 +253,25 @@ func Main() {
 	var presaves []func(*config.Config)
 	origMCP := cfg.MCP
 	if args.mcpConfig != "" {
-		var extra struct {
-			MCP []config.MCPServerConfig `toml:"mcp"`
+		// A [[mcp]] command is a program started at launch, so this file
+		// answers to the same rule the config file does: not from inside the
+		// tree being worked on. RestrictIfInsideTree above covers the servers
+		// that came through --settings and this list arrives after it, so
+		// without the check the whole policy was a question of which flag the
+		// user was told to type.
+		if config.InsideTree(args.mcpConfig, cwd) {
+			warn([]string{fmt.Sprintf("ignoring --mcp-config %s: it is inside the working tree, "+
+				"where a repository could have committed it", args.mcpConfig)})
+		} else {
+			var extra struct {
+				MCP []config.MCPServerConfig `toml:"mcp"`
+			}
+			if _, err := toml.DecodeFile(args.mcpConfig, &extra); err != nil {
+				fail(fmt.Errorf("parsing %s: %w", args.mcpConfig, err))
+			}
+			cfg.MCP = extra.MCP
+			presaves = append(presaves, func(c *config.Config) { c.MCP = origMCP })
 		}
-		if _, err := toml.DecodeFile(args.mcpConfig, &extra); err != nil {
-			fail(fmt.Errorf("parsing %s: %w", args.mcpConfig, err))
-		}
-		cfg.MCP = extra.MCP
-		presaves = append(presaves, func(c *config.Config) { c.MCP = origMCP })
 	}
 
 	mode := cfg.PermissionMode

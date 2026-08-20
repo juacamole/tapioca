@@ -46,6 +46,11 @@ func NewVertex(name string, cfg config.ProviderConfig) (*Vertex, error) {
 		return nil, fmt.Errorf("provider %q: vertex needs a project (set project or GOOGLE_CLOUD_PROJECT)", name)
 	}
 	region := firstNonEmpty(cfg.Region, osGetenv("GOOGLE_CLOUD_REGION"), "us-east5")
+	// The region becomes part of the hostname in endpoint() when no base_url
+	// is set, so it has to be a region name and nothing else.
+	if err := CheckRegion(region); err != nil {
+		return nil, fmt.Errorf("provider %q: %w", name, err)
+	}
 	return &Vertex{
 		name: name, project: project, region: region,
 		anth:         &Anthropic{name: name, client: httpClient},
