@@ -398,9 +398,19 @@ var execFlags = map[string][]string{
 // which in an extracted tarball is a file the archive chose. What they buy is
 // that the command a user pressed [p] on cannot be turned into an arbitrary one
 // by adding a flag to it — not that git in a hostile tree is safe.
+//
+// `config` is there for what it writes rather than what it runs: `git config
+// --global alias.st '!touch x'` followed by `git st` is arbitrary execution
+// out of one grant on git, and the same write reaches core.fsmonitor,
+// core.hooksPath, core.sshCommand and credential.helper — all of which run a
+// program the next time git is used, in any repository, after this session has
+// ended. `git -c` was already refused for exactly this; leaving the persistent
+// spelling open made that refusal a formality. It costs a prompt on `git config
+// --get`, which is a read, and that is the cheaper mistake.
 var execSubcommands = map[string][]string{
 	"git": {"bisect", "filter-branch", "difftool", "mergetool", "submodule",
-		"send-email", "p4", "svn", "daemon", "instaweb", "web--browse", "help"},
+		"send-email", "p4", "svn", "daemon", "instaweb", "web--browse", "help",
+		"config"},
 }
 
 // valueOptions take the next word as their value, so that word is not the
@@ -411,25 +421,43 @@ var valueOptions = map[string]bool{
 	"--namespace": true, "--super-prefix": true,
 }
 
-// runsExecSubcommand reports whether a segment's first non-option word is one
-// of its command's exec subcommands. Only the first is looked at: matching the
-// name anywhere would refuse `git commit -m "fix submodule"`.
-func runsExecSubcommand(name string, words []string) bool {
-	subs, ok := execSubcommands[name]
-	if !ok {
-		return false
-	}
+// firstSubcommand returns a segment's first non-option word — its subcommand —
+// and the index just past it. Only the first is looked at: matching the name
+// anywhere would refuse `git commit -m "fix submodule"`.
+func firstSubcommand(words []string) (string, int) {
 	for i := 0; i < len(words); i++ {
 		w := unquoteWord(words[i])
 		if strings.HasPrefix(w, "-") || (i > 0 && valueOptions[unquoteWord(words[i-1])]) {
 			continue
 		}
-		for _, s := range subs {
-			if w == s {
+		return w, i + 1
+	}
+	return "", 0
+}
+
+// runsExecSubcommand reports whether a segment reaches for a way of running a
+// program that belongs to its subcommand rather than to a flag.
+func runsExecSubcommand(name string, words []string) bool {
+	sub, rest := firstSubcommand(words)
+	if sub == "" {
+		return false
+	}
+	// `go env -w GOFLAGS=-toolexec=…` writes that flag into the user's own go
+	// env file, so every later go command on the machine runs the named
+	// program — in any directory, long after the session that was granted.
+	// Only with -w: `go env GOPATH` is a read, and -w on its own is far too
+	// common a flag to refuse, since `go build -ldflags "-w -s"` carries one.
+	if name == "go" && sub == "env" {
+		for _, w := range words[rest:] {
+			if w := unquoteWord(w); w == "-w" || w == "--w" {
 				return true
 			}
 		}
-		return false // this is the subcommand and it is not one of them
+	}
+	for _, s := range execSubcommands[name] {
+		if sub == s {
+			return true
+		}
 	}
 	return false
 }
@@ -500,12 +528,23 @@ func usesExecFlag(segment string) bool {
 		}
 		w = unquoteWord(w)
 		for _, fl := range flags {
-			if w == fl || strings.HasPrefix(w, fl+"=") {
+			// A flag written with two dashes is the same flag: Go's flag
+			// package, which every `go` subcommand uses, accepts --toolexec for
+			// -toolexec, and `go build --toolexec=x ./...` was verified to run
+			// x. Matching the spelling in the list only made it a list of
+			// spellings rather than of flags.
+			if matchesFlag(w, fl) || (strings.HasPrefix(w, "--") && matchesFlag(w[1:], fl)) {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+// matchesFlag reports whether a word is a flag, either bare or carrying its
+// value after an '='.
+func matchesFlag(w, flag string) bool {
+	return w == flag || strings.HasPrefix(w, flag+"=")
 }
 
 // grantableWord reports whether w is a literal command name. A blanket grant

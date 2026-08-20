@@ -3,9 +3,10 @@ package provider
 import (
 	"fmt"
 	"net/http"
-	"net/netip"
 	"net/url"
 	"strings"
+
+	"tapioca/internal/config"
 )
 
 // Every provider Tapioca ships knows where its own credential goes. A custom
@@ -126,12 +127,8 @@ func CheckBaseURL(raw string) error {
 // points it, so a base_url anyone could suggest passed the https requirement
 // and still sent every prompt, and the API key, across the network in the
 // clear — which is the entire thing that requirement is for.
-func isLoopback(host string) bool {
-	// RFC 6761 reserves localhost for the loopback interface, in both the bare
-	// and the fully qualified spelling.
-	if strings.EqualFold(strings.TrimSuffix(host, "."), "localhost") {
-		return true
-	}
-	ip, err := netip.ParseAddr(strings.Trim(host, "[]"))
-	return err == nil && ip.IsLoopback()
-}
+//
+// The test itself lives in the config package, which asks the same question of
+// a base_url a repository wrote. Two copies of a predicate this load-bearing
+// would eventually answer differently.
+func isLoopback(host string) bool { return config.IsLoopbackHost(host) }

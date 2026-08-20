@@ -184,9 +184,38 @@ func (e *Executor) cwdLocked() string {
 // Only denials and prompts are matched against these. Widening an allow the
 // same way would let a stray executable named like a trusted one inherit its
 // permission.
-func normalizedForms(command string) []string {
+func normalizedForms(command string) []string { return normalizedFormsAt(command, 0) }
+
+// maxNesting bounds how far the readings below follow a substitution into
+// another one. The model writes the command, so `$($($(…)))` nested ten
+// thousand deep is a thing it can send, and unbounded recursion on it is a
+// crash rather than a refusal. Nothing anyone writes goes near this.
+const maxNesting = 16
+
+func normalizedFormsAt(command string, depth int) []string {
+	if depth > maxNesting {
+		return nil
+	}
 	// A line continuation is whitespace to the shell.
 	command = strings.ReplaceAll(command, "\\\n", " ")
+	// A lone & is a command separator that segments() leaves in place, so the
+	// program after it was never the first word of anything and no rule for it
+	// could match: `true & touch pwned` reached the rules as a `true`, and
+	// deny = ["bash(touch*)"] ran the touch — under bypass, where nothing
+	// prompts either. Each side is read on its own here.
+	if parts := backgroundParts(command); len(parts) > 1 {
+		var forms []string
+		seen := map[string]bool{}
+		for _, p := range parts {
+			for _, f := range normalizedFormsAt(p, depth+1) {
+				if !seen[f] {
+					seen[f] = true
+					forms = append(forms, f)
+				}
+			}
+		}
+		return forms
+	}
 	fields := strings.Fields(command) // splits on any run of whitespace
 	// Quoting anywhere changes nothing about what runs, so every word is
 	// unquoted, not only the first: deny bash(git push*) has to see git "push".
@@ -241,7 +270,130 @@ func normalizedForms(command string) []string {
 		break
 	}
 	emit(fields)
+	// A command substitution runs a command list of its own, and the program
+	// inside it is never the first word of anything: `echo $(touch pwned)`,
+	// `echo \`touch pwned\`` and `cat <(touch pwned)` all reached the rules as
+	// an echo or a cat, so deny = ["bash(touch*)"] matched nothing and the
+	// touch ran. The body is split and read exactly like a top-level command,
+	// which also covers one nested inside another.
+	for _, body := range substitutionBodies(command) {
+		for _, seg := range segments(body) {
+			for _, f := range normalizedFormsAt(seg, depth+1) {
+				if !seen[f] {
+					seen[f] = true
+					forms = append(forms, f)
+				}
+			}
+		}
+	}
 	return forms
+}
+
+// substitutionBodies returns the command lists inside a segment's
+// substitutions: $(…), `…` and the process substitutions <(…) and >(…).
+// Single quotes suppress all of them; double quotes suppress none.
+func substitutionBodies(seg string) []string {
+	var bodies []string
+	inSingle, inDouble := false, false
+	for i := 0; i < len(seg); i++ {
+		c := seg[i]
+		switch {
+		case c == '\\' && !inSingle:
+			i++
+		case c == '\'' && !inDouble:
+			inSingle = !inSingle
+		case c == '"' && !inSingle:
+			inDouble = !inDouble
+		case inSingle:
+		case c == '`':
+			if j := strings.IndexByte(seg[i+1:], '`'); j >= 0 {
+				bodies = append(bodies, seg[i+1:i+1+j])
+				i += j + 1
+			}
+		case c == '$' && i+1 < len(seg) && seg[i+1] == '(':
+			body, end := parenBody(seg, i+1)
+			if end > 0 {
+				bodies = append(bodies, body)
+				i = end
+			}
+		case (c == '<' || c == '>') && i+1 < len(seg) && seg[i+1] == '(' && !inDouble:
+			body, end := parenBody(seg, i+1)
+			if end > 0 {
+				bodies = append(bodies, body)
+				i = end
+			}
+		}
+	}
+	return bodies
+}
+
+// parenBody returns what is between the '(' at open and its matching ')', and
+// the index of that ')'. Nesting and quoting are tracked, so the inner ')' of
+// `$(echo $(date))` and the one in `$(echo ")")` do not end it. An unbalanced
+// run returns an end of 0, and the caller reads nothing from it.
+func parenBody(seg string, open int) (string, int) {
+	depth, inSingle, inDouble := 0, false, false
+	for i := open; i < len(seg); i++ {
+		switch c := seg[i]; {
+		case c == '\\' && !inSingle:
+			i++
+		case c == '\'' && !inDouble:
+			inSingle = !inSingle
+		case c == '"' && !inSingle:
+			inDouble = !inDouble
+		case inSingle || inDouble:
+		case c == '(':
+			depth++
+		case c == ')':
+			if depth--; depth == 0 {
+				return seg[open+1 : i], i
+			}
+		}
+	}
+	return "", 0
+}
+
+// backgroundParts splits on the & that backgrounds a command, respecting
+// quotes. An & that belongs to a redirection is not one: 2>&1 and &>log are
+// part of the command they follow, and splitting there would invent a segment
+// out of "1" and read the rest as something nobody wrote.
+func backgroundParts(seg string) []string {
+	var parts []string
+	var cur strings.Builder
+	inSingle, inDouble := false, false
+	for i := 0; i < len(seg); i++ {
+		c := seg[i]
+		switch {
+		case c == '\\' && !inSingle:
+			cur.WriteByte(c)
+			if i+1 < len(seg) {
+				i++
+				cur.WriteByte(seg[i])
+			}
+		case c == '\'' && !inDouble:
+			inSingle = !inSingle
+			cur.WriteByte(c)
+		case c == '"' && !inSingle:
+			inDouble = !inDouble
+			cur.WriteByte(c)
+		case c == '&' && !inSingle && !inDouble && !redirectionAmp(seg, i):
+			parts = append(parts, cur.String())
+			cur.Reset()
+		default:
+			cur.WriteByte(c)
+		}
+	}
+	return append(parts, cur.String())
+}
+
+// redirectionAmp reports whether the & at i is part of a redirection rather
+// than a separator: the & in 2>&1 and <&0 follows the operator, the one in
+// &>log precedes it.
+func redirectionAmp(seg string, i int) bool {
+	if i > 0 && (seg[i-1] == '>' || seg[i-1] == '<') {
+		return true
+	}
+	return i+1 < len(seg) && seg[i+1] == '>'
 }
 
 // reservedWords are shell keywords that stand in front of a command instead of
@@ -315,11 +467,15 @@ func unquoteWord(w string) string {
 // transparentWrappers run their arguments as a command, so the program that
 // ends up running is not the first word. They are dropped before matching, so
 // a deny rule for a program also covers `env <program>`.
+// A shell is the plainest case of all: `sh -c 'touch pwned'` is a touch, and
+// reading it as an `sh` left every deny rule for touch unmatched.
 var transparentWrappers = map[string]bool{
 	"env": true, "command": true, "builtin": true, "exec": true, "eval": true,
 	"nohup": true, "setsid": true, "nice": true, "ionice": true,
 	"stdbuf": true, "time": true, "timeout": true, "xargs": true,
 	"sudo": true, "doas": true,
+	"sh": true, "bash": true, "zsh": true, "dash": true, "ksh": true,
+	"fish": true, "busybox": true,
 }
 
 // isRedirection reports whether a word is a redirection rather than a command.

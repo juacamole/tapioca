@@ -2,8 +2,13 @@ package config
 
 import (
 	"fmt"
+	"maps"
+	"net/netip"
+	"net/url"
 	"os"
+	"os/user"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -48,7 +53,7 @@ func (c *Config) insideTree(cwd string) bool {
 	// directory that merely contains the config — a home directory is the
 	// ordinary case — read as a repository having supplied it, and answered by
 	// telling the user to move the file to where it already was.
-	if home, err := os.UserHomeDir(); err == nil {
+	if home := usersHome(); home != "" {
 		if path == resolveReal(filepath.Join(home, ".config", "tapioca", "config.toml")) {
 			return false
 		}
@@ -74,6 +79,17 @@ func (c *Config) insideTree(cwd string) bool {
 // hand out standing approvals, and permission_mode = "bypass" removes the gate
 // altogether. Gating one of the seven was not a policy.
 //
+// `editor` is the same key wearing different clothes: its value is split into
+// an argv and executed the moment the user opens the external editor, so
+// `editor = "sh ./pwn.sh"` in a committed config was arbitrary execution one
+// keystroke away — and no prompt stands between a keystroke and its editor.
+//
+// A provider's base_url decides where the credential goes: with the API key
+// coming from the environment, `[providers.anthropic] base_url` in a committed
+// config sends that key, and every prompt, to a host the repository named.
+// Only an address on this machine survives, since pointing at a local model
+// server is the one reason a repository has to name one at all.
+//
 // Ask and deny rules are kept. A repository can only narrow with those, and a
 // narrowing it chose is not a narrowing anyone has to be protected from.
 func (c *Config) RestrictIfInsideTree(cwd string) []string {
@@ -81,10 +97,30 @@ func (c *Config) RestrictIfInsideTree(cwd string) []string {
 		return nil
 	}
 	orig := *c
+	// Filled in below, and read only when a Save happens: which providers had a
+	// base_url taken off them, so putting one back does not overwrite one the
+	// user has since chosen in the app.
+	restoreBase := map[string]string{}
 	c.unrestrict = func(save *Config) {
 		save.MCP, save.LSP, save.Agents = orig.MCP, orig.LSP, orig.Agents
 		save.BashAllow, save.Permissions = orig.BashAllow, orig.Permissions
 		save.PermissionMode = orig.PermissionMode
+		if save.Editor == "" {
+			save.Editor = orig.Editor
+		}
+		if len(restoreBase) > 0 && save.Providers != nil {
+			next := make(map[string]ProviderConfig, len(save.Providers))
+			for k, v := range save.Providers {
+				next[k] = v
+			}
+			for name, base := range restoreBase {
+				if p, ok := next[name]; ok && p.BaseURL == "" {
+					p.BaseURL = base
+					next[name] = p
+				}
+			}
+			save.Providers = next
+		}
 	}
 	var notes []string
 	drop := func(cond bool, what string, clear func()) {
@@ -103,7 +139,65 @@ func (c *Config) RestrictIfInsideTree(cwd string) []string {
 	drop(len(c.Permissions.Allow) > 0, "permissions.allow", func() { c.Permissions.Allow = nil })
 	drop(c.PermissionMode == "auto" || c.PermissionMode == "bypass",
 		"permission_mode = "+c.PermissionMode, func() { c.PermissionMode = "manual" })
+	drop(strings.TrimSpace(c.Editor) != "", "editor = "+c.Editor, func() { c.Editor = "" })
+	for _, name := range slices.Sorted(maps.Keys(c.Providers)) {
+		p := c.Providers[name]
+		if !offMachine(p.BaseURL) {
+			continue
+		}
+		drop(true, fmt.Sprintf("providers.%s.base_url = %s", name, p.BaseURL), func() {
+			// A fresh map, never an assignment into the existing one: the
+			// config is copied by value in places that then hold the same map,
+			// and a restriction that reached back into a caller's copy would be
+			// a different bug from the one being fixed here.
+			next := make(map[string]ProviderConfig, len(c.Providers))
+			for k, v := range c.Providers {
+				next[k] = v
+			}
+			cleaned := next[name]
+			restoreBase[name] = cleaned.BaseURL
+			cleaned.BaseURL = ""
+			next[name] = cleaned
+			c.Providers = next
+		})
+	}
 	return notes
+}
+
+// accountHome is where the account database says this user lives. It is a
+// variable so a test can say what the machine cannot be asked to pretend.
+var accountHome = func() string {
+	u, err := user.Current()
+	if err != nil {
+		return ""
+	}
+	return u.HomeDir
+}
+
+// usersHome returns the home directory only when it is the user's own, and ""
+// when that cannot be said.
+//
+// os.UserHomeDir is $HOME, and $HOME is an environment variable — the same kind
+// of thing this file already treats as attacker-influenced when it is
+// XDG_CONFIG_HOME. A tree that ships an .envrc exporting HOME=$PWD and commits
+// .config/tapioca/config.toml lands exactly on the exemption above, and every
+// key RestrictIfInsideTree exists to refuse was honoured again: hooks ran at
+// launch. Defending one of the two variables was not defending either.
+//
+// The account database is the second opinion, since nothing in a checkout
+// writes it. When there is no second opinion to be had — a build whose
+// os/user answers from $HOME as well, or a uid with no passwd entry, which is
+// ordinary inside a container — the exemption stands rather than telling every
+// such user that their own config is untrusted.
+func usersHome() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	if acct := accountHome(); acct != "" && resolveReal(acct) != resolveReal(home) {
+		return ""
+	}
+	return home
 }
 
 // treeRoots is the working tree cwd belongs to, as far as it can be known.
@@ -169,9 +263,48 @@ func under(path, dir string) bool {
 // file it controls look like it lives elsewhere. A path that does not resolve
 // is cleaned lexically, which is the conservative answer here: it stays where
 // it was written rather than escaping the comparison.
+//
+// It is made absolute first. EvalSymlinks leaves a relative path relative, and
+// the tree roots it is compared against are absolute, so a relative path was
+// never under any of them: `tapioca --settings ./config.toml`, run in the
+// checkout that committed that file, was read as a config living outside the
+// tree and every key in it honoured.
 func resolveReal(p string) string {
+	if abs, err := filepath.Abs(p); err == nil {
+		p = abs
+	}
 	if real, err := filepath.EvalSymlinks(p); err == nil {
 		return real
 	}
 	return filepath.Clean(p)
+}
+
+// IsLoopbackHost reports whether a host names this machine. It has to be an
+// address literal or the name reserved for one; see provider.CheckBaseURL,
+// which is the other caller. One implementation, because two would drift and
+// the answer decides whether a credential leaves the machine.
+func IsLoopbackHost(host string) bool {
+	// RFC 6761 reserves localhost for the loopback interface, in both the bare
+	// and the fully qualified spelling.
+	if strings.EqualFold(strings.TrimSuffix(host, "."), "localhost") {
+		return true
+	}
+	ip, err := netip.ParseAddr(strings.Trim(host, "[]"))
+	return err == nil && ip.IsLoopback()
+}
+
+// offMachine reports whether a base_url sends requests somewhere other than
+// this machine. An address that cannot be parsed counts as off-machine: the
+// question here is whether to trust a value a repository wrote, and "it did not
+// parse" is not a reason to trust it.
+func offMachine(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return false // nothing configured; the built-in default applies
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return true
+	}
+	return !IsLoopbackHost(u.Hostname())
 }

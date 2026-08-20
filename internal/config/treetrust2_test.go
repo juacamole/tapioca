@@ -18,6 +18,7 @@ func writeAt(t *testing.T, p, s string) {
 func TestOwnConfigIsNotRestricted(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	pretendHome(t, home)
 	path := filepath.Join(home, ".config", "tapioca", "config.toml")
 	writeAt(t, path, "")
 
@@ -40,6 +41,7 @@ func TestOwnConfigIsNotRestricted(t *testing.T) {
 func TestDotfilesRepoDoesNotRestrictOwnConfig(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	pretendHome(t, home)
 	os.MkdirAll(filepath.Join(home, ".git"), 0o755)
 	path := filepath.Join(home, ".config", "tapioca", "config.toml")
 	writeAt(t, path, "")
