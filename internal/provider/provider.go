@@ -194,6 +194,16 @@ func New(name string, cfg config.ProviderConfig) (Provider, error) {
 	}
 }
 
+// Identifier is a provider that can confirm the server it points at is really
+// the kind of server it was configured as, by asking for something only that
+// server serves. Looking for a local model server nobody configured means
+// knocking on a port that belongs to whoever got there first, so "something
+// answered" is not an answer: a provider that cannot prove what it reached is
+// never reported as found.
+type Identifier interface {
+	Identify(ctx context.Context) error
+}
+
 // IsLocal reports whether a provider type runs inference on this machine —
 // free, and serving model names that must never match hosted catalog ids.
 func IsLocal(typ string) bool {
