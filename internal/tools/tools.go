@@ -199,6 +199,9 @@ func segments(command string) []string {
 func isSpace(b byte) bool { return b == ' ' || b == '\t' }
 
 func (e *Executor) wordAllowed(word string) bool {
+	if word == "" {
+		return false // a segment with no literal command name matches nothing
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	for _, p := range e.bashPrefixes {
@@ -257,7 +260,7 @@ func escapes(segment string) bool {
 
 // segmentAllowed reports whether a granted word covers this exact segment.
 func (e *Executor) segmentAllowed(segment string) bool {
-	if escapes(segment) {
+	if escapes(segment) || usesExecFlag(segment) {
 		return false
 	}
 	return e.wordAllowed(PrefixSuggestion(segment))
@@ -294,38 +297,141 @@ func (e *Executor) Grants() (tools []string, bashWords []string) {
 	return tools, append([]string(nil), e.bashPrefixes...)
 }
 
-// interpreters execute arbitrary code from arguments or stdin, so granting
-// them is equivalent to granting everything; the UI declines to offer it.
-// Exec-wrappers (env, timeout, sudo, …) count: they run their arguments.
-var interpreters = map[string]bool{
+// execCapable lists commands that take "run this program" as an argument, so
+// a blanket grant on the name alone is a grant of everything the shell can do.
+// It is not only interpreters: an exec flag is enough, and each of these was
+// checked to run a command with output on a pipe rather than a terminal.
+//
+// Being a list of names, this cannot be complete — a command nobody here
+// thought of will have its own exec flag. It only decides whether the [p]
+// shortcut is *offered*; [y] and [a] still allow the exact command, and the
+// permission mode, not this map, is the boundary that has to hold.
+var execCapable = map[string]bool{
+	// Shells and language runtimes: code from an argument or stdin.
 	"sh": true, "bash": true, "zsh": true, "fish": true, "dash": true,
 	"ksh": true, "csh": true, "tcsh": true, "pwsh": true, "nu": true,
 	"python": true, "python3": true, "perl": true, "ruby": true, "node": true,
 	"deno": true, "bun": true, "php": true, "lua": true, "tclsh": true,
 	"awk": true, "gawk": true, "mawk": true, "sed": true,
-	"env": true, "eval": true, "exec": true, "command": true, "builtin": true,
-	"xargs": true, "nohup": true, "setsid": true, "timeout": true, "time": true,
-	"nice": true, "ionice": true, "stdbuf": true, "watch": true,
-	"sudo": true, "doas": true, "su": true, "ssh": true, "chroot": true,
-	"nix-shell": true, "nix": true, "docker": true, "podman": true,
+	"rscript": true, "julia": true, "osascript": true, "expect": true,
+	"runghc": true, "runhaskell": true, "ghci": true, "irb": true,
+	"elixir": true, "iex": true, "erl": true, "escript": true,
+	"java": true, "mono": true, "dotnet": true, "scala": true, "groovy": true,
+	"jshell": true, "sbcl": true, "clisp": true, "guile": true, "racket": true,
+	// Builtins that run their argument as a command.
+	"eval": true, "exec": true, "command": true, "builtin": true,
+	"source": true, ".": true,
+	// Wrappers: everything after the flags is the program to run.
+	"env": true, "xargs": true, "nohup": true, "setsid": true, "timeout": true,
+	"time": true, "nice": true, "ionice": true, "stdbuf": true, "watch": true,
+	"parallel": true, "flock": true, "script": true, "entr": true,
+	"unshare": true, "nsenter": true, "setarch": true, "taskset": true,
+	"chrt": true, "capsh": true, "runuser": true, "systemd-run": true,
+	"sudo": true, "doas": true, "su": true, "chroot": true, "busybox": true,
+	// Remote and container execution.
+	"ssh": true, "scp": true, "sftp": true, "socat": true,
+	"nc": true, "ncat": true, "netcat": true,
+	"docker": true, "podman": true, "nerdctl": true, "kubectl": true,
+	"helm": true, "vagrant": true, "ansible": true, "ansible-playbook": true,
+	"nix-shell": true, "nix": true, "npx": true,
+	// Editors, pagers and debuggers shell out from a keystroke or a flag.
+	"vi": true, "vim": true, "nvim": true, "emacs": true, "ed": true,
+	"less": true, "more": true, "most": true, "man": true,
+	"gdb": true, "lldb": true, "strace": true, "ltrace": true, "perf": true,
+	"valgrind": true,
+	// Database clients with a shell escape: sqlite3 .shell, psql \!.
+	"sqlite3": true, "psql": true, "mysql": true,
 }
 
-// isInterpreter matches path and version variants too: /usr/bin/python3,
+// runsOtherPrograms matches path and version variants too: /usr/bin/python3,
 // python3.11 and bash-5.2 are the same grant as their bare name.
-func isInterpreter(word string) bool {
+func runsOtherPrograms(word string) bool {
 	base := strings.ToLower(filepath.Base(word))
-	if interpreters[base] {
+	if execCapable[base] {
 		return true
 	}
 	trimmed := strings.TrimRight(base, "0123456789.-")
-	return trimmed != base && interpreters[trimmed]
+	return trimmed != base && execCapable[trimmed]
+}
+
+// execFlags are flags that turn an ordinary command into a way of running
+// another program named in the arguments. The command itself stays grantable —
+// "git status" and "go test ./..." are the reason the shortcut exists — but a
+// grant covers the command doing its normal job, never one of these. They are
+// checked when the grant is matched, not only when it is offered, because the
+// point of a blanket grant is that later commands are not read by anyone.
+//
+// git -c alias.x='!cmd' x was verified to run with output on a pipe; git's
+// pager needs a terminal and cannot be reached this way.
+var execFlags = map[string][]string{
+	"git":    {"-c", "--config-env", "--exec-path", "--upload-pack", "--receive-pack"},
+	"find":   {"-exec", "-execdir", "-ok", "-okdir"},
+	"go":     {"run", "generate"},
+	"cargo":  {"run"},
+	"npm":    {"exec"},
+	"yarn":   {"exec"},
+	"pnpm":   {"exec"},
+	"make":   {"-f", "--file", "--makefile", "--eval"},
+	"cmake":  {"-P", "-E"},
+	"tar":    {"-I", "--use-compress-program", "--to-command"},
+	"rsync":  {"-e", "--rsh", "--rsync-path"},
+	"zip":    {"-TT", "--unzip-command"},
+	"gcc":    {"-wrapper", "-fplugin"},
+	"clang":  {"-fplugin"},
+	"ffmpeg": {"-f"},
+}
+
+// usesExecFlag reports whether a segment reaches for one of its command's
+// exec flags. Words are unquoted first, since git '-c' is git -c.
+func usesExecFlag(segment string) bool {
+	f := strings.Fields(segment)
+	if len(f) == 0 {
+		return false
+	}
+	flags, ok := execFlags[strings.ToLower(filepath.Base(unquoteWord(f[0])))]
+	if !ok {
+		return false
+	}
+	for _, w := range f[1:] {
+		w = unquoteWord(w)
+		for _, fl := range flags {
+			if w == fl || strings.HasPrefix(w, fl+"=") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// grantableWord reports whether w is a literal command name. A blanket grant
+// is stored as one word and matched by exact equality, so anything a shell
+// would have to interpret before it becomes a command name cannot be granted:
+// "FOO=1 bash -c x" offered a grant on "FOO=1", which then cleared every
+// command written with that assignment in front, and quoting the name at all
+// ("'b'ash") walked past the exec-capable check while still running the shell.
+func grantableWord(w string) bool {
+	if w == "" || w == "." || w == ".." {
+		return false
+	}
+	for i := 0; i < len(w); i++ {
+		c := w[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		case c == '_' || c == '-' || c == '.' || c == '+' || c == '/':
+		default:
+			return false
+		}
+	}
+	return w[0] != '-'
 }
 
 // PrefixSuggestion returns the word an always-allow-prefix grant would use,
-// or "" when a blanket grant for it would be meaningless or unsafe.
+// or "" when a blanket grant for it would be meaningless or unsafe. It is used
+// for matching as well as for offering, so a command that cannot be reduced to
+// a literal name never matches a grant.
 func PrefixSuggestion(command string) string {
 	f := strings.Fields(command)
-	if len(f) == 0 {
+	if len(f) == 0 || !grantableWord(f[0]) {
 		return ""
 	}
 	return f[0]
@@ -334,7 +440,7 @@ func PrefixSuggestion(command string) string {
 // PrefixGrantable reports whether [p] should be offered for a segment.
 func PrefixGrantable(segment string) bool {
 	w := PrefixSuggestion(segment)
-	return w != "" && !isInterpreter(w) && !escapes(segment)
+	return w != "" && !runsOtherPrograms(w) && !usesExecFlag(segment) && !escapes(segment)
 }
 
 // SetCheckpoint registers a hook run before every mutating tool call.
