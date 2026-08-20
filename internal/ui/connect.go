@@ -37,9 +37,6 @@ type connEntry struct {
 	// provider to send to. They share this screen because they answer the same
 	// question: what can this session talk to?
 	external *config.ExternalAgent
-	// detected marks a server found listening that no config mentions, so
-	// choosing it writes the entry rather than switching to one already there.
-	detected bool
 }
 
 // connStatusMsg carries the probe results back to the update loop.
@@ -75,64 +72,19 @@ func probeConnections(cfg *config.Config) tea.Cmd {
 		var wg sync.WaitGroup
 		for i, k := range provider.Catalog {
 			names := byType[k.Type]
-			if len(names) == 0 && !k.Detectable() {
+			if len(names) == 0 {
 				entries[i] = connEntry{kind: k, state: connUnset, detail: "not configured"}
 				continue
 			}
 			wg.Add(1)
-			go func(i int, k provider.Kind, names []string) {
+			go func(i int, k provider.Kind, name string) {
 				defer wg.Done()
-				if len(names) == 0 {
-					entries[i] = detectOne(k)
-					return
-				}
-				entries[i] = probeOne(k, names[0], configs[names[0]])
-			}(i, k, names)
+				entries[i] = probeOne(k, name, configs[name])
+			}(i, k, names[0])
 		}
 		wg.Wait()
 		return connStatusMsg{entries: append(entries, externalEntries(cfg)...)}
 	}
-}
-
-// detectOne looks for a local server nobody has written into the config yet.
-// A llama-server on its usual port is either listening or it is not, and
-// answering that question costs one connection to this machine — cheaper than
-// making the user describe it in a file first, and the answer is the same.
-//
-// Not finding one is reported as "not configured" rather than as a failure:
-// nothing is wrong with a machine that is not running a local model server,
-// and a red mark against it would say there was.
-func detectOne(k provider.Kind) connEntry {
-	pc := config.ProviderConfig{Type: k.Type, BaseURL: k.DefaultAddress()}
-	absent := connEntry{kind: k, state: connUnset, detail: "not configured"}
-
-	// The port belongs to whoever got there first, so the server has to say
-	// what it is before anything it returns is believed. A model list will not
-	// do it: {"data":[{"id":…}]} is an ordinary REST shape, and an app serving
-	// a directory of users read as a directory of models.
-	p, err := provider.New(k.Type, pc)
-	if err != nil {
-		return absent
-	}
-	id, ok := p.(provider.Identifier)
-	if !ok {
-		return absent
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), connProbeTimeout)
-	defer cancel()
-	if err := id.Identify(ctx); err != nil {
-		return absent
-	}
-
-	e := probeOne(k, k.Type, pc)
-	if e.state != connReady {
-		return absent
-	}
-	// Named so that choosing it is obviously an addition, not a switch to
-	// something already set up.
-	e.detail += gl.sep + "found on " + k.DefaultAddress()
-	e.detected = true
-	return e
 }
 
 func probeOne(k provider.Kind, name string, pc config.ProviderConfig) connEntry {
@@ -144,6 +96,17 @@ func probeOne(k provider.Kind, name string, pc config.ProviderConfig) connEntry 
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), connProbeTimeout)
 	defer cancel()
+	// A model list does not say what is listening: {"data":[{"id":…}]} is an
+	// ordinary REST shape, so an app on the address read as a server with
+	// models on it. Where the provider can ask for something only its own kind
+	// serves, it does, and the address being wrong is reported as that rather
+	// than as a working server with somebody else's records on it.
+	if id, ok := p.(provider.Identifier); ok {
+		if err := id.Identify(ctx); err != nil {
+			e.state, e.detail = connFailing, err.Error()
+			return e
+		}
+	}
 	models, err := p.ListModels(ctx)
 	if err != nil {
 		e.state, e.detail = connFailing, err.Error()
@@ -240,9 +203,6 @@ func (m *App) applyConnect(typ string) tea.Cmd {
 		return nil
 	}
 	if e.state == connReady {
-		if e.detected {
-			return m.addDetected(e)
-		}
 		return m.useProvider(e.name)
 	}
 
@@ -262,33 +222,6 @@ func (m *App) applyConnect(typ string) tea.Cmd {
 	}
 	m.openCredentialEntry(e.kind)
 	return nil
-}
-
-// addDetected writes the entry for a server that was found listening and then
-// uses it. The address is the one it answered on, so there is nothing left to
-// ask: a form whose every field already has the right value is a form that
-// only exists to be dismissed.
-func (m *App) addDetected(e connEntry) tea.Cmd {
-	name := m.addProviderEntry(e.kind)
-	m.saveCfg()
-	m.mgr.ReloadProviders()
-	return m.useProvider(name)
-}
-
-// addProviderEntry writes a found server into the config and returns the name
-// it was written under.
-func (m *App) addProviderEntry(k provider.Kind) string {
-	if m.cfg.Providers == nil {
-		m.cfg.Providers = map[string]config.ProviderConfig{}
-	}
-	// A name already in use belongs to something else the user set up, and
-	// taking it would silently repoint their provider at this one.
-	name := k.Type
-	for _, taken := m.cfg.Providers[name]; taken; _, taken = m.cfg.Providers[name] {
-		name += "-local"
-	}
-	m.cfg.Providers[name] = config.ProviderConfig{Type: k.Type, BaseURL: k.DefaultAddress()}
-	return name
 }
 
 // useProvider points the active agent at a provider that is known to work.
