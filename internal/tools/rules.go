@@ -608,7 +608,12 @@ func opaqueCommandWord(w string) bool {
 	if w == "[" || w == "[[" {
 		return false
 	}
-	return expandsWord(w)
+	// A leading ~ is stripped rather than treated as unreadable: what it
+	// expands to is a directory path, so the program's name — the last
+	// component, which is what emit() puts in the form — is the same either
+	// way. Calling `~/go/bin/golangci-lint run` unreadable meant every deny
+	// and ask rule matched it, so a rule about `rm -rf` refused a linter.
+	return expandsWord(tildeHead(w))
 }
 
 // transparentWrappers run their arguments as a command, so the program that

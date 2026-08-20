@@ -55,9 +55,18 @@ func Instructions(cwd string) string {
 	var parts []string
 	seen := map[string]bool{}
 	dirs := ancestry(cwd)
-	roots := importRoots{GlobalDir(), projectRoot(cwd)}
+	// One root per instruction file, not the union of both. A union let a file
+	// in the project read out of the config directory, which is where the
+	// provider keys and the MCP bearer tokens live: a clone that ships
+	// AGENTS.md as a symlink to config.toml — or a `keys.md` symlink it
+	// @imports — landed inside a root the union allowed, and the whole file
+	// went to the provider on every turn. Personal instruction files compose
+	// out of the config directory, project ones out of the project, and
+	// neither has any reason to reach into the other.
+	personal := importRoots{GlobalDir()}
+	local := importRoots{projectRoot(cwd)}
 
-	add := func(path string) {
+	add := func(path string, roots importRoots) {
 		abs, err := filepath.Abs(path)
 		if err != nil || seen[abs] {
 			return
@@ -66,7 +75,7 @@ func Instructions(cwd string) string {
 		// The file itself gets the check its imports get. Confining @import
 		// while reading AGENTS.md unresolved left the shorter version of the
 		// same exploit open: make AGENTS.md a symlink and skip the import.
-		if !roots.allows(abs) {
+		if !roots.mayRead(abs) {
 			return
 		}
 		text, ok := readInstruction(abs, seen, 0, roots)
@@ -77,11 +86,11 @@ func Instructions(cwd string) string {
 	}
 
 	for _, name := range instructionFiles {
-		add(filepath.Join(GlobalDir(), name))
+		add(filepath.Join(GlobalDir(), name), personal)
 	}
 	for _, dir := range dirs {
 		for _, name := range instructionFiles {
-			add(filepath.Join(dir, name))
+			add(filepath.Join(dir, name), local)
 		}
 	}
 
@@ -176,6 +185,19 @@ func (r importRoots) allows(abs string) bool {
 	return false
 }
 
+// mayRead is the whole test an instruction file has to pass: it resolves
+// inside the root the instructions belong to, and it is still markdown once
+// resolved.
+//
+// Both halves ask about the resolved path, because that is the file the open
+// follows. Asking importable() about the path as written was a check on a
+// different file from the one being read — git stores symlinks, so a clone
+// ships keys.md pointing at config.toml, the extension check sees markdown,
+// and the read sees the provider keys.
+func (r importRoots) mayRead(abs string) bool {
+	return r.allows(abs) && importable(resolveReal(abs))
+}
+
 // importable restricts imports to markdown. The feature exists to split a long
 // instruction file up, and without this the config directory being an import
 // root — which it must be, so personal instruction files can compose — put
@@ -235,7 +257,7 @@ func expandImports(text, dir string, seen map[string]bool, depth int, roots impo
 			continue
 		}
 		seen[abs] = true
-		if !importable(abs) || !roots.allows(abs) {
+		if !roots.mayRead(abs) {
 			// Named rather than dropped: a silent refusal looks identical to a
 			// typo, and this one is worth noticing. The path is left out on
 			// purpose — it is attacker-chosen text.
