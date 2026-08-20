@@ -231,7 +231,7 @@ func TestDeeplyNestedSubstitutionTerminates(t *testing.T) {
 	cmd := "echo " + strings.Repeat("$(", 20000) + "touch x" + strings.Repeat(")", 20000)
 	done := make(chan bool, 1)
 	go func() {
-		_ = normalizedForms(cmd)
+		_, _ = normalizedForms(cmd)
 		done <- true
 	}()
 	select {

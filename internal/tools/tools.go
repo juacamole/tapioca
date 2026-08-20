@@ -1156,12 +1156,20 @@ func under(clean, dir string) bool {
 
 // inWorkArea reports whether an absolute path lies in the working directory
 // or one of the directories announced with --add-dir.
+// The roots are resolved, not merely made absolute, because the path being
+// judged always is: resolve() puts every path through realPath. Comparing a
+// resolved path against an unresolved root is a comparison that cannot match
+// whenever the working directory is reached through a symlink — /tmp on macOS,
+// ~/src -> /data/src, a home directory a corporate image links elsewhere. Every
+// file in the project then read as outside it, so auto mode prompted for each
+// ordinary edit with "outside the working directory" and grep asked before
+// searching the tree it was pointed at.
 func (e *Executor) inWorkArea(clean string) bool {
-	if under(clean, e.Cwd()) {
+	if under(clean, realPath(filepath.Clean(e.Cwd()))) {
 		return true
 	}
 	for _, d := range e.ExtraDirs() {
-		if abs, err := filepath.Abs(d); err == nil && under(clean, abs) {
+		if abs, err := filepath.Abs(d); err == nil && under(clean, realPath(abs)) {
 			return true
 		}
 	}

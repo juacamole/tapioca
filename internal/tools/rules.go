@@ -184,55 +184,82 @@ func (e *Executor) cwdLocked() string {
 // Only denials and prompts are matched against these. Widening an allow the
 // same way would let a stray executable named like a trusted one inherit its
 // permission.
-func normalizedForms(command string) []string { return normalizedFormsAt(command, 0) }
+//
+// The second result says the reading is incomplete: the command word is one
+// the shell builds at runtime, or the nesting ran past the budget below. The
+// forms then say nothing about what runs, and a caller must not read their
+// silence as the command being clear — see ruleFor.
+func normalizedForms(command string) ([]string, bool) {
+	s := &formScan{seen: map[string]bool{}, steps: maxFormSteps}
+	s.scan(command, 0)
+	return s.forms, s.opaque
+}
 
 // maxNesting bounds how far the readings below follow a substitution into
-// another one. The model writes the command, so `$($($(…)))` nested ten
-// thousand deep is a thing it can send, and unbounded recursion on it is a
-// crash rather than a refusal. Nothing anyone writes goes near this.
-const maxNesting = 16
+// another one, and maxFormSteps bounds the total work when the nesting
+// branches instead of going straight down — `$(a $(b $(c …)))` with several
+// substitutions per level is exponential in the depth alone. The model writes
+// the command, so both are inputs it chooses. Nothing anyone writes goes near
+// either.
+//
+// Hitting one is not "no forms": that is how a bounded reading becomes a way
+// through it. `echo $($($(…$(touch pwned)…)))` nested seventeen deep emitted
+// every outer form and none for the touch, so deny = ["bash(touch*)"] matched
+// nothing and the touch ran — under bypass, where nothing prompts either.
+// Running out of budget sets opaque, and the caller treats that as the rule
+// matching rather than as an answer.
+const (
+	maxNesting   = 16
+	maxFormSteps = 4096
+)
 
-func normalizedFormsAt(command string, depth int) []string {
-	if depth > maxNesting {
-		return nil
+// formScan accumulates the readings of one command. The budget and the
+// verdict are shared across the whole recursion, because both are about the
+// command as a whole rather than about any one substitution inside it.
+type formScan struct {
+	forms  []string
+	seen   map[string]bool
+	steps  int
+	opaque bool
+}
+
+func (s *formScan) scan(command string, depth int) {
+	if depth > maxNesting || s.steps <= 0 {
+		s.opaque = true
+		return
 	}
-	// A line continuation is whitespace to the shell.
-	command = strings.ReplaceAll(command, "\\\n", " ")
+	s.steps--
+	// A line continuation is deleted by the shell, not turned into whitespace:
+	// `to\<newline>uch x` is a touch. Replacing it with a space read that as
+	// `to uch x`, which matched no rule for touch and ran under bypass.
+	command = strings.ReplaceAll(command, "\\\n", "")
 	// A lone & is a command separator that segments() leaves in place, so the
 	// program after it was never the first word of anything and no rule for it
 	// could match: `true & touch pwned` reached the rules as a `true`, and
 	// deny = ["bash(touch*)"] ran the touch — under bypass, where nothing
 	// prompts either. Each side is read on its own here.
 	if parts := backgroundParts(command); len(parts) > 1 {
-		var forms []string
-		seen := map[string]bool{}
 		for _, p := range parts {
-			for _, f := range normalizedFormsAt(p, depth+1) {
-				if !seen[f] {
-					seen[f] = true
-					forms = append(forms, f)
-				}
-			}
+			s.scan(p, depth+1)
 		}
-		return forms
+		return
 	}
-	fields := strings.Fields(command) // splits on any run of whitespace
+	raw := strings.Fields(command) // splits on any run of whitespace
 	// Quoting anywhere changes nothing about what runs, so every word is
 	// unquoted, not only the first: deny bash(git push*) has to see git "push".
-	for i := range fields {
-		fields[i] = unquoteWord(fields[i])
+	fields := make([]string, len(raw))
+	for i := range raw {
+		fields[i] = unquoteWord(raw[i])
 	}
-	var forms []string
-	seen := map[string]bool{}
 	emit := func(f []string) {
 		if len(f) == 0 {
 			return
 		}
 		g := append([]string(nil), f...)
 		g[0] = filepath.Base(strings.TrimRight(g[0], ")};"))
-		if s := strings.Join(g, " "); !seen[s] {
-			seen[s] = true
-			forms = append(forms, s)
+		if str := strings.Join(g, " "); !s.seen[str] {
+			s.seen[str] = true
+			s.forms = append(s.forms, str)
 		}
 	}
 	// Drop everything a shell steps over before it reaches the command:
@@ -242,19 +269,22 @@ func normalizedFormsAt(command string, depth int) []string {
 	for len(fields) > 0 {
 		w := fields[0]
 		if w == "(" || w == "{" || w == "!" || reservedWords[w] || isRedirection(w) {
-			fields = fields[1:]
+			fields, raw = fields[1:], raw[1:]
 			continue
 		}
 		if isAssignment(w) {
-			fields = fields[1:]
+			fields, raw = fields[1:], raw[1:]
 			continue
 		}
 		if len(w) > 1 && (w[0] == '(' || w[0] == '{' || w[0] == '!') {
 			fields[0] = w[1:]
+			if len(raw[0]) > 1 && raw[0][0] == w[0] {
+				raw[0] = raw[0][1:]
+			}
 			continue
 		}
 		if len(fields) > 1 && transparentWrappers[filepath.Base(w)] {
-			fields = fields[1:]
+			fields, raw = fields[1:], raw[1:]
 			prev := ""
 			for len(fields) > 1 {
 				emit(fields) // this word may already be the command
@@ -263,11 +293,24 @@ func normalizedFormsAt(command string, depth int) []string {
 				if !isWrapperArg(fields[0]) && !strings.HasPrefix(prev, "-") {
 					break
 				}
-				prev, fields = fields[0], fields[1:]
+				prev = fields[0]
+				fields, raw = fields[1:], raw[1:]
 			}
 			continue
 		}
 		break
+	}
+	// The word left here is the one that becomes the program, and a word the
+	// shell rewrites first is not a program name any reading can spell:
+	// `C=touch; $C x`, `t${x}ouch x`, `t?uch x` and `~/bin/x` all run something
+	// none of the forms below name. Emitting "$C x" and letting a rule for
+	// touch fail to match it reported "no rule applies" for a command nobody
+	// could read; saying the reading is opaque is the only honest answer. The
+	// guesses inside the wrapper loop above are not judged this way — the word
+	// they emit is as likely to be the wrapper's own argument, and
+	// `env FOO=$BAR make test` is not an unreadable command.
+	if len(raw) > 0 && opaqueCommandWord(raw[0]) {
+		s.opaque = true
 	}
 	emit(fields)
 	// A command substitution runs a command list of its own, and the program
@@ -278,15 +321,9 @@ func normalizedFormsAt(command string, depth int) []string {
 	// which also covers one nested inside another.
 	for _, body := range substitutionBodies(command) {
 		for _, seg := range segments(body) {
-			for _, f := range normalizedFormsAt(seg, depth+1) {
-				if !seen[f] {
-					seen[f] = true
-					forms = append(forms, f)
-				}
-			}
+			s.scan(seg, depth+1)
 		}
 	}
-	return forms
 }
 
 // substitutionBodies returns the command lists inside a segment's
@@ -453,7 +490,17 @@ func unquoteWord(w string) string {
 			// yields the string itself when nothing is translated. In both the
 			// $ is not part of the word, and treating $"push" as a word
 			// containing a '$' is what let it past a deny rule for git push.
-			if i+1 >= len(w) || (w[i+1] != '\'' && w[i+1] != '"') {
+			if i+1 < len(w) && w[i+1] == '\'' {
+				// Inside $'…' a backslash is an escape with a value, not a way
+				// of writing the next byte: $'\164ouch' and $'\x74ouch' are
+				// both `touch`, and stripping the backslash left "164ouch",
+				// which no rule for touch matched and which ran under bypass.
+				text, end := ansiCString(w, i+1)
+				b.WriteString(text)
+				i = end
+				continue
+			}
+			if i+1 >= len(w) || w[i+1] != '"' {
 				b.WriteByte(w[i])
 			}
 		case '\'', '"':
@@ -462,6 +509,106 @@ func unquoteWord(w string) string {
 		}
 	}
 	return b.String()
+}
+
+// ansiCString decodes the $'…' beginning at the quote at open, and returns
+// what it yields and the index of the closing quote. An unterminated run ends
+// at the end of the word, which is what a shell reports as an error and what
+// leaves the fewest bytes unread here.
+func ansiCString(w string, open int) (string, int) {
+	var b strings.Builder
+	for i := open + 1; i < len(w); i++ {
+		if w[i] == '\'' {
+			return b.String(), i
+		}
+		if w[i] != '\\' || i+1 >= len(w) {
+			b.WriteByte(w[i])
+			continue
+		}
+		i++
+		switch c := w[i]; c {
+		case 'a':
+			b.WriteByte(7)
+		case 'b':
+			b.WriteByte(8)
+		case 'e', 'E':
+			b.WriteByte(27)
+		case 'f':
+			b.WriteByte(12)
+		case 'n':
+			b.WriteByte('\n')
+		case 'r':
+			b.WriteByte('\r')
+		case 't':
+			b.WriteByte('\t')
+		case 'v':
+			b.WriteByte(11)
+		case 'x', 'u', 'U':
+			// Hex, in the widths bash accepts. A \u is written out as UTF-8,
+			// so a rule matching plain text sees the same bytes the shell
+			// hands the kernel.
+			width := map[byte]int{'x': 2, 'u': 4, 'U': 8}[c]
+			n, digits := 0, 0
+			for digits < width && i+1 < len(w) && isHexDigit(w[i+1]) {
+				n = n*16 + hexValue(w[i+1])
+				i, digits = i+1, digits+1
+			}
+			if digits == 0 {
+				b.WriteByte(c) // not an escape after all: $'\xz' is "xz"
+			} else if c == 'x' {
+				b.WriteByte(byte(n))
+			} else {
+				b.WriteRune(rune(n))
+			}
+		case '0', '1', '2', '3', '4', '5', '6', '7':
+			n, digits := 0, 0
+			for digits < 3 && i < len(w) && w[i] >= '0' && w[i] <= '7' {
+				n = n*8 + int(w[i]-'0')
+				i, digits = i+1, digits+1
+			}
+			i-- // the loop above stepped past the last digit
+			b.WriteByte(byte(n))
+		case 'c':
+			// \cX is the control character for X; \c\ is a spelling of it too.
+			if i+1 < len(w) {
+				i++
+				b.WriteByte(w[i] & 0x1f)
+			}
+		default:
+			b.WriteByte(c) // \\ , \' , \" and anything else stand for themselves
+		}
+	}
+	return b.String(), len(w) - 1
+}
+
+func isHexDigit(c byte) bool {
+	return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+}
+
+func hexValue(c byte) int {
+	switch {
+	case c >= '0' && c <= '9':
+		return int(c - '0')
+	case c >= 'a' && c <= 'f':
+		return int(c-'a') + 10
+	default:
+		return int(c-'A') + 10
+	}
+}
+
+// opaqueCommandWord reports whether the shell rewrites a word before it
+// becomes a command name, so that what runs cannot be read off the text.
+//
+// The one exception is the test builtin: `[ -f x ] && …` begins a segment with
+// a bracket, which expandsWord reads as the start of a glob. A lone bracket
+// has no closing one to pair with, so the shell leaves it alone and runs
+// `[` — and treating every `if [ -f x ]` as unreadable would put a deny rule
+// for one command in front of a construct that has nothing to do with it.
+func opaqueCommandWord(w string) bool {
+	if w == "[" || w == "[[" {
+		return false
+	}
+	return expandsWord(w)
 }
 
 // transparentWrappers run their arguments as a command, so the program that
@@ -516,10 +663,20 @@ func (e *Executor) ruleFor(tool, subject string) string {
 			return r.act
 		}
 		if tool == "bash" && (r.act == RuleDeny || r.act == RuleAsk) {
-			for _, norm := range normalizedForms(subject) {
+			forms, opaque := normalizedForms(subject)
+			for _, norm := range forms {
 				if norm != subject && e.matchSubject(r, tool, norm) {
 					return r.act
 				}
+			}
+			// The forms did not match, and they could not be completed: the
+			// command word is built at runtime, or the nesting ran past the
+			// budget. "No form matched" is then not a finding about this
+			// command, and reading it as one is how `$($($(…$(touch pwned)…)))`
+			// and `C=touch; $C pwned` walked past a rule for touch. The rule the
+			// user wrote decides what happens to a command nobody can read.
+			if opaque {
+				return r.act
 			}
 		}
 	}

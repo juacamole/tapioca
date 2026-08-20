@@ -35,17 +35,49 @@ func (c *Config) TrustedHooks(cwd string) ([]HookConfig, error) {
 	}
 	if c.insideTree(cwd) {
 		return nil, fmt.Errorf("ignoring %d hook(s): %s is inside the working tree, "+
-			"where a repository could have committed it — move them to %s",
-			len(c.Hooks), c.Path(), DefaultPath())
+			"where a repository could have committed it — %s",
+			len(c.Hooks), c.Path(), c.remedy())
 	}
 	return c.Hooks, nil
+}
+
+// remedy is what the user can do about a refusal. Naming DefaultPath() is the
+// answer when the config was aimed at from somewhere else — a committed
+// config.toml, a --settings inside the checkout. It is not the answer when the
+// file already is the default one, which happens for real: XDG_CONFIG_HOME
+// pointed at a versioned dotfiles directory, worked on from inside that
+// directory. Telling that user to move the file to the path it is already at
+// is a message that reads as a bug, and a policy nobody can act on gets turned
+// off rather than followed.
+func (c *Config) remedy() string {
+	if resolveReal(c.Path()) == resolveReal(DefaultPath()) {
+		return "the configuration directory is itself inside this tree — " +
+			"keep it outside the directories you work in, or unset XDG_CONFIG_HOME/TAPIOCA_CONFIG_DIR here"
+	}
+	return "move it to " + DefaultPath()
 }
 
 // insideTree reports whether the file this config was loaded from lives in the
 // tree being worked on, and so was possibly written by whoever produced that
 // tree.
-func (c *Config) insideTree(cwd string) bool {
-	path := resolveReal(c.Path())
+func (c *Config) insideTree(cwd string) bool { return InsideTree(c.Path(), cwd) }
+
+// InsideTree is insideTree for a file that is not the config: --mcp-config
+// names [[mcp]] servers, which are programs started at launch, and it was the
+// one way of pointing at such a file that nothing checked. --settings aimed at
+// a committed config.toml is refused; the same file handed to --mcp-config was
+// honoured in full, which made the refusal a matter of which flag was typed.
+func InsideTree(file, cwd string) bool {
+	// A relative path is relative to the directory being worked in, which is
+	// the same directory the tree is measured from. resolveReal would make it
+	// absolute against the process's own, and the two being the same in every
+	// call today is an invariant nothing states and nothing enforces.
+	if file != "" && !filepath.IsAbs(file) {
+		if abs, err := filepath.Abs(cwd); err == nil {
+			file = filepath.Join(abs, file)
+		}
+	}
+	path := resolveReal(file)
 	// The config at the home-directory location is the user's own by
 	// construction: an extracted archive cannot write there, because getting a
 	// file read as the config is exactly what redirecting XDG_CONFIG_HOME or
@@ -129,8 +161,8 @@ func (c *Config) RestrictIfInsideTree(cwd string) []string {
 		}
 		clear()
 		notes = append(notes, fmt.Sprintf("ignoring %s: %s is inside the working tree, "+
-			"where a repository could have committed it — move it to %s",
-			what, c.Path(), DefaultPath()))
+			"where a repository could have committed it — %s",
+			what, c.Path(), c.remedy()))
 	}
 	drop(len(c.MCP) > 0, "mcp server(s)", func() { c.MCP = nil })
 	drop(len(c.LSP) > 0, "language server(s)", func() { c.LSP = nil })
