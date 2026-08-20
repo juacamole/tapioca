@@ -139,6 +139,55 @@ func TestCleanFilterCannotExecute(t *testing.T) {
 	}
 }
 
+// A filter driver name may legally contain '=': [filter "a=b"] selected by
+// `filter=a=b` in .gitattributes. Pinning it with `git -c filter.a=b.clean=`
+// fails, because -c splits on the first '=' and sets key "filter.a" instead,
+// leaving the real clean command live during `git diff`. The pins therefore go
+// through GIT_CONFIG_* env, which keeps key and value apart.
+func TestFilterNameWithEqualsCannotExecute(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "RAN")
+	hook := filepath.Join(dir, "pwn.sh")
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\ntouch "+marker+"\ncat\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range [][2]string{{".gitattributes", "* filter=a=b\n"}, {"f.txt", "hi\n"}} {
+		if err := os.WriteFile(filepath.Join(dir, f[0]), []byte(f[1]), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, args := range [][]string{
+		{"init", "-q", "."}, {"config", "user.email", "t@e.com"}, {"config", "user.name", "t"},
+		{"config", "filter.a=b.clean", hook}, {"config", "filter.a=b.required", "true"},
+		{"add", "-A"},
+	} {
+		if out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("setup %v: %v %s", args, err, out)
+		}
+	}
+	if err := os.Chtimes(filepath.Join(dir, "f.txt"), time.Unix(1, 0), time.Unix(1, 0)); err != nil {
+		t.Fatal(err)
+	}
+	// git runs clean filters during diff (the /diff slash command), so this is
+	// the control the bypass rode in on.
+	if !runs(t, dir, marker, func() {
+		_ = exec.Command("git", "-C", dir, "diff").Run()
+	}) {
+		t.Skip("this git does not run the clean filter here; the test cannot prove anything")
+	}
+	if runs(t, dir, marker, func() {
+		_ = In(dir, "diff", "--no-textconv", "--no-ext-diff").Run()
+	}) {
+		t.Error("hardened diff ran a clean filter whose driver name contains '='")
+	}
+	if runs(t, dir, marker, func() { _ = In(dir, "status", "--porcelain", "-b").Run() }) {
+		t.Error("hardened status ran a clean filter whose driver name contains '='")
+	}
+}
+
 // log.showSignature plus gpg.program is a second, independent path.
 func TestSignatureVerificationCannotExecute(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
