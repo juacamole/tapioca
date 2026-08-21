@@ -1614,10 +1614,13 @@ func (e *Executor) writeFile(raw json.RawMessage) (Result, error) {
 }
 
 // readText returns a file's contents for diffing, and whether it existed.
-// Binary files diff to nothing useful, so they report as absent.
+// Binary files diff to nothing useful, so they report as absent — and so does
+// anything past maxReadBytes, for the reason stated there: this read served a
+// display-only diff and had no cap, so overwriting a file the repository sized
+// asked the allocator for all of it before a byte was written.
 func readText(path string) (string, bool) {
-	data, err := os.ReadFile(path)
-	if err != nil {
+	data, err := readCapped(path)
+	if err != nil || len(data) >= maxReadBytes {
 		return "", false
 	}
 	text, isText := textenc.Decode(data)
@@ -1627,12 +1630,27 @@ func readText(path string) (string, bool) {
 	return text, true
 }
 
+// maxKeptOps caps the ops a FileChange carries. diff produces one Op per line
+// on both sides, and a FileChange is held in the transcript for the rest of the
+// session while FormatChange shows forty lines of it. Overwriting a 15 MiB file
+// — under read_file's cap, so nothing above refuses it — built 358,502 Ops and
+// held 20 MB of them per call, for a display that is forty lines long. The
+// counts are taken before the cut, so the "+N -M" header stays exact.
+const maxKeptOps = 2000
+
 // change builds the display-only diff for an edit.
 func (e *Executor) change(path, before, after string, created bool) *FileChange {
 	ops := diff.Lines(before, after)
 	added, removed := diff.Stats(ops)
 	if added == 0 && removed == 0 {
 		return nil
+	}
+	if len(ops) > maxKeptOps {
+		// Copied rather than resliced: a reslice keeps the whole backing array
+		// alive, which is the memory this cap exists to give back.
+		kept := make([]diff.Op, maxKeptOps)
+		copy(kept, ops)
+		ops = kept
 	}
 	return &FileChange{
 		Path:    e.relative(path),
@@ -1660,9 +1678,17 @@ func (e *Executor) editFile(raw json.RawMessage) (Result, error) {
 	if e.changedExternally(path) {
 		return Result{Text: staleFileMsg(a.Path), IsErr: true}, nil
 	}
-	data, err := os.ReadFile(path)
+	// readCapped, not os.ReadFile: read_file stops at maxReadBytes because a
+	// file the process cannot hold kills the TUI, and edit_file opened the same
+	// repository-chosen path with no cap at all. A file past the cap is refused
+	// rather than truncated — read_file could not have shown old_string past
+	// the cap either, and writing back a prefix would delete the rest.
+	data, err := readCapped(path)
 	if err != nil {
 		return Result{Text: err.Error(), IsErr: true}, nil
+	}
+	if len(data) >= maxReadBytes {
+		return Result{Text: fmt.Sprintf("%s is larger than %d bytes; too big to edit in one piece", a.Path, maxReadBytes), IsErr: true}, nil
 	}
 	// Match against the same decoded text read_file shows, or UTF-16 files
 	// are uneditable and Latin-1 files get UTF-8 spliced into them.

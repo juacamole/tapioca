@@ -17,6 +17,10 @@ import (
 	"tapioca/internal/httpsafe"
 )
 
+// maxBodyBytes caps one non-streaming response body, matching the stdio
+// scanner's line cap so the same message is oversized on either transport.
+const maxBodyBytes = 16 << 20
+
 // httpTransport speaks the streamable HTTP transport: every message is POSTed
 // to one endpoint, and the reply is either a JSON body or an SSE stream.
 type httpTransport struct {
@@ -102,9 +106,19 @@ func (h *httpTransport) Send(ctx context.Context, data []byte) error {
 		return nil
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 16*1024*1024))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes+1))
 	if err != nil {
 		return err
+	}
+	// One byte over the cap is reported, not truncated. A truncated body is
+	// never valid JSON, so dispatch dropped it without a word and the caller
+	// sat on its pending channel until its own deadline — thirty seconds of a
+	// wedged turn for a reply the transport had already decided to throw away.
+	// stdio answers the same question by tearing the connection down the moment
+	// a line exceeds its scanner, and the caller gets "server exited" at once;
+	// the two transports must not disagree about what an oversized message is.
+	if len(body) > maxBodyBytes {
+		return fmt.Errorf("response body exceeds %d bytes", maxBodyBytes)
 	}
 	h.dispatch(body)
 	return nil
