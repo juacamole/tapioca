@@ -2122,12 +2122,23 @@ func (m *App) renderPerm(w, h int) string {
 	if a := m.mgr.ByID(e.agentID); a != nil {
 		name = a.Name
 	}
+	// Every line of this box has to fit the box, or the box stops fitting the
+	// screen. The summary was wrapped for that reason; the tool name was not,
+	// and it is model-chosen too — an MCP call's key is "mcp:" plus whatever
+	// name the model emitted, and an unrecognised name reaches that branch as
+	// well. `mcp:` and three thousand characters made a 100-column terminal
+	// render a 3063-column box: every line wraps thirty times, the summary and
+	// the [y]/[a]/[n] footer scroll away, and what is left on screen is the
+	// padding. That is the same failure the summary's truncation exists to
+	// prevent, arriving by the line above it.
+	labelW := max(10, min(80, w-16))
+	boxW := max(10, w-8) // what is left after the border and the padding
 	var b strings.Builder
 	b.WriteString(styPanelTitle.Render("permission required") +
 		styDim.Render("  ("+truncate(sanitizeLabel(name), 40)+")") + "\n\n")
-	b.WriteString(styTool.Render("tool: "+sanitizeLabel(e.req.Tool)) + "\n")
+	b.WriteString(styTool.Render("tool: "+truncate(sanitizeLabel(e.req.Tool), labelW)) + "\n")
 	summary := sanitizeText(e.req.Summary)
-	lines := strings.Split(wrapPlain(summary, min(80, w-16)), "\n")
+	lines := strings.Split(wrapPlain(summary, labelW), "\n")
 	// The box cannot grow past the screen, so a long enough command has a part
 	// nobody sees, and the model chooses which part that is: `printf '<1200
 	// A's>' > ~/.ssh/authorized_keys` drew ten lines of padding and a quiet
@@ -2158,14 +2169,29 @@ func (m *App) renderPerm(w, h int) string {
 	case strings.HasPrefix(e.req.Tool, "web_fetch"):
 		always = "this host"
 	}
-	b.WriteString("\n" + styOK.Render("[y]") + " allow once   " +
-		styWarn.Render("[a]") + " always allow " + always)
+	// The choices are the point of the box, so the footer is measured and the
+	// only part of it that can grow — the tool's name — is what gives way. The
+	// clip below would otherwise take "[n] deny" off the end instead, which is
+	// the one thing on screen that must never be missing.
+	head := styOK.Render("[y]") + " allow once   " + styWarn.Render("[a]") + " always allow "
+	prefix := ""
 	if e.req.Tool == "bash" && tools.PrefixGrantable(e.req.Summary) {
-		b.WriteString("   " + styAccent.Render("[p]") + " always allow " +
-			sanitizeLabel(tools.PrefixSuggestion(e.req.Summary)) + " *")
+		prefix = "   " + styAccent.Render("[p]") + " always allow " +
+			truncate(sanitizeLabel(tools.PrefixSuggestion(e.req.Summary)), 24) + " *"
 	}
-	b.WriteString("   " + styErr.Render("[n]") + " deny")
-	box := borderStyle(true).Padding(1, 2).Render(b.String())
+	deny := "   " + styErr.Render("[n]") + " deny"
+	room := boxW - lipgloss.Width(head) - lipgloss.Width(prefix) - lipgloss.Width(deny)
+	b.WriteString("\n" + head + truncate(always, max(6, room)) + prefix + deny)
+	// Whatever the lines above turned out to be, the box has to fit the screen:
+	// Place centres an oversized box, it does not clip it, and a box wider than
+	// the terminal wraps every one of its lines and scrolls the choices away.
+	// The clip is width-aware where truncate() counts runes, so a name made of
+	// wide characters cannot pass the clamps above and still overflow here.
+	lines = strings.Split(b.String(), "\n")
+	for i, l := range lines {
+		lines[i] = clipANSI(l, boxW)
+	}
+	box := borderStyle(true).Padding(1, 2).Render(strings.Join(lines, "\n"))
 	return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, box)
 }
 

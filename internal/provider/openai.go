@@ -440,7 +440,11 @@ func (o *OpenAI) Stream(ctx context.Context, req Request, out chan<- Event) (Mes
 					}
 					b.name = tc.Function.Name
 				}
-				streamed += len(tc.Function.Arguments) + len(tc.Function.Name)
+				// The id is retained like the arguments and the name, and was
+				// the one field missing from the sum: four thousand tool calls
+				// each carrying an eight-megabyte id stayed under a cap that
+				// never saw them.
+				streamed += len(tc.Function.Arguments) + len(tc.Function.Name) + len(tc.ID)
 				if overLimit(streamed) {
 					return finish(), fmt.Errorf("response exceeded %d bytes; stopping", maxResponseBytes)
 				}

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"tapioca/internal/config"
+	"tapioca/internal/httpsafe"
 )
 
 // httpTransport speaks the streamable HTTP transport: every message is POSTed
@@ -45,8 +46,11 @@ func (c *Client) startHTTP(cfg config.MCPServerConfig) error {
 		url:     strings.TrimSpace(cfg.URL),
 		headers: headers,
 		// No overall timeout: SSE responses stay open. Per-request contexts
-		// bound each call instead.
-		client: &http.Client{Timeout: 0},
+		// bound each call instead. CheckRedirect is what keeps the configured
+		// headers — the documented place for an ${API_TOKEN} — and the
+		// Mcp-Session-Id from being carried to whatever host the server's 302
+		// names; net/http strips only Authorization and the cookie headers.
+		client: &http.Client{Timeout: 0, CheckRedirect: httpsafe.SameOrigin},
 		c:      c,
 	}
 	if UsesOAuth(cfg) {

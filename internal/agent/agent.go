@@ -498,7 +498,11 @@ func (a *Agent) run(ctx context.Context, rs runSettings, history []provider.Mess
 				req.Model = rs.model
 				a.emit(Event{Kind: EvFallback, Err: streamErr,
 					Provider: next.providerName, Model: next.model})
-				attempt = -1 // the loop's ++ makes this the first attempt there
+				// The loop's ++ runs before the next pass, and the loop's first
+				// attempt is 1 — so this is 0, not -1. At -1 the fallback's
+				// first pass was attempt 0, and RetryDelay shifts by
+				// attempt-1, which is a panic rather than a delay.
+				attempt = 0
 				continue
 			}
 			if msg.Usage != nil {
@@ -525,7 +529,10 @@ func (a *Agent) run(ctx context.Context, rs runSettings, history []provider.Mess
 			total.CacheWriteTokens += msg.Usage.CacheWriteTokens
 		}
 		if total != (provider.Usage{}) {
-			u := total
+			// The counts stop being something a server said and start being
+			// something the dashboard divides by, so this is where they are
+			// made believable. See provider.Usage.Clamp.
+			u := total.Clamp()
 			a.emit(Event{Kind: EvUsage, Usage: &u, Provider: rs.providerName, Model: rs.model, Dur: dur})
 		}
 

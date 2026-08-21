@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"tapioca/internal/config"
+	"tapioca/internal/httpsafe"
 	"tapioca/internal/secretenv"
 )
 
@@ -105,7 +106,7 @@ func newOAuthSource(cfg config.MCPServerConfig) (*oauthSource, error) {
 		name:     cfg.Name,
 		resource: resource,
 		store:    store,
-		hc:       &http.Client{Timeout: oauthHTTPTimeout},
+		hc:       &http.Client{Timeout: oauthHTTPTimeout, CheckRedirect: httpsafe.SameOrigin},
 		rec:      rec,
 	}, nil
 }
@@ -588,7 +589,11 @@ func StartLogin(ctx context.Context, cfg config.MCPServerConfig) (*Authorization
 	if err != nil {
 		return nil, fmt.Errorf("mcp %s: %w", cfg.Name, err)
 	}
-	hc := &http.Client{Timeout: oauthHTTPTimeout}
+	// checkOAuthURL only ever judges the URL that was configured or discovered.
+	// A token exchange POSTs client_secret and refresh_token from a rewindable
+	// reader, so net/http replays the whole body on a 307 — to a host that was
+	// never checked, over a scheme https-only was written to require.
+	hc := &http.Client{Timeout: oauthHTTPTimeout, CheckRedirect: httpsafe.SameOrigin}
 	store := newTokenStore()
 	rec, _ := store.load(resource) // reuse an earlier client registration
 	rec.Resource = resource
