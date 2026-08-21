@@ -81,6 +81,21 @@ func (m *Manager) ResolveFallbacks(a *Agent) []string {
 	return problems
 }
 
+// UseModel points an agent at a "[provider:]model" reference, resolving the
+// provider it names. It lives here so that every caller of --model reads the
+// reference the same way: the TUI, a headless run and an ACP session are three
+// places asking one question, and three answers to it is how one of them ends
+// up on a different model from the one the user typed.
+func (m *Manager) UseModel(a *Agent, ref, fallbackProvider string) error {
+	provName, model := m.splitRef(ref, fallbackProvider)
+	p, err := m.ProviderFor(provName)
+	if err != nil {
+		return err
+	}
+	a.Provider, a.ProviderName, a.ProviderErr, a.Model = p, provName, "", model
+	return nil
+}
+
 // splitRef reads "[provider:]model", falling back to the given provider. A
 // prefix naming no configured provider belongs to the model name: gateway ids
 // look like "anthropic/claude-opus-5".

@@ -35,6 +35,15 @@ type Launch struct {
 	PermissionMode string   // --permission-mode, --dangerously-skip-permissions
 	ExtraDirs      []string // --add-dir
 	BashTimeout    time.Duration
+	// The rest of what the command line decides about an agent. These were
+	// applied at the bottom of Main, onto a manager built after the branch that
+	// starts this server returns — the very thing the paragraph above says goes
+	// wrong. `tapioca --acp --model anthropic:claude-opus-5` ran whatever
+	// default_model said, and with no default_model at all every session was
+	// refused with "no model configured" while the flag naming one went unread.
+	Model        string // --model
+	SystemPrompt string // --system-prompt
+	AppendSystem string // --append-system-prompt
 }
 
 // Server serves one ACP connection. Each session/new gets its own agent,
@@ -202,6 +211,22 @@ func (s *Server) handleNewSession(msg *rpcMsg) {
 
 	mgr := agent.NewManager(&cfg, reg, exec)
 	a := mgr.NewAgent()
+	// The flags outrank the file here as they do everywhere else, and they are
+	// read through the manager's own helper rather than a second reading of
+	// "[provider:]model" written out again in this package.
+	if s.launch.Model != "" {
+		if err := mgr.UseModel(a, s.launch.Model, cfg.DefaultProvider); err != nil {
+			reg.CloseAll()
+			s.conn.fail(msg.ID, -32603, err.Error())
+			return
+		}
+	}
+	if s.launch.SystemPrompt != "" {
+		a.SystemPrompt = s.launch.SystemPrompt
+	}
+	if s.launch.AppendSystem != "" {
+		a.SystemPrompt += "\n\n" + s.launch.AppendSystem
+	}
 	if a.ProviderErr != "" {
 		reg.CloseAll()
 		s.conn.fail(msg.ID, -32603, a.ProviderErr)

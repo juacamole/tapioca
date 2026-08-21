@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 )
 
 // Everything else in this file is a preference; a hook is a command that runs
@@ -34,7 +35,7 @@ func (c *Config) TrustedHooks(cwd string) ([]HookConfig, error) {
 		return nil, nil
 	}
 	if c.insideTree(cwd) {
-		return nil, fmt.Errorf("ignoring %d hook(s): %s is inside the working tree, "+
+		return nil, fmt.Errorf("ignoring %d hook(s): %s is inside a working tree opened in this session, "+
 			"where a repository could have committed it — %s",
 			len(c.Hooks), c.Path(), c.remedy())
 	}
@@ -61,6 +62,34 @@ func (c *Config) remedy() string {
 // tree being worked on, and so was possibly written by whoever produced that
 // tree.
 func (c *Config) insideTree(cwd string) bool { return InsideTree(c.Path(), cwd) }
+
+// tainted remembers every file this process has already judged as inside a
+// working tree, because that judgement is not about where the user is standing.
+//
+// "Could this file have been written by the tree that shipped it" is permanent;
+// "is it under the directory being worked on right now" is not, and only the
+// second question was being asked. /cd changes the working directory and
+// applyReload then re-reads the same file from disk with nothing withheld, so
+// walking out of the tree handed every withdrawn key back: [[hooks]], [[lsp]]
+// command, editor, bash_allow, permissions.allow and permission_mode.
+//
+// It takes no code execution to reach. A repository's README says to run
+// `tapioca --settings ./tapioca.toml`; the launch warning fires and everything
+// that executes is withdrawn, exactly as designed. Then the user gives up on
+// that checkout and types /cd ~/work/real-project — which is what the refusal
+// message all but tells them to do — and the repository's language server
+// starts, its editor is one keystroke away, and the session is in bypass.
+//
+// The cost is a user whose config lives in a versioned dotfiles directory they
+// also work in: opening that directory once withdraws those keys for the rest
+// of the session, and a restart is what brings them back. The default location
+// is exempt above, so this is only the case where the file is somewhere else,
+// which is the case the whole rule is about. A withdrawal that a walk across
+// the filesystem undoes is not a withdrawal.
+var (
+	taintedMu    sync.Mutex
+	taintedFiles = map[string]bool{}
+)
 
 // InsideTree is insideTree for a file that is not the config: --mcp-config
 // names [[mcp]] servers, which are programs started at launch, and it was the
@@ -90,8 +119,14 @@ func InsideTree(file, cwd string) bool {
 			return false
 		}
 	}
+	taintedMu.Lock()
+	defer taintedMu.Unlock()
+	if taintedFiles[path] {
+		return true
+	}
 	for _, root := range treeRoots(cwd) {
 		if under(path, root) {
+			taintedFiles[path] = true
 			return true
 		}
 	}
@@ -167,7 +202,7 @@ func (c *Config) RestrictIfInsideTree(cwd string) []string {
 			return
 		}
 		clear()
-		notes = append(notes, fmt.Sprintf("ignoring %s: %s is inside the working tree, "+
+		notes = append(notes, fmt.Sprintf("ignoring %s: %s is inside a working tree opened in this session, "+
 			"where a repository could have committed it — %s",
 			what, c.Path(), c.remedy()))
 	}

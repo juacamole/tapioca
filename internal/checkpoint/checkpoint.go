@@ -46,16 +46,21 @@ func run(workTree string, args ...string) (string, error) {
 	// pre-commit hook runs on the next mutating tool call — in this session and
 	// in every later one, which makes it a way to keep execution that a single
 	// approved write bought. hooksPath is pinned away for that, and fsmonitor
-	// because `add -A` would run it too. Signing is turned off rather than left
-	// alone: a user whose global config signs every commit does not want gpg
-	// invoked by a snapshot, and pinning gpg.program instead would only make
-	// the commit fail. It gets the same filtered environment as every other
-	// child.
-	// The whole static list, not a shorter one of its own: this is the same
-	// question gitcmd answers, and two answers to it means the shorter is the
-	// one that runs here. gpgSign is the one addition — a user whose global
-	// config signs every commit does not want gpg invoked by a snapshot, and
-	// pinning gpg.program alone would only make the commit fail.
+	// because `add -A` would run it too. It gets the same filtered environment
+	// as every other child.
+	//
+	// gitcmd's whole static list, rather than a shorter one of its own: which
+	// keys name a program is a question with one answer, and two lists is how
+	// the shorter one ends up being the list that runs. It is not gitcmd's
+	// *complete* answer, which also enumerates the repository's own keys — that
+	// pass reads the config of the repo it is pointed at, and this runs against
+	// a git dir under the data dir, where the worktree's config is never a
+	// source. A filter defined in a scope the shadow repo does read (the user's
+	// global config) is still live here; nothing in the tree can write one.
+	//
+	// gpgSign is the one addition: a user whose global config signs every
+	// commit does not want gpg invoked by a snapshot, and pinning gpg.program
+	// alone would only make the commit fail.
 	pins := append(gitcmd.StaticPins(),
 		gitcmd.Pin{Key: "commit.gpgSign", Value: "false"},
 	)

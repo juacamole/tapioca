@@ -35,6 +35,34 @@ const maxImportDepth = 3
 // sparse 200MB AGENTS.md is 4KB in a clone and allocated gigabytes here.
 const maxInstructionFile = 1 << 20
 
+// maxImportBytes bounds every file one Instructions() call reads, added
+// together. The two caps above bound the ends and nothing bounded the middle:
+// each expanded body is held in place until the join, so the peak is the sum
+// of all of them and only 80 KB of it survives.
+//
+// One symlink is enough to make that sum unbounded. `d -> .` is a link git
+// stores and tar carries, so d/big.md, d/d/big.md, d/d/d/big.md … name one
+// megabyte through as many distinct paths as there is room to write down —
+// distinct after Clean, which cannot fold a component that is a link, so the
+// `seen` map (keyed on the path, not on the file) never fires, and each one
+// really does resolve inside the project and really does end .md. A 600 KB
+// checkout allocated 281 MB; the ceiling is the megabyte AGENTS.md itself is
+// capped at, which is tens of thousands of lines. Instructions() runs while the
+// system prompt is built, before the user has typed anything, with no deadline
+// and nothing to cancel.
+//
+// Fifty times what can survive the join, so nothing anyone composes on purpose
+// meets it.
+const maxImportBytes = 4 << 20
+
+// importState is what one Instructions() call carries down the expansion: the
+// paths already read, so a cycle ends, and the bytes left to spend, so a
+// fan-out does.
+type importState struct {
+	seen   map[string]bool
+	budget int
+}
+
 // readCapped reads at most limit bytes of a regular file.
 //
 // The kind of file is decided before it is opened, not after. Opening a FIFO
@@ -65,7 +93,7 @@ func readCapped(path string, limit int64) ([]byte, error) {
 // nearest directory wins by coming last.
 func Instructions(cwd string) string {
 	var parts []string
-	seen := map[string]bool{}
+	st := &importState{seen: map[string]bool{}, budget: maxImportBytes}
 	dirs := ancestry(cwd)
 	// One root per instruction file, not the union of both. A union let a file
 	// in the project read out of the config directory, which is where the
@@ -80,17 +108,17 @@ func Instructions(cwd string) string {
 
 	add := func(path string, roots importRoots) {
 		abs, err := filepath.Abs(path)
-		if err != nil || seen[abs] {
+		if err != nil || st.seen[abs] {
 			return
 		}
-		seen[abs] = true
+		st.seen[abs] = true
 		// The file itself gets the check its imports get. Confining @import
 		// while reading AGENTS.md unresolved left the shorter version of the
 		// same exploit open: make AGENTS.md a symlink and skip the import.
 		if !roots.mayRead(abs) {
 			return
 		}
-		text, ok := readInstruction(abs, seen, 0, roots)
+		text, ok := readInstruction(abs, st, 0, roots)
 		if !ok {
 			return
 		}
@@ -286,7 +314,14 @@ func resolveReal(p string) string {
 }
 
 // readInstruction reads one file and resolves its @imports.
-func readInstruction(path string, seen map[string]bool, depth int, roots importRoots) (string, bool) {
+//
+// The budget is charged here rather than at either call site, because every
+// byte this call gathers goes through it exactly once — the ancestry's own
+// files and everything they import alike.
+func readInstruction(path string, st *importState, depth int, roots importRoots) (string, bool) {
+	if st.budget <= 0 {
+		return "", false
+	}
 	data, err := readCapped(path, maxInstructionFile)
 	if err != nil {
 		return "", false
@@ -295,13 +330,15 @@ func readInstruction(path string, seen map[string]bool, depth int, roots importR
 	if !ok || strings.TrimSpace(text) == "" {
 		return "", false
 	}
-	return strings.TrimSpace(expandImports(text, filepath.Dir(path), seen, depth, roots)), true
+	st.budget -= len(text)
+	return strings.TrimSpace(expandImports(text, filepath.Dir(path), st, depth, roots)), true
 }
 
 // expandImports replaces a line that is exactly "@path" with that file's
 // contents, so a long instruction file can be split up. Cycles and runaway
-// nesting are bounded by seen and depth; roots bound where it may read.
-func expandImports(text, dir string, seen map[string]bool, depth int, roots importRoots) string {
+// nesting are bounded by seen and depth, breadth by the budget; roots bound
+// where it may read.
+func expandImports(text, dir string, st *importState, depth int, roots importRoots) string {
 	if depth >= maxImportDepth || !strings.Contains(text, "@") {
 		return text
 	}
@@ -311,16 +348,22 @@ func expandImports(text, dir string, seen map[string]bool, depth int, roots impo
 		if !strings.HasPrefix(trimmed, "@") || len(trimmed) < 2 || strings.ContainsAny(trimmed, " \t") {
 			continue
 		}
+		if st.budget <= 0 {
+			// Said out loud, like the refusal below: a file that quietly stops
+			// being included looks exactly like one nobody wrote down.
+			lines[i] = "[imports truncated: too much text]"
+			continue
+		}
 		target := expandHome(strings.TrimPrefix(trimmed, "@"))
 		if !filepath.IsAbs(target) {
 			target = filepath.Join(dir, target)
 		}
 		abs, err := filepath.Abs(target)
-		if err != nil || seen[abs] {
+		if err != nil || st.seen[abs] {
 			lines[i] = ""
 			continue
 		}
-		seen[abs] = true
+		st.seen[abs] = true
 		if !roots.mayRead(abs) {
 			// Named rather than dropped: a silent refusal looks identical to a
 			// typo, and this one is worth noticing. The path is left out on
@@ -328,7 +371,7 @@ func expandImports(text, dir string, seen map[string]bool, depth int, roots impo
 			lines[i] = "[import refused: outside the project]"
 			continue
 		}
-		if body, ok := readInstruction(abs, seen, depth+1, roots); ok {
+		if body, ok := readInstruction(abs, st, depth+1, roots); ok {
 			lines[i] = body
 		} else {
 			lines[i] = ""

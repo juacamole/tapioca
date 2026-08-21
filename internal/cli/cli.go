@@ -306,8 +306,11 @@ func Main() {
 		// never writes them — and ACP builds its executors in its own package,
 		// so anything left in a local here reached the TUI and nothing else.
 		launch := acp.Launch{
-			ExtraDirs:   args.addDirs,
-			BashTimeout: time.Duration(cfg.BashTimeout) * time.Second,
+			ExtraDirs:    args.addDirs,
+			BashTimeout:  time.Duration(cfg.BashTimeout) * time.Second,
+			Model:        args.model,
+			SystemPrompt: args.systemPrompt,
+			AppendSystem: args.appendSystem,
 		}
 		if args.permMode != "" {
 			launch.PermissionMode = mode
@@ -397,18 +400,13 @@ func Main() {
 	}
 
 	if args.model != "" {
-		provName, model := cfg.DefaultProvider, args.model
-		if p, rest, ok := strings.Cut(args.model, ":"); ok {
-			if _, exists := cfg.Providers[p]; exists && rest != "" {
-				provName, model = p, rest
-			}
-		}
-		prov, err := mgr.ProviderFor(provName)
-		if err != nil {
-			fail(err)
-		}
+		// Through the manager's helper, which is also what the ACP sessions use:
+		// two readings of "[provider:]model" is how one of the two ends up on a
+		// different model from the one the user typed.
 		for _, a := range mgr.Agents {
-			a.Provider, a.ProviderName, a.ProviderErr, a.Model = prov, provName, "", model
+			if err := mgr.UseModel(a, args.model, cfg.DefaultProvider); err != nil {
+				fail(err)
+			}
 		}
 	}
 	if args.systemPrompt != "" || args.appendSystem != "" {
