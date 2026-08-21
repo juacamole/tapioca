@@ -18,6 +18,7 @@ import (
 
 	"tapioca/internal/config"
 	"tapioca/internal/secretenv"
+	"tapioca/internal/textenc"
 )
 
 // LSP frames messages with headers rather than newlines, so this cannot reuse
@@ -239,6 +240,14 @@ func (c *Client) readLoop(stdout io.Reader) {
 	}
 }
 
+// clip trims s to n bytes without splitting a rune, and says it did.
+func clip(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return textenc.Cut(s, n) + "…"
+}
+
 func (c *Client) handleDiagnostics(params json.RawMessage) {
 	var p struct {
 		URI         string `json:"uri"`
@@ -257,8 +266,12 @@ func (c *Client) handleDiagnostics(params json.RawMessage) {
 	if json.Unmarshal(params, &p) != nil {
 		return
 	}
-	list := make([]Diagnostic, 0, len(p.Diagnostics))
-	for _, d := range p.Diagnostics {
+	n := len(p.Diagnostics)
+	if n > maxStoredDiags {
+		n = maxStoredDiags
+	}
+	list := make([]Diagnostic, 0, n)
+	for _, d := range p.Diagnostics[:n] {
 		sev := d.Severity
 		if sev == 0 {
 			sev = SeverityError // the protocol lets servers omit it
@@ -267,8 +280,8 @@ func (c *Client) handleDiagnostics(params json.RawMessage) {
 			Line:     d.Range.Start.Line + 1, // LSP counts from zero
 			Column:   d.Range.Start.Character + 1,
 			Severity: sev,
-			Message:  strings.TrimSpace(d.Message),
-			Source:   d.Source,
+			Message:  clip(strings.TrimSpace(d.Message), maxDiagBytes),
+			Source:   clip(d.Source, 64),
 		})
 	}
 	c.mu.Lock()
@@ -361,6 +374,21 @@ const (
 	// maxTrackedFiles bounds the diagnostics map, whose keys come from the
 	// server. Dropping the lot is fine: diagnostics are re-published per edit.
 	maxTrackedFiles = 4096
+	// maxDiagBytes clips one diagnostic message. Every other bound here counts
+	// things — frames, header bytes, tracked files, and Format's twenty printed
+	// problems — and none of them bounds how long one message is. A message is
+	// the server's prose about bytes the repository wrote, and servers quote
+	// what they are complaining about: a hundred-thousand-character identifier
+	// or string literal comes back inside the error about it. Twenty of those
+	// are what edit_file appends to its result, which is what goes to the model
+	// and what the transcript keeps for the session.
+	maxDiagBytes = 2 << 10
+	// maxStoredDiags bounds how many problems are kept for one file. Format
+	// prints twenty and says how many more there are, so the number above this
+	// buys nothing and the set is held per URI, for as many URIs as
+	// maxTrackedFiles allows. A file with a thousand problems in it is already
+	// a file nobody is reading the count of.
+	maxStoredDiags = 1000
 )
 
 // readFrame reads one Content-Length framed message.

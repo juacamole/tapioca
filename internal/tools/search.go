@@ -2,9 +2,11 @@ package tools
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -214,6 +216,75 @@ func rgEnv() []string {
 	return out
 }
 
+// grepLines feeds path's lines to fn, numbered from 1, and stops when fn says
+// to. It exists because the walk used to slurp every file it visited.
+//
+// read_file caps its read at 16 MiB and writes down why: a file the process
+// cannot hold kills the TUI, and everything since the last save goes with it.
+// grep had no cap at all, and it is the search tool that needs no approval in
+// any mode — including plan mode, where nothing else can touch the disk. One
+// grep over a tree holding a single 64 MiB file asked the allocator for 160 MB,
+// and the file's size is the repository's to choose: a tarball ships that as a
+// sparse member, and git stores 64 MiB of one repeated line as a few kilobytes.
+//
+// Files within the cap are decoded whole, exactly as before, so UTF-16 and
+// Latin-1 trees still search the way they did. Past it the file is streamed a
+// line at a time — which is what ripgrep does, and the reason no machine with
+// rg installed ever saw this.
+func grepLines(path string, fn func(n int, line string) bool) {
+	f, err := os.Open(path)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return
+	}
+	if info.Size() <= maxReadBytes {
+		data, err := io.ReadAll(io.LimitReader(f, maxReadBytes+1))
+		if err != nil {
+			return
+		}
+		content, isText := textenc.Decode(data)
+		if !isText {
+			return
+		}
+		for n, line := range strings.Split(content, "\n") {
+			if !fn(n+1, line) {
+				return
+			}
+		}
+		return
+	}
+	head := make([]byte, 8<<10)
+	n, _ := io.ReadFull(f, head)
+	// A NUL anywhere in the head takes the file out: either Decode calls it
+	// binary, or it calls it UTF-16, and a UTF-16 file cannot be scanned as
+	// bytes — the pattern would never match and every "line" would be one NUL
+	// away from the last. Under the cap that case is still decoded properly;
+	// over it, "no matches" beats matches that mean nothing.
+	if bytes.IndexByte(head[:n], 0) >= 0 {
+		return
+	}
+	if _, isText := textenc.Decode(head[:n]); !isText {
+		return
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return
+	}
+	sc := bufio.NewScanner(f)
+	// A line longer than this ends the scan rather than growing a buffer to
+	// hold it: a file with no newline in it is one line, and its length is the
+	// whole point of the file for whoever wrote it.
+	sc.Buffer(make([]byte, 0, 64<<10), 1<<20)
+	for i := 1; sc.Scan(); i++ {
+		if !fn(i, sc.Text()) {
+			return
+		}
+	}
+}
+
 func (e *Executor) grepWalk(ctx context.Context, pattern, root, glob string, insensitive bool, limit int) ([]string, bool, error) {
 	if insensitive {
 		pattern = "(?i)" + pattern
@@ -247,23 +318,20 @@ func (e *Executor) grepWalk(ctx context.Context, pattern, root, glob string, ins
 		if glob != "" && !globMatch(glob, filepath.Base(path)) && !globMatch(glob, e.relative(path)) {
 			return nil
 		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return nil
-		}
-		content, isText := textenc.Decode(data)
-		if !isText {
-			return nil
-		}
-		for n, line := range strings.Split(content, "\n") {
+		stop := false
+		grepLines(path, func(n int, line string) bool {
 			if !re.MatchString(line) {
-				continue
+				return true
 			}
 			if len(matches) >= limit {
-				truncated = true
-				return filepath.SkipAll
+				truncated, stop = true, true
+				return false
 			}
-			matches = append(matches, fmt.Sprintf("%s:%d:%s", e.relative(path), n+1, clipLine(line)))
+			matches = append(matches, fmt.Sprintf("%s:%d:%s", e.relative(path), n, clipLine(line)))
+			return true
+		})
+		if stop {
+			return filepath.SkipAll
 		}
 		return nil
 	})

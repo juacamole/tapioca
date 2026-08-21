@@ -29,7 +29,7 @@ func FormatChange(c *FileChange) string {
 	shown := 0
 	for _, op := range diff.Compact(c.Ops, diffContext) {
 		if shown >= diffMaxLines {
-			fmt.Fprintf(&b, "… %d more lines\n", remaining(c.Ops, diffMaxLines))
+			fmt.Fprintf(&b, "… %d more lines\n", remaining(c, diffMaxLines))
 			break
 		}
 		switch op.Kind {
@@ -49,13 +49,12 @@ func FormatChange(c *FileChange) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
-func remaining(ops []diff.Op, shown int) int {
-	n := 0
-	for _, op := range ops {
-		if op.Kind == diff.Add || op.Kind == diff.Del {
-			n++
-		}
-	}
+// remaining reports how many changed lines the display left out. It counts from
+// the header's totals rather than from c.Ops, because the op list is capped at
+// maxKeptOps and recounting it would say "12 more lines" for a rewrite of a
+// hundred thousand.
+func remaining(c *FileChange, shown int) int {
+	n := c.Added + c.Removed
 	if n <= shown {
 		return 0
 	}

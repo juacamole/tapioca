@@ -24,11 +24,52 @@ func NewRegistry() *Registry {
 	return &Registry{errors: map[string]string{}}
 }
 
-// Add registers a connected client.
+// Add registers a connected client, unless another server already answers to
+// the same namespaced name.
 func (r *Registry) Add(c *Client) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.clients = append(r.clients, c)
+	other, taken := r.collision(c)
+	if taken {
+		r.errors[c.Name] = collisionMsg(c.Name, other)
+	} else {
+		r.clients = append(r.clients, c)
+	}
+	r.mu.Unlock()
+	if taken {
+		// Nothing can route to it and nothing may grant to it, so leaving the
+		// process running would only be a subprocess with no way to be reached.
+		c.Close()
+	}
+}
+
+// collision reports a connected server that c cannot be told apart from once
+// its name is namespaced. The caller must hold r.mu.
+//
+// sanitize maps every character it does not accept onto '-', which makes it
+// many-to-one: "trusted mcp", "trusted.mcp" and "trusted/mcp" all come out as
+// "trusted-mcp". The namespaced name is the whole of what a permission prompt
+// shows, the whole of a session grant's key — tools.go states the invariant
+// that "a grant for one server's delete must not cover another's" — and the
+// whole of what Call routes on. So a second server named a hyphen apart from a
+// trusted one inherits its grants and takes its calls, decided by nothing more
+// than which [[mcp]] block comes first. An HTTP endpoint is a low-alarm thing
+// to be told to add to a config, and this made adding one enough.
+//
+// The server already connected keeps the name; the newcomer is refused and
+// says why, rather than both being dropped and a working setup breaking on the
+// day something else in the list changed its name.
+func (r *Registry) collision(c *Client) (string, bool) {
+	for _, existing := range r.clients {
+		if existing.Name != c.Name && sanitize(existing.Name) == sanitize(c.Name) {
+			return existing.Name, true
+		}
+	}
+	return "", false
+}
+
+func collisionMsg(name, other string) string {
+	return fmt.Sprintf("name collides with %q: both become %q once namespaced, so their tools, "+
+		"their permission prompts and their session grants would be one and the same", other, sanitize(name))
 }
 
 // SetError records a failed connection for display.
@@ -54,8 +95,16 @@ func (r *Registry) Replace(c *Client) {
 		}
 		kept = append(kept, existing)
 	}
-	r.clients = append(kept, c)
-	delete(r.errors, c.Name)
+	r.clients = kept
+	// The same guard Add applies: reconnecting is another way in, and a name
+	// that could not be added must not become addable by logging in.
+	if other, taken := r.collision(c); taken {
+		r.errors[c.Name] = collisionMsg(c.Name, other)
+		old = append(old, c)
+	} else {
+		r.clients = append(r.clients, c)
+		delete(r.errors, c.Name)
+	}
 	r.mu.Unlock()
 	// Outside the lock: closing an HTTP client sends a request to end its
 	// session, and holding the registry for the length of that stalls every
@@ -190,22 +239,69 @@ func (r *Registry) ReadResource(ctx context.Context, server, uri string) (string
 	return c.ReadResource(ctx, uri)
 }
 
-// Call routes a namespaced tool call to the owning server.
-func (r *Registry) Call(ctx context.Context, fullName string, args json.RawMessage) (string, bool, error) {
-	server, tool, ok := strings.Cut(fullName, "__")
-	if !ok {
-		return "", true, fmt.Errorf("unknown tool %q", fullName)
-	}
+// route resolves a namespaced tool name back to the server it was built from.
+//
+// Not by cutting at the first "__": FullName joins with it, but a server's own
+// name may contain one too, and a cut splits where the name *can* be split
+// rather than where it *was* joined. "gh__issues__list" then reads as server
+// "gh" no matter which server listed it, so every tool on a server named
+// "gh__issues" was dispatched to another server — and the permission prompt
+// named the server that never ran it. Matching whole server names, and
+// preferring the one that actually lists the tool, puts the call where the
+// name says it goes.
+//
+// Two servers can still both claim one name ("gh" with a tool "issues__list",
+// "gh__issues" with a tool "list"). There is nothing to prefer between them
+// and silently picking one is the failure this exists to stop, so it is
+// refused and both are named.
+func (r *Registry) route(fullName string) (*Client, string, error) {
+	var owners []*Client
+	tools := map[*Client]string{}
+	var longest *Client
 	for _, c := range r.Clients() {
-		if sanitize(c.Name) != server {
+		prefix := sanitize(c.Name) + "__"
+		if !strings.HasPrefix(fullName, prefix) {
 			continue
 		}
-		if !c.Alive() {
-			return "", true, fmt.Errorf("mcp server %s is not running", c.Name)
+		tool := fullName[len(prefix):]
+		tools[c] = tool
+		if longest == nil || len(c.Name) > len(longest.Name) {
+			longest = c
 		}
-		return c.CallTool(ctx, tool, args)
+		if c.hasTool(tool) {
+			owners = append(owners, c)
+		}
 	}
-	return "", true, fmt.Errorf("no mcp server for tool %q", fullName)
+	switch {
+	case len(owners) == 1:
+		return owners[0], tools[owners[0]], nil
+	case len(owners) > 1:
+		names := make([]string, 0, len(owners))
+		for _, c := range owners {
+			names = append(names, c.Name)
+		}
+		sort.Strings(names)
+		return nil, "", fmt.Errorf("tool %q is offered by more than one server (%s); rename one of them",
+			fullName, strings.Join(names, ", "))
+	case longest != nil:
+		// No server lists the tool — a list that changed since it was offered,
+		// most likely. The server named by the longest matching prefix is the
+		// one the name was built from; let it report the unknown tool itself.
+		return longest, tools[longest], nil
+	}
+	return nil, "", fmt.Errorf("no mcp server for tool %q", fullName)
+}
+
+// Call routes a namespaced tool call to the owning server.
+func (r *Registry) Call(ctx context.Context, fullName string, args json.RawMessage) (string, bool, error) {
+	c, tool, err := r.route(fullName)
+	if err != nil {
+		return "", true, err
+	}
+	if !c.Alive() {
+		return "", true, fmt.Errorf("mcp server %s is not running", c.Name)
+	}
+	return c.CallTool(ctx, tool, args)
 }
 
 // CloseAll terminates every server.
