@@ -539,9 +539,9 @@ type = "ollama"
 base_url = "http://localhost:11434"
 # context_window = 8192         # used for the context gauge
 
-# llama.cpp's llama-server. /connect finds one that is already running, so
-# this is only needed for a port other than the usual 8080. Older builds need
-# --jinja or tool calls are refused; recent ones have it on by default:
+# llama.cpp's llama-server. Uncomment to use it, or add it from /connect.
+# Older builds need --jinja or tool calls are refused; recent ones have it on
+# by default:
 #   llama-server --jinja -m model.gguf
 # [providers.llamacpp]
 # type = "llamacpp"

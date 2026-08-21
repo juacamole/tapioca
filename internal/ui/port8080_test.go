@@ -5,52 +5,50 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"tapioca/internal/config"
-	"tapioca/internal/provider"
 )
 
-// detectAt is detectOne pointed at a stub instead of the real default address.
-func detectAt(t *testing.T, base string) connEntry {
-	t.Helper()
-	k, _ := provider.KindFor("llamacpp")
-	pc := config.ProviderConfig{Type: k.Type, BaseURL: base}
-	p, err := provider.New(k.Type, pc)
-	if err != nil {
-		t.Fatal(err)
+// Nothing is contacted that the user did not configure. llama-server's port is
+// 8080 — the one a Spring Boot app, a Tomcat or any dev server takes first —
+// so looking for one nobody asked for means knocking on a stranger's door and
+// putting whatever it says on screen.
+func TestNoProviderIsContactedUntilItIsConfigured(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		fmt.Fprint(w, `{"data":[{"id":"user-1"}]}`)
+	}))
+	defer srv.Close()
+
+	cfg := config.Default()
+	cfg.Providers = map[string]config.ProviderConfig{} // nothing set up at all
+	msg := probeConnections(cfg)().(connStatusMsg)
+
+	if n := hits.Load(); n != 0 {
+		t.Errorf("an unconfigured provider was contacted %d time(s)", n)
 	}
-	id, ok := p.(provider.Identifier)
-	if !ok {
-		t.Fatal("llamacpp cannot identify itself")
+	for _, e := range msg.entries {
+		if e.external == nil && e.kind.Type == "llamacpp" && e.state != connUnset {
+			t.Errorf("llamacpp reported as %v without being configured: %q", e.state, e.detail)
+		}
 	}
-	if err := id.Identify(t.Context()); err != nil {
-		return connEntry{kind: k, state: connUnset, detail: "not configured"}
-	}
-	e := probeOne(k, k.Type, pc)
-	e.detected = e.state == connReady
-	return e
 }
 
-// 8080 is the port a Spring Boot app takes first. Whatever is there answers,
-// and none of it makes the address a model server.
-func TestSomethingElseOn8080IsNotAModelServer(t *testing.T) {
+// Configured, but the address holds something else. A model list cannot tell
+// them apart — {"data":[{"id":…}]} is an ordinary REST collection — so the
+// server is asked for something only llama.cpp serves.
+func TestConfiguredLlamaCppAtTheWrongAddressIsNotReady(t *testing.T) {
 	cases := []struct {
 		name    string
 		handler http.HandlerFunc
 	}{
 		{"spring boot whitelabel 404", func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusNotFound)
-			fmt.Fprint(w, `{"timestamp":"2026-08-20","status":404,"error":"Not Found"}`)
+			fmt.Fprint(w, `{"status":404,"error":"Not Found"}`)
 		}},
-		{"html for everything", func(w http.ResponseWriter, r *http.Request) {
-			fmt.Fprint(w, `<!doctype html><html><body>hello</body></html>`)
-		}},
-		{"actuator health", func(w http.ResponseWriter, r *http.Request) {
-			fmt.Fprint(w, `{"status":"UP"}`)
-		}},
-		// The one that got through: an ordinary REST collection has the same
-		// shape as an OpenAI model list.
 		{"a rest api with data[].id", func(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprint(w, `{"data":[{"id":"user-1"},{"id":"user-2"}]}`)
 		}},
@@ -64,34 +62,78 @@ func TestSomethingElseOn8080IsNotAModelServer(t *testing.T) {
 	}
 	for _, c := range cases {
 		srv := httptest.NewServer(c.handler)
-		e := detectAt(t, srv.URL)
-		if e.detected || e.state == connReady {
-			t.Errorf("%s: offered as a model server (detail %q)", c.name, e.detail)
+		cfg := config.Default()
+		cfg.Providers = map[string]config.ProviderConfig{
+			"llamacpp": {Type: "llamacpp", BaseURL: srv.URL},
 		}
-		if e.state == connFailing {
-			t.Errorf("%s: reported as a failure; it is simply not llama.cpp", c.name)
+		msg := probeConnections(cfg)().(connStatusMsg)
+		for _, e := range msg.entries {
+			if e.external == nil && e.kind.Type == "llamacpp" && e.state == connReady {
+				t.Errorf("%s: reported ready (%q)", c.name, e.detail)
+			}
 		}
 		srv.Close()
 	}
 }
 
-// The control: a real llama-server says what it is, and is found.
-func TestARealLlamaServerIsStillFound(t *testing.T) {
+// The control: a real llama-server, configured, is ready and lists its models.
+func TestConfiguredLlamaCppIsReady(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/props" {
-			fmt.Fprint(w, `{"default_generation_settings":{"n_ctx":8192},"model_path":"/m/qwen3.gguf"}`)
+			fmt.Fprint(w, `{"default_generation_settings":{"n_ctx":8192}}`)
 			return
 		}
 		fmt.Fprint(w, `{"data":[{"id":"/m/qwen3.gguf"}]}`)
 	}))
 	defer srv.Close()
 
-	e := detectAt(t, srv.URL)
-	if !e.detected || e.state != connReady {
-		t.Fatalf("a real llama-server was not found: state=%v detail=%q", e.state, e.detail)
+	cfg := config.Default()
+	cfg.Providers = map[string]config.ProviderConfig{
+		"llamacpp": {Type: "llamacpp", BaseURL: srv.URL},
 	}
-	if !strings.Contains(e.detail, "1 model") {
-		t.Errorf("detail = %q", e.detail)
+	msg := probeConnections(cfg)().(connStatusMsg)
+	for _, e := range msg.entries {
+		if e.external == nil && e.kind.Type == "llamacpp" {
+			if e.state != connReady || !strings.Contains(e.detail, "1 model") {
+				t.Fatalf("a real llama-server was not ready: state=%v detail=%q", e.state, e.detail)
+			}
+			return
+		}
+	}
+	t.Fatal("no llamacpp entry in the results")
+}
+
+// Every model carries the provider it actually came from, so two local servers
+// holding the same weights stay tellable apart.
+func TestEachModelKeepsItsOwnProvider(t *testing.T) {
+	ollama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"models":[{"name":"qwen3.8-27b-q5:latest"}]}`)
+	}))
+	defer ollama.Close()
+	llama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/props" {
+			fmt.Fprint(w, `{"default_generation_settings":{"n_ctx":8192}}`)
+			return
+		}
+		fmt.Fprint(w, `{"data":[{"id":"qwen3.8-27b-q5"}]}`)
+	}))
+	defer llama.Close()
+
+	cfg := config.Default()
+	cfg.Providers = map[string]config.ProviderConfig{
+		"ollama":   {Type: "ollama", BaseURL: ollama.URL},
+		"llamacpp": {Type: "llamacpp", BaseURL: llama.URL},
+	}
+	m := &App{cfg: cfg, w: 100, h: 30}
+	got := map[string]string{}
+	for _, it := range m.loadModelsCmd()().(modelsLoadedMsg).items {
+		got[it.label] = it.desc
+	}
+	if got["qwen3.8-27b-q5"] != "llamacpp" {
+		t.Errorf("llama.cpp's model was labelled %q", got["qwen3.8-27b-q5"])
+	}
+	if got["qwen3.8-27b-q5:latest"] != "ollama" {
+		t.Errorf("ollama's model was labelled %q", got["qwen3.8-27b-q5:latest"])
 	}
 }
 
