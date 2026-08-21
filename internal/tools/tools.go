@@ -1097,6 +1097,73 @@ var sensitiveDirs = []string{
 	".local/share/keyrings", ".config/rclone", ".config/containers", ".m2",
 }
 
+// sensitiveRoots is every directory whose contents are worth stealing, in both
+// the form it is written in and the form it resolves to.
+//
+// Tapioca's own config holds provider keys and MCP bearer tokens, and its data
+// dir holds every conversation ever had. Reading either is precisely the
+// exfiltration this gate exists to catch.
+//
+// The resolved form is the half that was missing. The path being judged always
+// is resolved — sensitivePath puts it through resolve(), which is realPath —
+// and a resolved path compared against an unresolved root cannot match once any
+// component of the root is a link. That is not an exotic state: `~/.config`
+// stowed out of a dotfiles repository, XDG_CONFIG_HOME pointed at a versioned
+// directory, a home directory a corporate image links elsewhere. Every one of
+// those took config.toml, ~/.ssh and ~/.config/gh out of the gate, and read_file
+// needs no approval in any other way — so the provider keys came back with no
+// prompt in any mode. inWorkArea a few lines down resolves its roots for
+// exactly this reason.
+//
+// Both forms are kept rather than only the resolved one: the written form still
+// answers for a link that sits inside the root and points out of it.
+//
+// The result is cached because grep's walk asks this question once per file,
+// and resolving sixteen roots per file would turn a search into a syscall
+// storm. The key is the unresolved roots, so a config or data directory moved
+// (a test does this) recomputes; a link retargeted mid-session does not, which
+// is a trade the walk pays for.
+var (
+	rootsMu    sync.Mutex
+	rootsKey   string
+	rootsVal   []string
+	rootsValid bool
+)
+
+func sensitiveRoots() []string {
+	home, _ := os.UserHomeDir()
+	cfgDir, dataDir := config.Dir(), config.DataDir()
+	key := home + "\x00" + cfgDir + "\x00" + dataDir
+	rootsMu.Lock()
+	defer rootsMu.Unlock()
+	if rootsValid && key == rootsKey {
+		return rootsVal
+	}
+	var out []string
+	add := func(p string) {
+		if p == "" {
+			return
+		}
+		if abs, err := filepath.Abs(p); err == nil {
+			p = abs
+		}
+		p = filepath.Clean(p)
+		out = append(out, p)
+		if real := realPath(p); real != p && real != unresolvable {
+			out = append(out, real)
+		}
+	}
+	if home != "" {
+		for _, d := range sensitiveDirs {
+			add(filepath.Join(home, d))
+		}
+	}
+	add(cfgDir)
+	add(dataDir)
+	rootsKey, rootsVal, rootsValid = key, out, true
+	return out
+}
+
 // sensitivePath reports whether reading path deserves a prompt even though
 // read_file is otherwise ungated.
 func (e *Executor) sensitivePath(path string) bool {
@@ -1107,18 +1174,7 @@ func (e *Executor) sensitivePath(path string) bool {
 			return true
 		}
 	}
-	home, err := os.UserHomeDir()
-	if err == nil {
-		for _, d := range sensitiveDirs {
-			if under(clean, filepath.Join(home, d)) {
-				return true
-			}
-		}
-	}
-	// Tapioca's own config holds provider keys and MCP bearer tokens, and its
-	// data dir holds every conversation ever had. Reading either is precisely
-	// the exfiltration this gate exists to catch, and neither looked sensitive.
-	for _, d := range []string{config.Dir(), config.DataDir()} {
+	for _, d := range sensitiveRoots() {
 		if under(clean, d) {
 			return true
 		}

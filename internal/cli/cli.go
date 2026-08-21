@@ -302,7 +302,17 @@ func Main() {
 	// ACP owns stdout as the protocol channel, so it runs before anything
 	// that might print there, and builds its own per-session executors.
 	if args.acp {
-		if err := acp.Serve(cfg, os.Stdin, os.Stdout); err != nil {
+		// The flags go with it. They are not in cfg — deliberately, so a Save
+		// never writes them — and ACP builds its executors in its own package,
+		// so anything left in a local here reached the TUI and nothing else.
+		launch := acp.Launch{
+			ExtraDirs:   args.addDirs,
+			BashTimeout: time.Duration(cfg.BashTimeout) * time.Second,
+		}
+		if args.permMode != "" {
+			launch.PermissionMode = mode
+		}
+		if err := acp.Serve(cfg, launch, os.Stdin, os.Stdout); err != nil {
 			fail(err)
 		}
 		return

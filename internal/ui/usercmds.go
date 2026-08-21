@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -26,7 +27,24 @@ const (
 	argsToken      = "$ARGUMENTS"
 )
 
+// readCappedFile reads at most limit bytes of a regular file.
+//
+// The kind of file is decided before it is opened, not after — the same rule
+// project.readCapped and skills.readCapped already follow, and for the same
+// reason. A command file comes out of the working tree, .md is only a name, and
+// tar stores FIFOs and extracts them without being asked to. Opening one for
+// reading blocks until something writes to it and nothing here ever will, so an
+// archive shipping .tapioca/commands/review.md as a FIFO wedged the app while
+// it was still starting: loadUserCmds runs before the first keystroke, no
+// deadline reaches os.Open, and there was nothing to cancel.
 func readCappedFile(path string, limit int64) ([]byte, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s is not a regular file", path)
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err

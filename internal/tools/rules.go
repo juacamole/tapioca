@@ -131,8 +131,25 @@ func pathRule(tool string) bool {
 }
 
 // matchSubject compares one rule's pattern against a call's subject. Paths are
-// matched both as written and resolved, so a rule can be relative to the
-// working directory or absolute without the user having to guess which.
+// matched as written, made absolute, and resolved, so a rule can be relative to
+// the working directory or absolute without the user having to guess which.
+//
+// Both spellings of the working directory are used, because the two sides of
+// the comparison did not agree about which one they were in. The subject is put
+// through resolve(), which follows every link; the pattern was made absolute
+// against the working directory as written. A working directory reached through
+// a link is the ordinary case, not an exotic one — `cd ~/src` where ~/src is a
+// link leaves that spelling in $PWD and os.Getwd hands it straight back, /tmp is
+// a link on macOS, and /cd stores whatever was typed — and the two could then
+// never match. deny = ["read_file(secrets/**)"] stopped denying the moment the
+// model spelled the path absolutely, which it does, because the absolute
+// working directory is in its system prompt. The same silence made an allow
+// rule stop applying, so a user who wrote one to stop being asked was asked
+// anyway.
+//
+// The subject's lexical absolute form is matched too, for the mirror image: a
+// rule written against the link's spelling, and a call that arrives already
+// resolved.
 func (e *Executor) matchSubject(r rule, tool, subject string) bool {
 	if r.arg == "" {
 		return true
@@ -146,17 +163,28 @@ func (e *Executor) matchSubject(r rule, tool, subject string) bool {
 			pattern = filepath.Join(home, pattern[2:])
 		}
 	}
-	subject = filepath.ToSlash(subject)
-	if globMatch(filepath.ToSlash(pattern), subject) {
-		return true
-	}
-	abs := filepath.ToSlash(e.resolve(subject))
-	if globMatch(filepath.ToSlash(pattern), abs) {
-		return true
-	}
+	cwd := e.cwdLocked()
+	patterns := []string{pattern}
 	if !filepath.IsAbs(pattern) {
-		// A relative pattern is relative to the working directory.
-		return globMatch(filepath.ToSlash(filepath.Join(e.cwdLocked(), pattern)), abs)
+		// A relative pattern is relative to the working directory — by both its
+		// names, since the subject may have been resolved into either.
+		patterns = append(patterns, filepath.Join(cwd, pattern))
+		if real := realPath(filepath.Clean(cwd)); real != cwd && real != unresolvable {
+			patterns = append(patterns, filepath.Join(real, pattern))
+		}
+	}
+	lexical := subject
+	if !filepath.IsAbs(lexical) {
+		lexical = filepath.Join(cwd, lexical)
+	}
+	subjects := []string{subject, filepath.Clean(lexical), e.resolve(subject)}
+	for _, p := range patterns {
+		p = filepath.ToSlash(p)
+		for _, s := range subjects {
+			if globMatch(p, filepath.ToSlash(s)) {
+				return true
+			}
+		}
 	}
 	return false
 }

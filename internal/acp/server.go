@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"tapioca/internal/agent"
 	"tapioca/internal/config"
@@ -19,11 +20,29 @@ import (
 	"tapioca/internal/version"
 )
 
+// Launch is what the command line decided, as opposed to what the config file
+// says. These never live in the config: the file is the user's standing
+// preference and a flag is this run's, and writing a flag back would make a
+// one-off into a setting.
+//
+// They have to be carried here explicitly because the sessions are built in
+// this package. The TUI keeps the same values in its Executor, which ACP has
+// none of at startup — every session builds its own — so a flag folded into a
+// local variable in Main reached the TUI and nothing else. `tapioca --acp
+// --permission-mode plan`, which is how an editor is told to run a read-only
+// agent, ran every session in whatever mode the config file named.
+type Launch struct {
+	PermissionMode string   // --permission-mode, --dangerously-skip-permissions
+	ExtraDirs      []string // --add-dir
+	BashTimeout    time.Duration
+}
+
 // Server serves one ACP connection. Each session/new gets its own agent,
 // executor and working directory, so an editor can drive several projects.
 type Server struct {
-	cfg  *config.Config
-	conn *conn
+	cfg    *config.Config
+	launch Launch
+	conn   *conn
 
 	mu       sync.Mutex
 	sessions map[string]*acpSession
@@ -40,8 +59,8 @@ type acpSession struct {
 }
 
 // Serve runs the protocol loop until the input closes.
-func Serve(cfg *config.Config, in io.Reader, out io.Writer) error {
-	s := &Server{cfg: cfg, conn: newConn(out), sessions: map[string]*acpSession{}}
+func Serve(cfg *config.Config, launch Launch, in io.Reader, out io.Writer) error {
+	s := &Server{cfg: cfg, launch: launch, conn: newConn(out), sessions: map[string]*acpSession{}}
 	sc := bufio.NewScanner(in)
 	sc.Buffer(make([]byte, 0, 64*1024), 32*1024*1024)
 	var wg sync.WaitGroup
@@ -150,11 +169,20 @@ func (s *Server) handleNewSession(msg *rpcMsg) {
 	cfg := *s.cfg
 	warn(cfg.RestrictIfInsideTree(cwd))
 
-	exec := tools.NewExecutor(cwd, cfg.PermissionMode)
+	// The flag outranks the file, and outranks the restriction above with it:
+	// what that withdraws is what a repository could have written, and a flag
+	// is typed by the user rather than committed by anyone.
+	mode := cfg.PermissionMode
+	if s.launch.PermissionMode != "" {
+		mode = s.launch.PermissionMode
+	}
+	exec := tools.NewExecutor(cwd, mode)
+	exec.SetExtraDirs(s.launch.ExtraDirs)
 	exec.SetBashPrefixes(cfg.BashAllow)
 	exec.SetRules(cfg.Permissions.Allow, cfg.Permissions.Ask, cfg.Permissions.Deny)
 	exec.SetSandbox(cfg.Sandbox)
 	exec.SetSandboxNetwork(cfg.SandboxNetwork)
+	exec.SetTimeout(s.launch.BashTimeout)
 	warn(tools.ApplyHooks(exec, &cfg, cwd))
 
 	reg := mcp.NewRegistry()

@@ -413,6 +413,18 @@ func WithPins(base []string, pins ...Pin) []string {
 	return configEnv(base, cs)
 }
 
+// StaticPins is the list every git run inside this package neutralises,
+// exported so a caller that builds its own invocation answers the question the
+// same way. Two places deciding which keys name a program, and disagreeing
+// about it, is how the shorter list ends up being the one that runs.
+func StaticPins() []Pin {
+	out := make([]Pin, 0, len(staticPins))
+	for _, c := range staticPins {
+		out = append(out, Pin{Key: c.key, Value: c.val})
+	}
+	return out
+}
+
 func build(dir string, args []string) []string {
 	full := append([]string{"-C", dir}, staticFlags...)
 	return append(full, args...)

@@ -51,16 +51,20 @@ func run(workTree string, args ...string) (string, error) {
 	// invoked by a snapshot, and pinning gpg.program instead would only make
 	// the commit fail. It gets the same filtered environment as every other
 	// child.
+	// The whole static list, not a shorter one of its own: this is the same
+	// question gitcmd answers, and two answers to it means the shorter is the
+	// one that runs here. gpgSign is the one addition — a user whose global
+	// config signs every commit does not want gpg invoked by a snapshot, and
+	// pinning gpg.program alone would only make the commit fail.
+	pins := append(gitcmd.StaticPins(),
+		gitcmd.Pin{Key: "commit.gpgSign", Value: "false"},
+	)
 	cmd.Env = gitcmd.WithPins(append(secretenv.Scrubbed(),
 		"GIT_DIR="+gitDir(workTree),
 		"GIT_WORK_TREE="+workTree,
 		"GIT_AUTHOR_NAME=tapioca", "GIT_AUTHOR_EMAIL=checkpoint@tapioca",
 		"GIT_COMMITTER_NAME=tapioca", "GIT_COMMITTER_EMAIL=checkpoint@tapioca",
-	),
-		gitcmd.Pin{Key: "core.hooksPath", Value: "/dev/null"},
-		gitcmd.Pin{Key: "core.fsmonitor", Value: "false"},
-		gitcmd.Pin{Key: "commit.gpgSign", Value: "false"},
-	)
+	), pins...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("git %s: %s", args[0], strings.TrimSpace(string(out)))

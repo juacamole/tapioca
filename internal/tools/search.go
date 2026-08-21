@@ -58,9 +58,17 @@ func trackedSet(root string) map[string]bool {
 }
 
 // searchRoot resolves the directory a search starts from, defaulting to cwd.
+//
+// The default is resolved too, and that is not cosmetic: filepath.WalkDir
+// lstats its root, so a root that is itself a symlink is one non-directory
+// entry and the walk descends into nothing. Working in a linked directory —
+// /tmp on macOS, a stowed checkout, a relocated home — made the fallback
+// answer "no matches" for the whole project. It went unseen because ripgrep
+// follows the root it is given, so the bug only appears on a machine without
+// it, which is also the machine that cannot afford a silently empty search.
 func (e *Executor) searchRoot(path string) string {
 	if strings.TrimSpace(path) == "" {
-		return e.Cwd()
+		return realPath(filepath.Clean(e.Cwd()))
 	}
 	return e.resolve(path)
 }
@@ -330,12 +338,25 @@ func matchSegments(pat, seg []string) bool {
 
 // relative shortens paths inside the working directory so output stays
 // readable and pasteable back into other tools.
+//
+// Both spellings of the working directory are tried. searchRoot resolves the
+// path argument but not the default, so a grep given a path walks resolved
+// paths while this compares against the working directory as written — and
+// under a working directory reached through a link (`cd ~/src` where ~/src is
+// one, /tmp on macOS) nothing was ever inside it. Every result then printed as
+// an absolute path, and grep's own glob filter, which matches against this,
+// stopped matching a pattern with a directory in it.
 func (e *Executor) relative(path string) string {
-	rel, err := filepath.Rel(e.Cwd(), path)
-	if err != nil || strings.HasPrefix(rel, "..") {
-		return path
+	cwd := e.Cwd()
+	if rel, err := filepath.Rel(cwd, path); err == nil && !strings.HasPrefix(rel, "..") {
+		return rel
 	}
-	return rel
+	if real := realPath(filepath.Clean(cwd)); real != cwd && real != unresolvable {
+		if rel, err := filepath.Rel(real, path); err == nil && !strings.HasPrefix(rel, "..") {
+			return rel
+		}
+	}
+	return path
 }
 
 func clipLine(s string) string {
