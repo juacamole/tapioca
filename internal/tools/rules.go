@@ -2,7 +2,6 @@ package tools
 
 import (
 	"encoding/json"
-	"os"
 	"path/filepath"
 	"strings"
 )
@@ -158,19 +157,31 @@ func (e *Executor) matchSubject(r rule, tool, subject string) bool {
 		return wildcard(r.arg, subject)
 	}
 	pattern := r.arg
-	if strings.HasPrefix(pattern, "~/") {
-		if home, err := os.UserHomeDir(); err == nil {
-			pattern = filepath.Join(home, pattern[2:])
-		}
-	}
 	cwd := e.cwdLocked()
-	patterns := []string{pattern}
-	if !filepath.IsAbs(pattern) {
-		// A relative pattern is relative to the working directory — by both its
-		// names, since the subject may have been resolved into either.
-		patterns = append(patterns, filepath.Join(cwd, pattern))
-		if real := realPath(filepath.Clean(cwd)); real != cwd && real != unresolvable {
-			patterns = append(patterns, filepath.Join(real, pattern))
+	var patterns []string
+	if strings.HasPrefix(pattern, "~/") {
+		// Every home, not $HOME. The expansion used os.UserHomeDir, which on
+		// Unix is $HOME and nothing else, while the subject arrives as a real
+		// absolute path — so `export HOME=$PWD/.home` in an extracted tree's
+		// .envrc moved the rule onto a directory in the checkout and left the
+		// real home outside every pattern. deny = ["read_file(~/notes/**)"]
+		// then denied nothing, silently, which is worse than never having been
+		// written: the user believes it is there.
+		for _, home := range tildeHomes(r.act) {
+			patterns = append(patterns, filepath.Join(home, pattern[2:]))
+		}
+		if len(patterns) == 0 {
+			return false
+		}
+	} else {
+		patterns = append(patterns, pattern)
+		if !filepath.IsAbs(pattern) {
+			// A relative pattern is relative to the working directory — by both
+			// its names, since the subject may have been resolved into either.
+			patterns = append(patterns, filepath.Join(cwd, pattern))
+			if real := realPath(filepath.Clean(cwd)); real != cwd && real != unresolvable {
+				patterns = append(patterns, filepath.Join(real, pattern))
+			}
 		}
 	}
 	lexical := subject
@@ -187,6 +198,28 @@ func (e *Executor) matchSubject(r rule, tool, subject string) bool {
 		}
 	}
 	return false
+}
+
+// tildeHomes is what a rule's leading ~/ may stand for.
+//
+// A deny or an ask wants every candidate: the point is coverage, and covering a
+// directory that is not really the home costs nothing but a prompt. An allow
+// hands out a standing approval, so widening it on the strength of a variable
+// the tree can set would be the same bug pointing the other way — $HOME=/etc
+// would turn allow = ["write_file(~/tmp/**)"] into a grant over /etc/tmp. It
+// therefore expands only while the environment and the account database agree,
+// and matches nothing at all when they do not, which costs a prompt rather than
+// a refusal.
+//
+// One entry means there is no disagreement to have: either both answers are the
+// same directory, or the account database had nothing to say — ordinary inside
+// a container, and the same trade config.usersHome makes there.
+func tildeHomes(act string) []string {
+	homes := userHomes()
+	if act == RuleAllow && len(homes) != 1 {
+		return nil
+	}
+	return homes
 }
 
 func (e *Executor) cwdLocked() string {

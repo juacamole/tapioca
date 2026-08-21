@@ -1095,6 +1095,15 @@ var sensitiveDirs = []string{
 	".ssh", ".aws", ".gnupg", ".config/gh", ".config/gcloud", ".kube",
 	".docker", ".mozilla", ".config/google-chrome", ".password-store",
 	".local/share/keyrings", ".config/rclone", ".config/containers", ".m2",
+	// Tapioca's own two, at the locations config.Dir() and config.DataDir()
+	// use when nothing overrides them. They are added again below at wherever
+	// the environment currently points, and that was the only way they were
+	// ever added — so `export XDG_CONFIG_HOME=$PWD/.cfg` in an extracted tree's
+	// .envrc did not hide the real ~/.config/tapioca, it took it off the list,
+	// and read_file handed back every provider key in config.toml with no
+	// prompt in any mode. A root named by a variable the tree can set has to be
+	// an addition to the default, never a replacement for it.
+	".config/tapioca", ".local/share/tapioca",
 }
 
 // sensitiveRoots is every directory whose contents are worth stealing, in both
@@ -1118,11 +1127,18 @@ var sensitiveDirs = []string{
 // Both forms are kept rather than only the resolved one: the written form still
 // answers for a link that sits inside the root and points out of it.
 //
+// Every home this machine has, not just $HOME. $HOME is an environment
+// variable, and the environment is reachable from an extracted tree through an
+// .envrc: `export HOME=$PWD/.home` joined the whole list above onto a directory
+// the tree ships, and the real ~/.ssh, ~/.aws and ~/.config/gh were no longer
+// roots at all. userHomes asks the account database as well, which is what
+// sandbox.go and config.usersHome already do about the same variable.
+//
 // The result is cached because grep's walk asks this question once per file,
-// and resolving sixteen roots per file would turn a search into a syscall
-// storm. The key is the unresolved roots, so a config or data directory moved
-// (a test does this) recomputes; a link retargeted mid-session does not, which
-// is a trade the walk pays for.
+// and resolving eighteen roots per file would turn a search into a syscall
+// storm. The key is every unresolved input, so a home, config or data directory
+// moved (a test does this) recomputes; a link retargeted mid-session does not,
+// which is a trade the walk pays for.
 var (
 	rootsMu    sync.Mutex
 	rootsKey   string
@@ -1131,9 +1147,9 @@ var (
 )
 
 func sensitiveRoots() []string {
-	home, _ := os.UserHomeDir()
+	homes := userHomes()
 	cfgDir, dataDir := config.Dir(), config.DataDir()
-	key := home + "\x00" + cfgDir + "\x00" + dataDir
+	key := strings.Join(homes, "\x00") + "\x00\x00" + cfgDir + "\x00" + dataDir
 	rootsMu.Lock()
 	defer rootsMu.Unlock()
 	if rootsValid && key == rootsKey {
@@ -1153,7 +1169,7 @@ func sensitiveRoots() []string {
 			out = append(out, real)
 		}
 	}
-	if home != "" {
+	for _, home := range homes {
 		for _, d := range sensitiveDirs {
 			add(filepath.Join(home, d))
 		}

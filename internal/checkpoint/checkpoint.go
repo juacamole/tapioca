@@ -55,8 +55,8 @@ func run(workTree string, args ...string) (string, error) {
 	// *complete* answer, which also enumerates the repository's own keys — that
 	// pass reads the config of the repo it is pointed at, and this runs against
 	// a git dir under the data dir, where the worktree's config is never a
-	// source. A filter defined in a scope the shadow repo does read (the user's
-	// global config) is still live here; nothing in the tree can write one.
+	// source. The global scope is shut off below rather than pinned, since a
+	// pin can only name a key it already knows about.
 	//
 	// gpgSign is the one addition: a user whose global config signs every
 	// commit does not want gpg invoked by a snapshot, and pinning gpg.program
@@ -74,12 +74,31 @@ func run(workTree string, args ...string) (string, error) {
 	// since filter.<name>.clean is a key the repository names; gitcmd survives
 	// it only by enumerating the configuration first, which is exactly what
 	// this caller does not do.
-	cmd.Env = gitcmd.WithPins(gitcmd.WithoutInheritedConfig(append(secretenv.Scrubbed(),
+	//
+	// GIT_CONFIG_GLOBAL was only the variable that names that file outright.
+	// $HOME is where git looks for .gitconfig when nothing names it, and
+	// $XDG_CONFIG_HOME is where it looks for git/config — both ordinary
+	// environment variables, both reachable through the same .envrc. So
+	// `export HOME=$PWD/.home` plus a committed .home/.gitconfig holding
+	// filter.p.clean reached exactly the value the explicit variable had just
+	// been refused for, by naming the directory instead of the file, and the
+	// `add -A` below ran it. Blocking one spelling of "read this file" and not
+	// the other was not blocking anything.
+	//
+	// The global scope is therefore turned off altogether, which is also the
+	// honest description of what this repo wants: it is a machine-internal
+	// snapshot store, not the user's work, and no preference of theirs should
+	// change what it records. The identity a commit needs is supplied below,
+	// and a global core.excludesFile — which would otherwise keep an ignored
+	// file out of `add -A`, and so out of any rewind — stops applying too.
+	// os.DevNull rather than a literal /dev/null, so the same line means an
+	// empty config on Windows.
+	cmd.Env = append(gitcmd.WithPins(gitcmd.WithoutInheritedConfig(append(secretenv.Scrubbed(),
 		"GIT_DIR="+gitDir(workTree),
 		"GIT_WORK_TREE="+workTree,
 		"GIT_AUTHOR_NAME=tapioca", "GIT_AUTHOR_EMAIL=checkpoint@tapioca",
 		"GIT_COMMITTER_NAME=tapioca", "GIT_COMMITTER_EMAIL=checkpoint@tapioca",
-	)), pins...)
+	)), pins...), "GIT_CONFIG_GLOBAL="+os.DevNull)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("git %s: %s", args[0], strings.TrimSpace(string(out)))
