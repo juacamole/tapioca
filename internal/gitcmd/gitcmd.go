@@ -226,6 +226,43 @@ func configOrigins(dir string, origins map[string]bool) []cfgFile {
 	return files
 }
 
+// namesAnotherFile reports whether a key means "git also reads a file this
+// enumeration cannot see the effect of yet".
+//
+// --show-origin names the file each *key* came from, so a file that produced no
+// key is named by nothing — and a file that produced no key today can produce
+// one tomorrow without any watched file changing:
+//
+//   - include.path may name a file that does not exist. git ignores a missing
+//     include in silence, so it is absent from the origins, and creating it
+//     later is an ordinary in-tree write that auto mode approves without
+//     asking. The filter driver written into it is live on the next status
+//     poll while the cache still answers with the pins read before it existed.
+//   - the same holds for an include target that exists but holds only
+//     comments, which is less conspicuous to ship than a dangling include.
+//   - includeIf conditions are evaluated per command and reported as keys even
+//     while false. `[includeIf "onbranch:x"]` starts reading its file the
+//     moment the branch is checked out, and a checkout writes .git/HEAD, not
+//     .git/config.
+//   - extensions.worktreeConfig makes git read $GIT_DIR/config.worktree, which
+//     need not exist yet either.
+//
+// Resolving the include targets and watching them for appearance was the other
+// way out, and it needs the values, the directory each include is relative to,
+// and a reading of every condition git might newly satisfy — three more things
+// to be wrong about. Not caching costs one `git config --list` per git command
+// in a repository that uses includes, and git is run on a five-second timer.
+func namesAnotherFile(key string) bool {
+	k := strings.ToLower(key)
+	if k == "extensions.worktreeconfig" {
+		return true
+	}
+	if k == "include.path" {
+		return true
+	}
+	return strings.HasPrefix(k, "includeif.") && strings.HasSuffix(k, ".path")
+}
+
 // originPrefixes are how `git config --show-origin` labels where a value came
 // from. A config key never starts with one: its first component is a section
 // name, and a section name holds no ':'.
@@ -282,6 +319,7 @@ func readPins(dir string) ([]cfgFile, []cfg) {
 	var pins []cfg
 	filters := map[string]bool{}
 	origins := map[string]bool{}
+	unknowable := false
 	// The records alternate origin, key. They are told apart by what they look
 	// like rather than by their position: an origin begins with one of git's
 	// own prefixes, and a config key cannot, because its first component is a
@@ -298,6 +336,9 @@ func readPins(dir string) ([]cfgFile, []cfg) {
 			continue
 		}
 		key := field
+		if namesAnotherFile(key) {
+			unknowable = true
+		}
 		// A filter driver is pinned as a whole: an empty clean command with
 		// required=true would make git refuse to read the file at all.
 		if strings.HasPrefix(strings.ToLower(key), "filter.") {
@@ -317,6 +358,13 @@ func readPins(dir string) ([]cfgFile, []cfg) {
 			cfg{"filter." + name + ".process", ""},
 			cfg{"filter." + name + ".required", "false"},
 		)
+	}
+	if unknowable {
+		// The pins are right for the configuration as it stands; it is only
+		// their reuse that is unsound, and an empty file list is how this says
+		// "re-read me". The pins themselves are still returned, because
+		// returning none is the hole the whole file exists to prevent.
+		return nil, pins
 	}
 	return configOrigins(dir, origins), pins
 }

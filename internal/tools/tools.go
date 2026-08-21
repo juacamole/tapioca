@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1135,15 +1134,41 @@ func (e *Executor) sensitivePath(path string) bool {
 // rather than trust a stat.
 const maxReadBytes = 16 << 20
 
+// regularFile refuses a path that is not an ordinary file, before anything
+// opens it.
+//
+// The cap above bounds what a read costs; it does nothing about a read that
+// never starts. Opening a FIFO for reading blocks until something writes to it,
+// and tar stores FIFOs and extracts them without being asked to — so a file in
+// an extracted tarball need not be a file. read_file, edit_file and write_file
+// each hung on the open, forever, holding the turn: no deadline reaches
+// os.Open, and the call's own context is not consulted by it. A device is
+// refused for the same reason (/dev/tty blocks on the read instead) and
+// because nothing a coding agent legitimately does reads one. Anything under
+// /proc and /sys is a regular file and still readable.
+//
+// A path that does not exist is not this function's business: the open reports
+// that better, so it is let through.
+func regularFile(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%s is not a regular file", path)
+	}
+	return nil
+}
+
 func readCapped(path string) ([]byte, error) {
+	if err := regularFile(path); err != nil {
+		return nil, err
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
-	if info, err := f.Stat(); err == nil && info.IsDir() {
-		return nil, fmt.Errorf("%s is a directory", path)
-	}
 	data, err := io.ReadAll(io.LimitReader(f, maxReadBytes+1))
 	if err != nil {
 		return nil, err
@@ -1273,7 +1298,7 @@ func (e *Executor) gateReadOnly(name string, raw json.RawMessage, ask AskFunc) (
 		if json.Unmarshal(raw, &a) != nil || strings.TrimSpace(a.URL) == "" {
 			return "", false, false
 		}
-		host := hostOf(a.URL)
+		host := FetchHost(a.URL)
 		key := "fetch:" + host
 		if host == "" || e.granted(key) {
 			return "", false, false
@@ -1287,17 +1312,6 @@ func (e *Executor) gateReadOnly(name string, raw json.RawMessage, ask AskFunc) (
 		}
 	}
 	return "", false, false
-}
-
-func hostOf(raw string) string {
-	if !strings.Contains(raw, "://") {
-		raw = "https://" + raw
-	}
-	u, err := url.Parse(raw)
-	if err != nil {
-		return ""
-	}
-	return strings.ToLower(u.Hostname())
 }
 
 func (e *Executor) granted(key string) bool {
@@ -1463,6 +1477,9 @@ func (e *Executor) writeFile(raw json.RawMessage) (Result, error) {
 		return Result{Text: "invalid arguments: need {\"path\", \"content\"}", IsErr: true}, nil
 	}
 	path := e.resolve(a.Path)
+	if err := regularFile(path); err != nil {
+		return Result{Text: err.Error(), IsErr: true}, nil
+	}
 	if e.changedExternally(path) {
 		return Result{Text: staleFileMsg(a.Path), IsErr: true}, nil
 	}
@@ -1522,6 +1539,9 @@ func (e *Executor) editFile(raw json.RawMessage) (Result, error) {
 		return Result{Text: "invalid arguments: need {\"path\", \"old_string\", \"new_string\"}", IsErr: true}, nil
 	}
 	path := e.resolve(a.Path)
+	if err := regularFile(path); err != nil {
+		return Result{Text: err.Error(), IsErr: true}, nil
+	}
 	if e.changedExternally(path) {
 		return Result{Text: staleFileMsg(a.Path), IsErr: true}, nil
 	}

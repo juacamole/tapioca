@@ -133,6 +133,7 @@ func (c *Config) RestrictIfInsideTree(cwd string) []string {
 	// base_url taken off them, so putting one back does not overwrite one the
 	// user has since chosen in the app.
 	restoreBase := map[string]string{}
+	restoreCreds := map[string]string{}
 	c.unrestrict = func(save *Config) {
 		save.MCP, save.LSP, save.Agents = orig.MCP, orig.LSP, orig.Agents
 		save.BashAllow, save.Permissions = orig.BashAllow, orig.Permissions
@@ -140,7 +141,7 @@ func (c *Config) RestrictIfInsideTree(cwd string) []string {
 		if save.Editor == "" {
 			save.Editor = orig.Editor
 		}
-		if len(restoreBase) > 0 && save.Providers != nil {
+		if len(restoreBase)+len(restoreCreds) > 0 && save.Providers != nil {
 			next := make(map[string]ProviderConfig, len(save.Providers))
 			for k, v := range save.Providers {
 				next[k] = v
@@ -148,6 +149,12 @@ func (c *Config) RestrictIfInsideTree(cwd string) []string {
 			for name, base := range restoreBase {
 				if p, ok := next[name]; ok && p.BaseURL == "" {
 					p.BaseURL = base
+					next[name] = p
+				}
+			}
+			for name, file := range restoreCreds {
+				if p, ok := next[name]; ok && p.CredentialsFile == "" {
+					p.CredentialsFile = file
 					next[name] = p
 				}
 			}
@@ -172,26 +179,42 @@ func (c *Config) RestrictIfInsideTree(cwd string) []string {
 	drop(c.PermissionMode == "auto" || c.PermissionMode == "bypass",
 		"permission_mode = "+c.PermissionMode, func() { c.PermissionMode = "manual" })
 	drop(strings.TrimSpace(c.Editor) != "", "editor = "+c.Editor, func() { c.Editor = "" })
+	// A fresh map, never an assignment into the existing one: the config is
+	// copied by value in places that then hold the same map, and a restriction
+	// that reached back into a caller's copy would be a different bug from the
+	// one being fixed here.
+	editProvider := func(name string, fn func(*ProviderConfig)) {
+		next := make(map[string]ProviderConfig, len(c.Providers))
+		for k, v := range c.Providers {
+			next[k] = v
+		}
+		cleaned := next[name]
+		fn(&cleaned)
+		next[name] = cleaned
+		c.Providers = next
+	}
 	for _, name := range slices.Sorted(maps.Keys(c.Providers)) {
 		p := c.Providers[name]
-		if !offMachine(p.BaseURL) {
-			continue
-		}
-		drop(true, fmt.Sprintf("providers.%s.base_url = %s", name, p.BaseURL), func() {
-			// A fresh map, never an assignment into the existing one: the
-			// config is copied by value in places that then hold the same map,
-			// and a restriction that reached back into a caller's copy would be
-			// a different bug from the one being fixed here.
-			next := make(map[string]ProviderConfig, len(c.Providers))
-			for k, v := range c.Providers {
-				next[k] = v
-			}
-			cleaned := next[name]
-			restoreBase[name] = cleaned.BaseURL
-			cleaned.BaseURL = ""
-			next[name] = cleaned
-			c.Providers = next
+		drop(offMachine(p.BaseURL), fmt.Sprintf("providers.%s.base_url = %s", name, p.BaseURL), func() {
+			editProvider(name, func(cleaned *ProviderConfig) {
+				restoreBase[name] = cleaned.BaseURL
+				cleaned.BaseURL = ""
+			})
 		})
+		// credentials_file is base_url one indirection further out. The vertex
+		// service-account grant reads token_uri out of the JSON that file names
+		// and POSTs to it, so a repository that commits both a config and a
+		// key file chooses the address the exchange is made against — the
+		// address base_url is refused for, reached by naming a file instead.
+		// The token exchange runs on its own the first time a model answers,
+		// and title_model picks the provider without the user choosing it.
+		drop(strings.TrimSpace(p.CredentialsFile) != "",
+			fmt.Sprintf("providers.%s.credentials_file = %s", name, p.CredentialsFile), func() {
+				editProvider(name, func(cleaned *ProviderConfig) {
+					restoreCreds[name] = cleaned.CredentialsFile
+					cleaned.CredentialsFile = ""
+				})
+			})
 	}
 	return notes
 }

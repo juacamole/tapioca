@@ -222,6 +222,42 @@ func decodeDDGHref(href string) string {
 	return href
 }
 
+// fetchTarget is the one place a model-supplied url argument becomes the URL
+// that is requested. Both the fetch and the gate in front of it go through it,
+// because a gate that reads the argument differently from the fetch is a gate
+// on a different request.
+//
+// The gate used to prepend a scheme only when the argument held no "://"
+// anywhere, and to parse the argument untrimmed. Both diverge from what is
+// fetched: "evil.com/x?u=https://a" holds a "://", so it was parsed as a bare
+// path and reported no host at all, and a leading space did the same. No host
+// meant no "new host" prompt — and that prompt is the only thing standing in
+// front of web_fetch, which needs no approval in any other way. An injected
+// model got a silent request to any host it liked, with whatever it had read
+// in the path.
+//
+// The scheme is matched case-insensitively because it is case-insensitive to
+// everyone else: "HTTP://x" was not recognised here and became the nonsense
+// "https://HTTP://x".
+func fetchTarget(raw string) string {
+	target := strings.TrimSpace(raw)
+	lower := strings.ToLower(target)
+	if !strings.HasPrefix(lower, "http://") && !strings.HasPrefix(lower, "https://") {
+		target = "https://" + target
+	}
+	return target
+}
+
+// FetchHost is the host web_fetch will actually request, or "" when the
+// argument names none. The permission gate keys its per-host approval on it.
+func FetchHost(raw string) string {
+	u, err := url.Parse(fetchTarget(raw))
+	if err != nil {
+		return ""
+	}
+	return strings.ToLower(u.Hostname())
+}
+
 func (e *Executor) webFetch(ctx context.Context, raw json.RawMessage) (string, bool, error) {
 	var a struct {
 		URL string `json:"url"`
@@ -229,10 +265,7 @@ func (e *Executor) webFetch(ctx context.Context, raw json.RawMessage) (string, b
 	if err := json.Unmarshal(raw, &a); err != nil || strings.TrimSpace(a.URL) == "" {
 		return "invalid arguments: need {\"url\": \"...\"}", true, nil
 	}
-	target := strings.TrimSpace(a.URL)
-	if !strings.HasPrefix(target, "http://") && !strings.HasPrefix(target, "https://") {
-		target = "https://" + target
-	}
+	target := fetchTarget(a.URL)
 	req, err := http.NewRequestWithContext(ctx, "GET", target, nil)
 	if err != nil {
 		return err.Error(), true, nil
