@@ -163,6 +163,13 @@ type Config struct {
 // every Save, so runtime-only overrides (CLI flags) never persist to disk.
 func (c *Config) SetPresave(fn func(*Config)) { c.presave = fn }
 
+// Presave returns that transform, so a reload — which replaces the whole
+// config with a freshly loaded one — can carry it over. Without it the first
+// save after a reload wrote the launch flags into the user's config file as
+// settings: --sandbox as sandbox = true, and the servers --mcp-config named as
+// the user's own [[mcp]].
+func (c *Config) Presave() func(*Config) { return c.presave }
+
 // Default returns the built-in configuration.
 func Default() *Config {
 	return &Config{

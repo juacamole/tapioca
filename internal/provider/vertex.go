@@ -181,6 +181,15 @@ func serviceAccountToken(ctx context.Context, path string, client *http.Client) 
 	if sa.TokenURI == "" {
 		sa.TokenURI = "https://oauth2.googleapis.com/token"
 	}
+	// token_uri decides where the grant is POSTed, which is the same decision
+	// base_url makes and was not checked at all: a key file naming
+	// http://169.254.169.254/ or a port on this machine got the request made
+	// for it, with the response folded into an error the user is shown. The
+	// file is chosen by credentials_file, so a config could choose it — and a
+	// key file is copied around like any other file besides.
+	if err := CheckBaseURL(sa.TokenURI); err != nil {
+		return "", time.Time{}, fmt.Errorf("token_uri in %s: %w", path, err)
+	}
 
 	key, err := parsePrivateKey(sa.PrivateKey)
 	if err != nil {

@@ -274,6 +274,11 @@ func Main() {
 		}
 	}
 
+	// What the file (as the tree's location has already narrowed it) says about
+	// the two settings the flags below also decide. Recorded before the flags
+	// touch either, because a reload has to be able to tell "the user edited
+	// the file" from "the file always said this and a flag overruled it".
+	fileMode, fileSandbox := cfg.PermissionMode, cfg.Sandbox
 	mode := cfg.PermissionMode
 	if args.permMode != "" {
 		mode = tools.NormalizeMode(args.permMode)
@@ -432,6 +437,7 @@ func Main() {
 	cfg.Wordmark = ui.SetWordmark(cfg.Wordmark)
 
 	app := ui.NewApp(cfg, mgr, sessID, sessName, created)
+	app.SetFileState(fileMode, fileSandbox)
 	if args.resumePicker {
 		app.StartWithSessionPicker()
 	}

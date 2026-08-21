@@ -514,12 +514,30 @@ func cmdCd(m *App, arg string) tea.Cmd {
 		m.setFlash(err.Error(), true)
 		return m.flashCmd()
 	}
-	m.reloadUserCmds() // .tapioca/commands is per project
-	m.reloadSkills()   // and so is .tapioca/skills
-	// Whether hooks may run is a question about this tree, so it is asked
-	// again: /cd into a checkout that holds the config file has to withdraw
-	// them, exactly as starting there would have.
-	hookNotes := tools.ApplyHooks(e, m.cfg, e.Cwd())
+	// Whether the config may be honoured is a question about this tree, and
+	// [[hooks]] is not the only key that answers to it: editor, permission_mode,
+	// bash_allow, permissions.allow, mcp, lsp, agents.external and an
+	// off-machine base_url are all withdrawn for a config that sits inside the
+	// working tree. Only hooks were asked again here, so /cd into the checkout
+	// that holds the config file — the dotfiles repository, which is exactly
+	// the case the restriction was written for — left every one of the others
+	// in force. A full reload asks all of them, and it is the same
+	// implementation the watcher and /reload use, so the three cannot drift
+	// into meaning different things.
+	//
+	// It has to re-read the file rather than restrict what is loaded: the
+	// restriction is one-way, and a config already stripped for one tree could
+	// never get its keys back on the way out again.
+	reloaded := m.applyReload()
+	hookNotes := m.hookNotes
+	if !reloaded {
+		// The file no longer parses. Nothing can be re-read, so the config in
+		// memory is restricted where it stands — one-way, but the alternative
+		// is honouring an in-tree config because of a syntax error.
+		hookNotes = append(m.cfg.RestrictIfInsideTree(e.Cwd()), tools.ApplyHooks(e, m.cfg, e.Cwd())...)
+		m.reloadUserCmds() // .tapioca/commands is per project
+		m.reloadSkills()   // and so is .tapioca/skills
+	}
 	note := "cwd: " + e.Cwd()
 	if project.Instructions(e.Cwd()) != "" {
 		note += "" + gl.sep + "loaded project instructions"

@@ -104,6 +104,11 @@ type App struct {
 	search       *searchState // an open transcript search
 	reloadSeen   string       // fingerprint of the watched files at the last reload
 	hookNotes    []string     // what the last reload refused about [[hooks]]
+	// fileMode and fileSandbox are what the config file itself last said about
+	// the two settings a launch flag can also decide. A reload applies the file
+	// only where the file changed — see applyReload.
+	fileMode    string
+	fileSandbox bool
 	// dashScroll is each panel's scroll offset, by panel key. Per panel rather
 	// than one shared offset, so scrolling the tool list does not also move the
 	// settings you were part way down.
@@ -201,6 +206,8 @@ func NewApp(cfg *config.Config, mgr *agent.Manager, sessID, sessName string, cre
 		sessName:    sessName,
 		sessTitled:  sessName != "",
 		sessCreated: created,
+		fileMode:    cfg.PermissionMode,
+		fileSandbox: cfg.Sandbox,
 	}
 	app.reloadSkills()
 	// A pack that does not parse is skipped, and saying so once at startup is
@@ -211,6 +218,16 @@ func NewApp(cfg *config.Config, mgr *agent.Manager, sessID, sessName string, cre
 		app.setFlash(fmt.Sprintf("%d skill(s) skipped — /skills says why", n), true)
 	}
 	return app
+}
+
+// SetFileState records what the config file itself said about the two settings
+// a launch flag can also decide, before any flag was applied to it. --sandbox
+// is applied by writing into the loaded config, so by the time the app is
+// built the config no longer remembers what the file said — and a reload that
+// cannot tell the file's value from the flag's hands the flag back to the
+// file. See applyReload.
+func (m *App) SetFileState(permissionMode string, sandbox bool) {
+	m.fileMode, m.fileSandbox = permissionMode, sandbox
 }
 
 // statusLabel returns the fine-grained stage label when one is active. It is
@@ -695,6 +712,14 @@ func (m *App) applyReload() bool {
 	// A reload is a second chance to apply a config the tree wrote, and the
 	// watcher makes it one the agent can trigger by editing the file.
 	m.hookNotes = newCfg.RestrictIfInsideTree(m.cwd())
+	// The transform that keeps a launch flag out of the file is not in the
+	// file, so a reload drops it: after one, saving wrote --sandbox, and the
+	// servers --mcp-config named, into the user's own config as settings.
+	newCfg.SetPresave(m.cfg.Presave())
+	// What the file itself said about the two settings a launch flag can also
+	// decide, before the new values overwrite them.
+	fileMode, fileSandbox := m.fileMode, m.fileSandbox
+	m.fileMode, m.fileSandbox = newCfg.PermissionMode, newCfg.Sandbox
 	*m.cfg = *newCfg
 	m.keys = NewKeyMap(m.cfg.Keys)
 	secretenv.SetExtra(m.cfg.SecretEnvNames())
@@ -704,10 +729,25 @@ func (m *App) applyReload() bool {
 	m.spin.Spinner = gl.spinner
 	m.repaint()
 	if m.mgr.Exec != nil {
-		m.mgr.Exec.SetMode(m.cfg.PermissionMode)
+		// --permission-mode and --sandbox are launch flags, deliberately never
+		// written to the file, and they live in the Executor rather than in the
+		// config. Re-applying the file's value for them on every reload put the
+		// file back in charge of both: `tapioca --sandbox` on a hostile repo
+		// became an unsandboxed session, and `--permission-mode plan` reverted
+		// to whatever the file's default was. The watcher makes that a reload
+		// the working tree can provoke — it stats <cwd>/.tapioca/commands, so
+		// one file written there, which auto mode approves without asking, is
+		// enough, and two seconds later the confinement is gone with no prompt
+		// and no flash. So the file is applied to these two only where the file
+		// itself changed; where it did not, whatever is live stays live.
+		if m.cfg.PermissionMode != fileMode {
+			m.mgr.Exec.SetMode(m.cfg.PermissionMode)
+		}
 		m.mgr.Exec.SetBashPrefixes(m.cfg.BashAllow)
 		m.mgr.Exec.SetRules(m.cfg.Permissions.Allow, m.cfg.Permissions.Ask, m.cfg.Permissions.Deny)
-		m.mgr.Exec.SetSandbox(m.cfg.Sandbox)
+		if m.cfg.Sandbox != fileSandbox {
+			m.mgr.Exec.SetSandbox(m.cfg.Sandbox)
+		}
 		m.mgr.Exec.SetSandboxNetwork(m.cfg.SandboxNetwork)
 		m.mgr.Exec.SetTimeout(time.Duration(m.cfg.BashTimeout) * time.Second)
 		m.hookNotes = append(m.hookNotes, tools.ApplyHooks(m.mgr.Exec, m.cfg, m.cwd())...)

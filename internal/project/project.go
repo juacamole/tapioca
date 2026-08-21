@@ -35,15 +35,27 @@ const maxImportDepth = 3
 // sparse 200MB AGENTS.md is 4KB in a clone and allocated gigabytes here.
 const maxInstructionFile = 1 << 20
 
+// readCapped reads at most limit bytes of a regular file.
+//
+// The kind of file is decided before it is opened, not after. Opening a FIFO
+// for reading blocks until something writes to it, and nothing ever will: tar
+// stores FIFOs and extracts them without being asked to, so an archive naming
+// one AGENTS.md wedged the system prompt on the first turn — before the user
+// had typed anything, with no deadline on the read and nothing to cancel.
+// Stat answers without opening, and rules out a directory in the same breath.
 func readCapped(path string, limit int64) ([]byte, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s is not a regular file", path)
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
-	if info, err := f.Stat(); err == nil && info.IsDir() {
-		return nil, fmt.Errorf("%s is a directory", path)
-	}
 	return io.ReadAll(io.LimitReader(f, limit))
 }
 
@@ -195,7 +207,59 @@ func (r importRoots) allows(abs string) bool {
 // ships keys.md pointing at config.toml, the extension check sees markdown,
 // and the read sees the provider keys.
 func (r importRoots) mayRead(abs string) bool {
-	return r.allows(abs) && importable(resolveReal(abs))
+	real := resolveReal(abs)
+	return r.allows(real) && importable(real) && !aliasesTheConfigDir(real)
+}
+
+// aliasesTheConfigDir reports whether a file inside the project is the same
+// file as something in the config directory, reached by a second name rather
+// than by a link.
+//
+// "Inside the root" is a statement about the path, and the read is about the
+// inode. A symlink makes the two disagree and resolveReal settles it; a hard
+// link makes them disagree with nothing to resolve — `ln
+// ~/.config/tapioca/config.toml keys.md` puts the provider keys under a name
+// that is genuinely inside the project and genuinely ends in ".md", and
+// @keys.md then sent api_key and every MCP token to the provider on every
+// turn, in every mode, with no tool call to decline. The path test cannot see
+// it because there is nothing wrong with the path.
+//
+// The link count is the gate, and it is what makes this free: an instruction
+// file has one name, so the walk below never happens. It is also a necessary
+// condition — a second name is a second link — so nothing is missed by it.
+//
+// The config directory is what is walked because it is what is at stake: it
+// holds the provider keys and the MCP bearer tokens, and it is small. A hard
+// link to something else outside the project is not covered, and cannot be
+// without a way of asking "what else is this inode called", which the
+// filesystem does not offer. Nothing but code execution can create either, and
+// git cannot carry one: tar refuses a hard link that leaves the extraction
+// directory.
+func aliasesTheConfigDir(real string) bool {
+	info, err := os.Lstat(real)
+	if err != nil || !info.Mode().IsRegular() || links(info) < 2 {
+		return false
+	}
+	const maxWalk = 5000
+	seen := 0
+	found := false
+	_ = filepath.WalkDir(GlobalDir(), func(p string, d os.DirEntry, err error) error {
+		if err != nil || found {
+			return nil
+		}
+		if seen++; seen > maxWalk {
+			return filepath.SkipAll
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if other, err := os.Lstat(p); err == nil && os.SameFile(info, other) {
+			found = true
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	return found
 }
 
 // importable restricts imports to markdown. The feature exists to split a long

@@ -356,14 +356,23 @@ func (s Skill) Files() []string {
 	return out
 }
 
+// readCapped reads at most limit bytes of a regular file. The kind of file is
+// decided before it is opened, because opening a FIFO for reading blocks until
+// something writes to it and nothing here ever will — and a skill pack is a
+// directory the project ships, which tar is happy to fill with FIFOs. Stat
+// rules out a directory in the same breath.
 func readCapped(path string, limit int64) ([]byte, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s is not a regular file", path)
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
-	if info, err := f.Stat(); err == nil && info.IsDir() {
-		return nil, fmt.Errorf("%s is a directory", path)
-	}
 	return io.ReadAll(io.LimitReader(f, limit))
 }
