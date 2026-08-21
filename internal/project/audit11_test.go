@@ -77,15 +77,30 @@ func TestImportsAreBoundedInAggregate(t *testing.T) {
 	runtime.ReadMemStats(&after)
 	grew := after.TotalAlloc - before.TotalAlloc
 
-	// The whole expansion may cost a few megabytes; it may not cost the sum of
-	// every import. The budget below is well clear of both.
-	const budget = 32 << 20
+	// What is actually being asserted is that the expansion stops at the
+	// aggregate budget, and that is visible in the output: the marker is
+	// written exactly where reading stopped. Allocation is the symptom and is
+	// reported rather than asserted on — it moves with the allocator and the
+	// GC, and a threshold tight enough to catch the unbounded case (281 MB
+	// here) sits close enough to the bounded one to fail on a different
+	// machine, which is what it did on CI at 33 MB against a 32 MB budget.
+	t.Logf("expanding %d imports of %d KB allocated %d MB", imports, kb, grew>>20)
+	if len(out) > maxInstructions+len("\n[truncated]") {
+		t.Errorf("the joined result is %d bytes, past its own cap", len(out))
+	}
+
+	// The number is deliberately loose. Measured: 281 MB unbounded against
+	// 24 MB bounded here and 33 MB on CI, where the allocator and the GC land
+	// differently. A threshold at the bounded figure fails on whichever machine
+	// runs it slightly differently — it already did, at 33 against 32 — so this
+	// sits three times clear of the bounded case and three times under the
+	// unbounded one. A ratio would be prettier and does not work: ten times the
+	// imports cost 702 MB unbounded, only 2.5x, because the file listing them
+	// is itself capped.
+	const budget = 96 << 20
 	if grew > budget {
 		t.Errorf("expanding %d imports of %d KB allocated %d MB; the fan-out is unbounded",
 			imports, kb, grew>>20)
-	}
-	if len(out) > maxInstructions+len("\n[truncated]") {
-		t.Errorf("the joined result is %d bytes, past its own cap", len(out))
 	}
 }
 
