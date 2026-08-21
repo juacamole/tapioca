@@ -58,9 +58,17 @@ func trackedSet(root string) map[string]bool {
 }
 
 // searchRoot resolves the directory a search starts from, defaulting to cwd.
+//
+// The default is resolved too, and that is not cosmetic: filepath.WalkDir
+// lstats its root, so a root that is itself a symlink is one non-directory
+// entry and the walk descends into nothing. Working in a linked directory —
+// /tmp on macOS, a stowed checkout, a relocated home — made the fallback
+// answer "no matches" for the whole project. It went unseen because ripgrep
+// follows the root it is given, so the bug only appears on a machine without
+// it, which is also the machine that cannot afford a silently empty search.
 func (e *Executor) searchRoot(path string) string {
 	if strings.TrimSpace(path) == "" {
-		return e.Cwd()
+		return realPath(filepath.Clean(e.Cwd()))
 	}
 	return e.resolve(path)
 }
