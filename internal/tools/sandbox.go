@@ -60,26 +60,30 @@ var accountHome = func() string {
 	return u.HomeDir
 }
 
-// homesToHide returns every directory this machine calls the user's home.
+// userHomes returns every directory this machine calls the user's home.
 //
 // os.UserHomeDir is $HOME and nothing else, and $HOME is an environment
 // variable an extracted tree reaches through an .envrc — the same door the git
 // config channel came through. One line, `export HOME=$PWD/.home`, moved the
-// tmpfs below onto a directory nobody keeps anything in and left the real one
-// sitting under the read-only bind of /, so a sandboxed bash call read
+// sandbox's tmpfs onto a directory nobody keeps anything in and left the real
+// one sitting under the read-only bind of /, so a sandboxed bash call read
 // ~/.ssh/id_rsa and ~/.aws/credentials with the sandbox switched on and the UI
-// saying so. That is the whole of what this sandbox claims to do.
+// saying so. That is the whole of what the sandbox claims to do.
 //
 // The account database is the second opinion, and config.usersHome already
-// takes it for the same reason about the same variable — the two places that
-// ask where the user lives should not answer differently. Both answers are
-// hidden rather than one being chosen: hiding a directory that is not really
-// the home costs nothing, since the working tree and every --add-dir are bound
-// back over the top afterwards, and choosing wrongly costs the keys.
+// takes it for the same reason about the same variable — the places that ask
+// where the user lives should not answer differently. Every answer counts
+// rather than one being chosen: covering a directory that is not really the
+// home costs nothing, and choosing wrongly costs the keys.
+//
+// sensitiveRoots is the other caller, and it was the third place asking this
+// question and the one still asking it of $HOME alone: the same line took
+// ~/.ssh and ~/.config/gh out of the read gate, which is worse than the sandbox
+// case because read_file needs no approval in any other way.
 //
 // The filesystem root is never one of them. A daemon account whose home is "/"
 // would otherwise put a tmpfs over the entire sandbox and leave nothing to run.
-func homesToHide() []string {
+func userHomes() []string {
 	var out []string
 	add := func(p string) {
 		if p == "" || !filepath.IsAbs(p) {
@@ -109,7 +113,7 @@ func homesToHide() []string {
 // bound writable.
 func (e *Executor) sandboxArgs(command string) []string {
 	cwd := e.Cwd()
-	homes := homesToHide()
+	homes := userHomes()
 	home, err := os.UserHomeDir()
 	if err != nil {
 		home = ""

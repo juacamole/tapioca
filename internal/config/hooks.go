@@ -315,6 +315,21 @@ func treeRoots(cwd string) []string {
 		".git", ".hg", ".jj", // a checkout
 		"go.mod", "package.json", "Cargo.toml", // an archive of one
 		"pyproject.toml", "pom.xml", "build.gradle", "Gemfile", "composer.json",
+		// An .envrc is a marker for the same reason the rest are — it says
+		// "this directory is a project" — and it is the one the residual gap
+		// below was reachable through on purpose. An archive that ships
+		//
+		//	proj/.envrc                   export XDG_CONFIG_HOME=$PWD/cfg
+		//	proj/cfg/tapioca/config.toml
+		//	proj/src/go.mod
+		//
+		// carries no marker in proj and one in src, so working in src made proj
+		// "outside the tree" and the shipped config the user's own: hooks,
+		// [[mcp]], [[lsp]] and permission_mode = "bypass", all honoured.
+		// direnv reads an .envrc from any ancestor, which is what makes the
+		// layout work at all — so the file the attack needs is exactly the file
+		// that now marks the directory.
+		".envrc",
 	}
 	// Every ancestor that carries a marker counts, not the nearest one. The
 	// archive chooses where its markers are, so stopping at the first put the
