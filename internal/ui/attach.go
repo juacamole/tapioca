@@ -170,8 +170,15 @@ func (m *App) expandMentions(text string, atts *[]attachment) string {
 			inlined = append(inlined, fmt.Sprintf("[%s: outside the working directory or a secret — not attached]", rel))
 			continue
 		}
+		// Regular, not merely "not a directory". A size cap bounds what a read
+		// costs and says nothing about a read that never starts: a FIFO reports
+		// a size of zero, walks past the cap below, and os.ReadFile on it blocks
+		// until something writes — on the update goroutine, so the whole TUI
+		// stops. tar stores FIFOs and extracts them without being asked to, and
+		// a `notes.md` in the tree is offered by mention completion like any
+		// other file.
 		info, err := os.Stat(path)
-		if err != nil || info.IsDir() {
+		if err != nil || !info.Mode().IsRegular() {
 			continue
 		}
 		if info.Size() > maxMentionBytes {

@@ -330,12 +330,25 @@ func matchSegments(pat, seg []string) bool {
 
 // relative shortens paths inside the working directory so output stays
 // readable and pasteable back into other tools.
+//
+// Both spellings of the working directory are tried. searchRoot resolves the
+// path argument but not the default, so a grep given a path walks resolved
+// paths while this compares against the working directory as written — and
+// under a working directory reached through a link (`cd ~/src` where ~/src is
+// one, /tmp on macOS) nothing was ever inside it. Every result then printed as
+// an absolute path, and grep's own glob filter, which matches against this,
+// stopped matching a pattern with a directory in it.
 func (e *Executor) relative(path string) string {
-	rel, err := filepath.Rel(e.Cwd(), path)
-	if err != nil || strings.HasPrefix(rel, "..") {
-		return path
+	cwd := e.Cwd()
+	if rel, err := filepath.Rel(cwd, path); err == nil && !strings.HasPrefix(rel, "..") {
+		return rel
 	}
-	return rel
+	if real := realPath(filepath.Clean(cwd)); real != cwd && real != unresolvable {
+		if rel, err := filepath.Rel(real, path); err == nil && !strings.HasPrefix(rel, "..") {
+			return rel
+		}
+	}
+	return path
 }
 
 func clipLine(s string) string {
