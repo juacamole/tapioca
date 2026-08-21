@@ -121,9 +121,28 @@ func (e *Executor) grepRipgrep(ctx context.Context, pattern, root, glob string, 
 		return nil, false, err
 	}
 	args := []string{"--line-number", "--no-heading", "--color", "never",
-		"--max-columns", strconv.Itoa(maxLineWidth), "--max-count", strconv.Itoa(limit)}
+		// The path is followed by a NUL instead of a colon. Filenames may
+		// contain colons and, in an extracted tarball, the attacker picks them:
+		// cutting the line at the first colon put the cut left of the filename
+		// for anything under a directory called "a:b", so sensitivePath judged
+		// "<root>/a" and waved through <root>/a:b/id_rsa. A NUL cannot occur in
+		// a path, so this cut is the same one the walk makes.
+		"--null",
+		// Without a preview rg replaces an over-long line with a marker and no
+		// content at all, where the walk clips it and returns the first
+		// maxLineWidth characters — a match in a minified bundle or a one-line
+		// JSON fixture came back empty on one backend and useful on the other.
+		"--max-columns", strconv.Itoa(maxLineWidth), "--max-columns-preview",
+		"--max-count", strconv.Itoa(limit)}
+	// Dotfiles are ordinary project files — .github/workflows, .golangci.yml,
+	// .tapioca/commands — and the walk searches them. rg skips them unless it
+	// is told not to, so grep answered differently depending on whether rg
+	// happened to be installed, and the machine that has it is the common one.
+	args = append(args, "--hidden")
 	// rg skips these only when .gitignore says so; the fallback always does,
-	// and the two backends must not return different result sets.
+	// and the two backends must not return different result sets. With
+	// --hidden above, the .git entry is also what keeps rg out of the object
+	// store and the reflog.
 	for dir := range skipDirs {
 		args = append(args, "--glob", "!"+dir+"/")
 	}
@@ -150,7 +169,7 @@ func (e *Executor) grepRipgrep(ctx context.Context, pattern, root, glob string, 
 	sc := bufio.NewScanner(strings.NewReader(string(out)))
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for sc.Scan() {
-		file, rest, ok := strings.Cut(sc.Text(), ":")
+		file, rest, ok := strings.Cut(sc.Text(), "\x00")
 		if !ok || e.sensitivePath(file) {
 			continue
 		}

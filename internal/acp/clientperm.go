@@ -51,13 +51,32 @@ func toolNameFor(kind string) string {
 // ACP does not specify rawInput, so the field names are the ones agents
 // actually use; the title is the last resort, and it is usually the command or
 // the path spelled out for a human anyway.
+//
+// A search is keyed on where it looks, never on what it looks for. Both things
+// that read a grep's subject read "path" — subjectOf for the rules, and
+// gateReadOnly for the prompt that a search outside the working tree gets —
+// so a subject taken from "pattern" and handed back under that name was one
+// neither could ever see. deny = ["grep(~/.ssh/**)"] matched nothing, and an
+// external agent searching $HOME for BEGIN OPENSSH PRIVATE KEY was approved in
+// silence where Tapioca's own grep of the same directory asks first.
 var subjectKeys = map[string][]string{
 	"bash":       {"command", "cmd", "script"},
 	"read_file":  {"path", "file_path", "abs_path", "filePath", "absPath"},
 	"edit_file":  {"path", "file_path", "abs_path", "filePath", "absPath"},
 	"write_file": {"path", "file_path", "abs_path", "filePath", "absPath"},
-	"grep":       {"pattern", "query", "path"},
+	"grep":       {"path", "dir", "directory", "root"},
 	"web_fetch":  {"url", "uri"},
+}
+
+// searchTerms are where an agent puts the thing it is looking for. The gate
+// never matches on one — see subjectKeys — but a call carrying one has said
+// what it is, so it is not prose standing in for arguments nobody reported.
+var searchTerms = []string{"pattern", "query", "regex", "text"}
+
+// locationSubject names the tools a declared location can speak for: the ones
+// whose subject is a path in the first place.
+var locationSubject = map[string]bool{
+	"read_file": true, "edit_file": true, "write_file": true, "grep": true,
 }
 
 // deniedUnreported is the refusal an agent gets back when the user turns down
@@ -206,8 +225,23 @@ func requestSubject(call toolCallUpdate) (name, subject string, reported bool) {
 		return name, s, true
 	}
 	// A file tool's locations say what it is about when its arguments do not.
-	if len(call.Locations) > 0 && call.Locations[0].Path != "" {
+	// Only a file tool's: a shell command is not a location and neither is a
+	// URL. Letting one stand in for either handed the gate
+	// {"command":"/tmp/notes.txt"} — a string no deny rule for a shell command
+	// matches, shown to the user in place of what actually runs, and counted as
+	// the call having reported itself, so the last-resort prompt behind it was
+	// skipped too. Under bypass that is an unnamed shell command running with
+	// nothing asked and nothing shown.
+	if locationSubject[name] && len(call.Locations) > 0 && call.Locations[0].Path != "" {
 		return name, call.Locations[0].Path, true
+	}
+	// A search that names no directory covers the working tree, which is what
+	// the built-in grep does with no path argument and what needs no prompt.
+	// It is still fully reported: an empty path is the whole of what the gate
+	// reads for a search, so this must not fall through to the title and start
+	// asking about every ordinary search.
+	if name == "grep" && firstField(call.Raw, searchTerms...) != "" {
+		return name, "", true
 	}
 	return name, strings.TrimSpace(call.Title), false
 }
@@ -215,14 +249,15 @@ func requestSubject(call toolCallUpdate) (name, subject string, reported bool) {
 // subjectJSON rebuilds the arguments the built-in gate reads, so a mapped call
 // is matched, prompted and checkpointed as the tool it stands in for.
 func subjectJSON(name, subject string) json.RawMessage {
+	// grep is not in here: its subject is a path like a file tool's, and
+	// naming it "pattern" put it under a key subjectOf and gateReadOnly do not
+	// read.
 	key := "path"
 	switch name {
 	case "bash":
 		key = "command"
 	case "web_fetch":
 		key = "url"
-	case "grep":
-		key = "pattern"
 	}
 	return json.RawMessage(`{"` + key + `":` + quoteJSON(subject) + `}`)
 }
