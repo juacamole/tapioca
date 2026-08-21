@@ -113,6 +113,50 @@ type Usage struct {
 	CacheWriteTokens int `json:"cache_write_tokens,omitempty"`
 }
 
+// maxBelievableTokens is the largest count a server is taken at its word for.
+// A billion is a thousand times the largest context window anyone sells, so
+// nothing honest meets it, and it leaves the arithmetic below plenty of room:
+// four fields summed and multiplied by a hundred stays four billion times short
+// of overflowing.
+const maxBelievableTokens = 1 << 30
+
+// Clamp folds a server's token counts back into the range the rest of the
+// program can do arithmetic in.
+//
+// Every other number in a streamed response is parsed and bounded; these were
+// assigned straight through, and they are the ones that get divided and
+// multiplied rather than printed. A negative completion_tokens — which the
+// guard on the assignment lets past, because it tests input *or* output — ends
+// up as a request's Out, and the dashboard's sparkline scales it by
+// v*(len(chars)-1)/maxV with maxV floored at 1, which indexes a rune slice at
+// -11 and takes the program down. A prompt_tokens of 1e17 is positive, passes
+// every guard, and overflows CtxTokens*100 in the context gauge into a large
+// negative percent, which strings.Repeat panics on. An inflated but ordinary
+// number needs no overflow at all: it drives the auto-compaction threshold and
+// makes the client summarise away a conversation that was nowhere near full.
+//
+// It is applied where usage stops being a report and becomes state — the one
+// place in the agent that publishes it — rather than at each provider's
+// assembly, because there are three of those and a fourth would be written
+// without it.
+func (u Usage) Clamp() Usage {
+	clamp := func(n int) int {
+		switch {
+		case n < 0:
+			return 0
+		case n > maxBelievableTokens:
+			return maxBelievableTokens
+		}
+		return n
+	}
+	return Usage{
+		InputTokens:      clamp(u.InputTokens),
+		OutputTokens:     clamp(u.OutputTokens),
+		CacheReadTokens:  clamp(u.CacheReadTokens),
+		CacheWriteTokens: clamp(u.CacheWriteTokens),
+	}
+}
+
 // ToolDef describes a callable tool offered to the model.
 type ToolDef struct {
 	Name        string

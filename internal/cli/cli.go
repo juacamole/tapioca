@@ -213,16 +213,7 @@ func Main() {
 			return
 		}
 		for _, m := range metas {
-			name := m.Name
-			if name == "" {
-				name = "(unnamed)"
-			}
-			where := m.Cwd
-			if where == "" {
-				where = "(no project recorded)"
-			}
-			fmt.Printf("%s  %-32s  %d agents  %d msgs  %s  %s\n",
-				m.ID, name, m.Agents, m.Messages, m.UpdatedAt.Format("2006-01-02 15:04"), where)
+			fmt.Println(sessionLine(m))
 		}
 		return
 	}
@@ -457,4 +448,42 @@ func Main() {
 	if runErr != nil {
 		fail(runErr)
 	}
+}
+
+// sessionLine renders one row of --list-sessions.
+//
+// The recorded directory is the project's own path, and in the threat model
+// this audit works in that is a name an extracted archive chose: tar will
+// happily create a directory whose name is an escape sequence, and one run of
+// tapioca inside it puts that name in the session index for good. The TUI's
+// picker sanitizes every item it shows; this listing wrote straight to stdout,
+// so the same string reached a terminal untouched here and not there — one
+// question with two answers, and the unanswered one is outside the TUI where
+// nothing else is watching.
+//
+// The name gets the same treatment: it is normally model-written and cleaned on
+// the way in, but a session file predating that, or one edited by hand, is not
+// re-checked anywhere.
+//
+// Newlines and tabs go too, which plain() keeps: this is one row per session,
+// and a directory called "a\nb  0 agents" would otherwise forge a row.
+func sessionLine(m session.Meta) string {
+	label := func(s string) string {
+		return strings.Map(func(r rune) rune {
+			if r == '\n' || r == '\t' {
+				return ' '
+			}
+			return r
+		}, plain(s))
+	}
+	name := label(m.Name)
+	if strings.TrimSpace(name) == "" {
+		name = "(unnamed)"
+	}
+	where := label(m.Cwd)
+	if strings.TrimSpace(where) == "" {
+		where = "(no project recorded)"
+	}
+	return fmt.Sprintf("%s  %-32s  %d agents  %d msgs  %s  %s",
+		m.ID, name, m.Agents, m.Messages, m.UpdatedAt.Format("2006-01-02 15:04"), where)
 }

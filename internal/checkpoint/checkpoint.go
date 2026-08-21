@@ -118,6 +118,119 @@ func ensure(workTree string) error {
 	return err
 }
 
+// Ignored content is snapshotted too, up to these. See addIgnored.
+const (
+	maxIgnoredFiles = 4000
+	maxIgnoredBytes = 64 << 20
+)
+
+// addIgnored stages the ignored content `add -A` skipped, within a budget.
+//
+// The global core.excludesFile was turned off because "a global ignore file
+// that hides a path from `git add -A` would make the checkpoint miss a file it
+// is supposed to be able to rewind". core.excludesFile is not the only file
+// that answers "is this path ignored", and it is not the one an extracted
+// tarball writes. `.gitignore` in the work tree is, it is attacker-authored
+// like every other file there, and git ranks it *above* core.excludesFile — so
+// the spelling that was closed is the one the user supplies and the spelling
+// left open was the one the repository supplies.
+//
+// What that bought an attacker was not a lost file at the margins. A checkpoint
+// is the only copy of an untracked file: anything the project's own git tracks
+// can be recovered from the project's own git, so the paths where /rewind is
+// the sole recourse are exactly the ones a .gitignore line takes out of it. One
+// committed line — `notes.txt`, or `*` — and the agent's damage to that path
+// was unrewindable, silently: /rewind still lists the checkpoint, still reports
+// that it rewound, and restores nothing.
+//
+// The budget is the reason this is not simply `add -A -f`. Ignore rules are
+// mostly honest, and what they name is mostly node_modules, target and .venv:
+// forcing those in costs a fifth of a second before every mutating tool call
+// and, worse, commits a fresh copy of a half-gigabyte build output every time
+// the agent runs a build. So directories are measured before they are taken,
+// with a walk that gives up as soon as it is over budget — which for a
+// dependency tree is almost immediately, and for a source tree never happens.
+// Ignored files not inside a directory of their own are always taken; they are
+// individually named and cost nothing.
+//
+// The residual gap is a tree that ignores a directory holding more than the
+// budget. That is a worse hiding place than it sounds — the attacker has to put
+// the user's own work inside it — and it is the price of not making an ordinary
+// build unusable.
+func addIgnored(workTree string) error {
+	out, err := run(workTree, "ls-files", "-z", "--others", "--ignored",
+		"--exclude-standard", "--directory", "--no-empty-directory")
+	if err != nil {
+		return err
+	}
+	files, bytes := maxIgnoredFiles, int64(maxIgnoredBytes)
+	var take []string
+	for _, entry := range strings.Split(out, "\x00") {
+		if entry == "" {
+			continue
+		}
+		if !strings.HasSuffix(entry, "/") {
+			// An individually named ignored file. .git is never in this list;
+			// git excludes it from ls-files on its own.
+			take = append(take, entry)
+			continue
+		}
+		if affordable(filepath.Join(workTree, entry), &files, &bytes) {
+			take = append(take, strings.TrimSuffix(entry, "/"))
+		}
+	}
+	// One pathspec per entry, in batches, each marked literal so that a file
+	// named `:(glob)x` — or one beginning with a dash — is a path and not an
+	// instruction. `--` alone does not cover pathspec magic.
+	const batch = 128
+	for len(take) > 0 {
+		n := min(batch, len(take))
+		args := []string{"add", "-f", "--"}
+		for _, p := range take[:n] {
+			args = append(args, ":(literal)"+p)
+		}
+		if _, err := run(workTree, args...); err != nil {
+			return err
+		}
+		take = take[n:]
+	}
+	return nil
+}
+
+// affordable reports whether a directory fits in what is left of the budget,
+// spending it as it goes. It stops walking the moment it does not, so a
+// dependency tree costs a few hundred entries rather than a full traversal.
+func affordable(dir string, files *int, bytes *int64) bool {
+	f, b := *files, *bytes
+	over := false
+	_ = filepath.WalkDir(dir, func(_ string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil || !info.Mode().IsRegular() {
+			// A FIFO or a device in an ignored directory is not content, and
+			// reading one is how a snapshot hangs.
+			return nil
+		}
+		f--
+		b -= info.Size()
+		if f < 0 || b < 0 {
+			over = true
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	if over {
+		return false
+	}
+	*files, *bytes = f, b
+	return true
+}
+
 // Snapshot stores the current tree state; a no-op (returning "") when
 // nothing changed since the last snapshot.
 func Snapshot(workTree, label string) (string, error) {
@@ -127,6 +240,9 @@ func Snapshot(workTree, label string) (string, error) {
 		return "", err
 	}
 	if _, err := run(workTree, "add", "-A"); err != nil {
+		return "", err
+	}
+	if err := addIgnored(workTree); err != nil {
 		return "", err
 	}
 	if _, err := run(workTree, "rev-parse", "--verify", "HEAD"); err == nil {
@@ -164,8 +280,11 @@ func List(workTree string, n int) ([]Entry, error) {
 }
 
 // Restore rewinds the work tree to a snapshot. The current state is
-// snapshotted first, so a rewind is itself rewindable. Files created after
-// the target snapshot are removed (gitignored files are left alone).
+// snapshotted first, so a rewind is itself rewindable. Files created after the
+// target snapshot are removed — `clean` without -x, so an ignored file created
+// since is left in place rather than deleted. That is the safe direction of the
+// asymmetry with addIgnored: an ignored file the snapshot holds is restored,
+// and one it does not is not thrown away.
 func Restore(workTree, id string) error {
 	if _, err := Snapshot(workTree, "before rewind to "+id); err != nil {
 		return err

@@ -754,7 +754,13 @@ func sparkline(vals []int, w int) string {
 	}
 	var b strings.Builder
 	for _, v := range vals {
-		idx := v * (len(chars) - 1) / maxV
+		// The floor is not defensive tidiness. maxV never drops below 1, so a
+		// negative count scales to a negative index and takes the whole program
+		// down from a rune slice of eight. The counts are clamped where they
+		// enter now, but a session saved before that was true is loaded straight
+		// into Stats, and drawing a chart must not be able to be the thing that
+		// kills the app.
+		idx := max(0, v*(len(chars)-1)/maxV)
 		b.WriteRune(chars[idx])
 	}
 	return b.String()

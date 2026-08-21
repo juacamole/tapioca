@@ -1417,6 +1417,8 @@ func (e *Executor) summary(name string, raw json.RawMessage) string {
 			return a.Pattern + "  in " + a.Path
 		}
 		return a.Pattern
+	case "write_file", "edit_file":
+		return e.describePath(argPath(raw))
 	default:
 		var a struct {
 			Path string `json:"path"`
@@ -1424,6 +1426,47 @@ func (e *Executor) summary(name string, raw json.RawMessage) string {
 		_ = json.Unmarshal(raw, &a)
 		return a.Path
 	}
+}
+
+// describePath names the file a write will actually land on.
+//
+// gateReadOnly prompts with e.resolve(a.Path) — read_file and grep name the
+// file they will really open, so a link is named by its target. The mutating
+// gate asks the same question and used to answer it differently: `outside` is
+// decided on the resolved path and writeFile writes to the resolved path, while
+// the prompt was handed a.Path exactly as the model wrote it. git stores
+// symlinks and tar carries them, so a clone shipping
+// notes.md -> ~/.ssh/authorized_keys produced a box whose only line about
+// *what* was being written named a file in the project.
+//
+// The path as written stays, because that is what the user recognises and what
+// they will see again in the transcript; the destination is added when a link
+// sends the write somewhere else. The comparison is against where the path
+// would land if nothing on the way were a link, measured from the resolved
+// working directory, so a machine whose /tmp or home is itself a link does not
+// make every ordinary edit look redirected.
+func (e *Executor) describePath(path string) string {
+	if strings.TrimSpace(path) == "" {
+		return path
+	}
+	real := e.resolve(path)
+	if real == unresolvable || real == e.lexicalPath(path) {
+		return path
+	}
+	return path + " -> " + real
+}
+
+// lexicalPath is resolve() with the symlink following left out.
+func (e *Executor) lexicalPath(path string) string {
+	if strings.HasPrefix(path, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			path = filepath.Join(home, path[2:])
+		}
+	}
+	if filepath.IsAbs(path) {
+		return filepath.Clean(path)
+	}
+	return filepath.Join(realPath(filepath.Clean(e.Cwd())), path)
 }
 
 func truncateLabel(s string) string {

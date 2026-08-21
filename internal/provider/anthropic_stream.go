@@ -108,7 +108,13 @@ func (a *Anthropic) streamAnthropicSSE(ctx context.Context, model string, r io.R
 			if ev.ContentBlock != nil {
 				// The delta branch was capped and this one was not, so a flood
 				// of block_start events allocated without limit.
-				streamed += len(ev.ContentBlock.Data) + len(ev.ContentBlock.Name)
+				//
+				// The id counts too. It is retained in the builder exactly like
+				// the other two and was the one field left out of the sum, so
+				// the cap read as satisfied while four thousand blocks each
+				// carrying an eight-megabyte id — the line limit, not the
+				// response limit — held tens of gigabytes.
+				streamed += len(ev.ContentBlock.Data) + len(ev.ContentBlock.Name) + len(ev.ContentBlock.ID)
 				if overLimit(streamed) {
 					return finish(), fmt.Errorf("response exceeded %d bytes; stopping", maxResponseBytes)
 				}
