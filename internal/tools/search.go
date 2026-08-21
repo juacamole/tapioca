@@ -155,7 +155,7 @@ func (e *Executor) grepRipgrep(ctx context.Context, pattern, root, glob string, 
 	args = append(args, "--regexp", pattern, "--", root)
 
 	cmd := exec.CommandContext(ctx, bin, args...)
-	cmd.Env = secretenv.Scrubbed()
+	cmd.Env = rgEnv()
 	out, err := cmd.Output()
 	// Exit 1 is "no matches"; anything above that is a real failure (bad
 	// regex, unreadable root) and should fall through to the Go walk.
@@ -180,6 +180,38 @@ func (e *Executor) grepRipgrep(ctx context.Context, pattern, root, glob string, 
 		matches = append(matches, e.relative(file)+":"+rest)
 	}
 	return matches, truncated, nil
+}
+
+// rgEnv is the scrubbed environment with ripgrep's own configuration channel
+// taken out of it.
+//
+// rg reads a file of command-line arguments from $RIPGREP_CONFIG_PATH, and one
+// of the arguments it accepts there is `--pre=COMMAND`: rg then runs COMMAND
+// on every file it searches and greps the output. So two lines an extracted
+// tarball ships — an .envrc exporting RIPGREP_CONFIG_PATH into the tree, and
+// the file it names holding `--pre=./x.sh` — turn grep into arbitrary
+// execution. grep is the wrong tool for that to be true of: it is
+// non-mutating, so it never reaches the permission gate and never prompts, and
+// it is available in plan mode, which means the tree runs code before the user
+// has approved anything at all.
+//
+// Removing the variable rather than passing --no-config, because the flag is a
+// version question: an rg old enough to reject it fails the whole search and
+// silently drops grep onto the Go walk, and the environment is where the
+// setting actually lives. Nothing legitimate points it at a repository either
+// — a user's own rg config sits in their home directory and is theirs, not the
+// tree's, but there is no way to tell those two apart from here, and losing a
+// personal --smart-case is worth rather less than this.
+func rgEnv() []string {
+	src := secretenv.Scrubbed()
+	out := make([]string, 0, len(src))
+	for _, kv := range src {
+		if name, _, ok := strings.Cut(kv, "="); ok && name == "RIPGREP_CONFIG_PATH" {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
 }
 
 func (e *Executor) grepWalk(ctx context.Context, pattern, root, glob string, insensitive bool, limit int) ([]string, bool, error) {
