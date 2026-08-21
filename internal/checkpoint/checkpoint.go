@@ -64,12 +64,22 @@ func run(workTree string, args ...string) (string, error) {
 	pins := append(gitcmd.StaticPins(),
 		gitcmd.Pin{Key: "commit.gpgSign", Value: "false"},
 	)
-	cmd.Env = gitcmd.WithPins(append(secretenv.Scrubbed(),
+	// The inherited GIT_CONFIG_* variables do not travel, because the sentence
+	// above — "nothing in the tree can write one" — was only true of the
+	// *files* the shadow repo reads. Configuration also arrives by environment,
+	// and the environment is reachable from the tree through an .envrc:
+	// GIT_CONFIG_KEY_0=filter.p.clean with `* filter=p` in .gitattributes made
+	// the `add -A` below run whatever the repository chose, and GIT_CONFIG_GLOBAL
+	// pointed at a file in the worktree did the same. A pin cannot answer that,
+	// since filter.<name>.clean is a key the repository names; gitcmd survives
+	// it only by enumerating the configuration first, which is exactly what
+	// this caller does not do.
+	cmd.Env = gitcmd.WithPins(gitcmd.WithoutInheritedConfig(append(secretenv.Scrubbed(),
 		"GIT_DIR="+gitDir(workTree),
 		"GIT_WORK_TREE="+workTree,
 		"GIT_AUTHOR_NAME=tapioca", "GIT_AUTHOR_EMAIL=checkpoint@tapioca",
 		"GIT_COMMITTER_NAME=tapioca", "GIT_COMMITTER_EMAIL=checkpoint@tapioca",
-	), pins...)
+	)), pins...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("git %s: %s", args[0], strings.TrimSpace(string(out)))

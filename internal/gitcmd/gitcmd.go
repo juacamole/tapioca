@@ -48,6 +48,11 @@ var staticPins = []cfg{
 	{"core.sshCommand", "false"},
 	{"core.editor", "false"},
 	{"core.askPass", ""},
+	// namesProgram already calls this one a program-naming key, which is how
+	// it was noticed that the static list did not carry it: nothing here runs
+	// `git init`, but checkpoint does, through StaticPins, and a template
+	// directory is copied into the new repository hooks and all.
+	{"init.templateDir", ""},
 	{"diff.external", ""},
 	{"log.showSignature", "false"},
 	{"gpg.program", "false"},
@@ -433,6 +438,46 @@ func WithPins(base []string, pins ...Pin) []string {
 		cs = append(cs, cfg{p.Key, p.Value})
 	}
 	return configEnv(base, cs)
+}
+
+// WithoutInheritedConfig removes every variable git reads configuration
+// through, for a caller that has no way to enumerate what is in them.
+//
+// This package survives a hostile GIT_CONFIG_COUNT / GIT_CONFIG_KEY_<n> only
+// because it enumerates: `git config --list` reports what those variables
+// carry alongside what the files carry, and readPins pins whatever names a
+// program either way. GIT_CONFIG_GLOBAL and GIT_CONFIG_SYSTEM are covered the
+// same way, since --list reads every scope. The enumeration is the defence,
+// not the pins.
+//
+// A caller that pins without enumerating gets none of that, and the checkpoint
+// repo is one: it points git at a shadow git dir under the data directory and
+// applies StaticPins, which is a fixed list of key names. filter.<name>.clean
+// is not a fixed key name — the repository invents the name and selects it
+// from its own .gitattributes — so
+//
+//	GIT_CONFIG_COUNT=1
+//	GIT_CONFIG_KEY_0=filter.p.clean
+//	GIT_CONFIG_VALUE_0=<command>
+//
+// in the environment, plus `* filter=p` in the tree, made the `git add -A`
+// that every checkpoint runs execute <command>. A checkpoint is taken before
+// every mutating tool call, so any approved write — in auto mode, one nobody
+// was asked about — was enough, and the summary the user saw named a file
+// edit. The environment is reachable from the tree through an .envrc, which is
+// the same door the git config channel came through.
+//
+// Dropping rather than out-ranking, because these cannot be out-ranked in
+// general: a pin can only name a key it already knows about.
+func WithoutInheritedConfig(env []string) []string {
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		if name, _, ok := strings.Cut(kv, "="); ok && strings.HasPrefix(name, "GIT_CONFIG") {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
 }
 
 // StaticPins is the list every git run inside this package neutralises,
