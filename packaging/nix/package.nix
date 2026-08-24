@@ -18,19 +18,19 @@
 
 buildGoModule rec {
   pname = "tapioca";
-  version = "1.1.0";
+  version = "1.2.0";
 
   src = fetchFromGitHub {
     owner = "juacamole";
     repo = "tapioca";
     rev = "v${version}";
-    # nix-prefetch-url --unpack https://github.com/juacamole/tapioca/archive/refs/tags/v1.1.0.tar.gz
+    # nix-prefetch-url --unpack https://github.com/juacamole/tapioca/archive/refs/tags/v1.2.0.tar.gz
     # then: nix hash convert --hash-algo sha256 --to sri <base32>
-    hash = "sha256-K7uAlHuLbcnvha76XfteG0IZxarNuIsU2bkeF5C6RsM=";
+    hash = "sha256-NcDSk0N7r4UWTM+VhqulCmkXE6LfRvBFoNmwVufAaZU=";
   };
 
   # Must match flake.nix; the publish workflow prints the current value.
-  vendorHash = "sha256-oeW8Am7NCkHGlTj2M0gBQqQzxKAGqxgIWLaZFIpY+Pc=";
+  vendorHash = "sha256-2Kqk4C+Ovy0wDSTVB/IHv+y3bDhCadontTP3GZ7a8/M=";
 
   # Both names: Shopify's tapioca gem installs a `tapioca` too.
   subPackages = [
