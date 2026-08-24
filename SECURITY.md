@@ -227,10 +227,15 @@ secret_env = ["MY_COMPANY_TOKEN"]
 MCP servers still receive whatever you set explicitly in their `[mcp.env]`
 block.
 
+A provider configured with a custom `api_key_env` name needs no entry here. The
+list is derived from your config, so `api_key_env = "MY_GATEWAY_KEY"` and the
+`${VAR}` an `[mcp.headers]` entry expands are both withheld from children — a
+variable holds a key because the config says to read it, not because someone
+thought of its name. `secret_env` is for variables nothing in the config points
+at.
+
 Two things this does **not** cover, both worth knowing:
 
-- A provider configured with a custom `api_key_env` name is not recognised
-  automatically. Put that variable in `secret_env` yourself.
 - Scrubbing removes the variable from the *child's* environment. It does not
   hide Tapioca's own: on Linux an approved command can read
   `/proc/<parent>/environ` and see everything you exported in the shell that
@@ -289,12 +294,23 @@ your own config or transcripts prompts like any other secret.
   to grant — but the rules protect you from the agent's *model*, not from the
   agent's *binary*. Connect ones you would trust with a shell, which is what
   launching one already is.
-- **Grants are coarse.** `[p]` grants a command word, not a subcommand:
-  allowing `git` allows `git push`. Tools that can execute code through
-  configuration (`git -c`, `make`, build scripts) inherit that power.
+- **A grant is still a command word.** `[p]` grants `git`, and that allows
+  `git push`. Flags and subcommands that turn a command into a way of running
+  another program are excluded (`git -c`, `git bisect run`, `find -exec`,
+  `go run`, `make -f`, `tar --use-compress-program`, `npm exec` …), and that is
+  checked when the grant is matched rather than only when it is offered — but a
+  grant on `git` is weaker than that list makes it look, because `git commit`
+  runs `.git/hooks/pre-commit`, which in an extracted tarball is a file the
+  archive chose.
 - **`--add-dir` widens the ungated read area** to those directories.
-- **Checkpoints do not protect data outside the working tree**, and
-  `.gitignore`d files are excluded from snapshots.
+- **Checkpoints do not protect data outside the working tree.** Ignored files
+  *are* snapshotted, within a budget — a repository's own `.gitignore` would
+  otherwise decide what `/rewind` can undo, and the paths where the checkpoint
+  is the only copy are exactly the ones an ignore line removes from it. A tree
+  that ignores a directory holding more than the budget is the remaining gap.
+- **`PATH` and `LD_PRELOAD` are outside what any of this can promise.** If the
+  shell that launched Tapioca has them pointed somewhere hostile, `git`, `rg`
+  and `sh` are already whatever that says they are.
 
 ## Practical advice
 
