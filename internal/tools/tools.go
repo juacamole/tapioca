@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -82,6 +81,7 @@ type Executor struct {
 	sandboxNet   bool
 	diagnose     func(path string) string // language-server check after an edit
 	rules        []rule                   // per-tool permission rules from the config
+	hooks        []Hook                   // user commands run around tool calls
 	jobs         map[string]*job          // background bash, by id
 	jobSeq       int
 	checkpoint   func(label string)
@@ -198,6 +198,9 @@ func segments(command string) []string {
 func isSpace(b byte) bool { return b == ' ' || b == '\t' }
 
 func (e *Executor) wordAllowed(word string) bool {
+	if word == "" {
+		return false // a segment with no literal command name matches nothing
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	for _, p := range e.bashPrefixes {
@@ -256,7 +259,7 @@ func escapes(segment string) bool {
 
 // segmentAllowed reports whether a granted word covers this exact segment.
 func (e *Executor) segmentAllowed(segment string) bool {
-	if escapes(segment) {
+	if escapes(segment) || usesExecFlag(segment) {
 		return false
 	}
 	return e.wordAllowed(PrefixSuggestion(segment))
@@ -293,38 +296,309 @@ func (e *Executor) Grants() (tools []string, bashWords []string) {
 	return tools, append([]string(nil), e.bashPrefixes...)
 }
 
-// interpreters execute arbitrary code from arguments or stdin, so granting
-// them is equivalent to granting everything; the UI declines to offer it.
-// Exec-wrappers (env, timeout, sudo, …) count: they run their arguments.
-var interpreters = map[string]bool{
+// execCapable lists commands that take "run this program" as an argument, so
+// a blanket grant on the name alone is a grant of everything the shell can do.
+// It is not only interpreters: an exec flag is enough, and each of these was
+// checked to run a command with output on a pipe rather than a terminal.
+//
+// Being a list of names, this cannot be complete — a command nobody here
+// thought of will have its own exec flag. It only decides whether the [p]
+// shortcut is *offered*; [y] and [a] still allow the exact command, and the
+// permission mode, not this map, is the boundary that has to hold.
+var execCapable = map[string]bool{
+	// Shells and language runtimes: code from an argument or stdin.
 	"sh": true, "bash": true, "zsh": true, "fish": true, "dash": true,
 	"ksh": true, "csh": true, "tcsh": true, "pwsh": true, "nu": true,
 	"python": true, "python3": true, "perl": true, "ruby": true, "node": true,
 	"deno": true, "bun": true, "php": true, "lua": true, "tclsh": true,
 	"awk": true, "gawk": true, "mawk": true, "sed": true,
-	"env": true, "eval": true, "exec": true, "command": true, "builtin": true,
-	"xargs": true, "nohup": true, "setsid": true, "timeout": true, "time": true,
-	"nice": true, "ionice": true, "stdbuf": true, "watch": true,
-	"sudo": true, "doas": true, "su": true, "ssh": true, "chroot": true,
-	"nix-shell": true, "nix": true, "docker": true, "podman": true,
+	"rscript": true, "julia": true, "osascript": true, "expect": true,
+	"runghc": true, "runhaskell": true, "ghci": true, "irb": true,
+	"elixir": true, "iex": true, "erl": true, "escript": true,
+	"java": true, "mono": true, "dotnet": true, "scala": true, "groovy": true,
+	"jshell": true, "sbcl": true, "clisp": true, "guile": true, "racket": true,
+	// Builtins that run their argument as a command.
+	"eval": true, "exec": true, "command": true, "builtin": true,
+	"source": true, ".": true,
+	// Wrappers: everything after the flags is the program to run.
+	"env": true, "xargs": true, "nohup": true, "setsid": true, "timeout": true,
+	"time": true, "nice": true, "ionice": true, "stdbuf": true, "watch": true,
+	"parallel": true, "flock": true, "script": true, "entr": true,
+	"unshare": true, "nsenter": true, "setarch": true, "taskset": true,
+	"chrt": true, "capsh": true, "runuser": true, "systemd-run": true,
+	"sudo": true, "doas": true, "su": true, "chroot": true, "busybox": true,
+	// Remote and container execution.
+	"ssh": true, "scp": true, "sftp": true, "socat": true,
+	"nc": true, "ncat": true, "netcat": true,
+	"docker": true, "podman": true, "nerdctl": true, "kubectl": true,
+	"helm": true, "vagrant": true, "ansible": true, "ansible-playbook": true,
+	"nix-shell": true, "nix": true, "npx": true,
+	// Editors, pagers and debuggers shell out from a keystroke or a flag.
+	"vi": true, "vim": true, "nvim": true, "emacs": true, "ed": true,
+	"less": true, "more": true, "most": true, "man": true,
+	"gdb": true, "lldb": true, "strace": true, "ltrace": true, "perf": true,
+	"valgrind": true,
+	// Database clients with a shell escape: sqlite3 .shell, psql \!.
+	"sqlite3": true, "psql": true, "mysql": true,
 }
 
-// isInterpreter matches path and version variants too: /usr/bin/python3,
+// runsOtherPrograms matches path and version variants too: /usr/bin/python3,
 // python3.11 and bash-5.2 are the same grant as their bare name.
-func isInterpreter(word string) bool {
+func runsOtherPrograms(word string) bool {
 	base := strings.ToLower(filepath.Base(word))
-	if interpreters[base] {
+	if execCapable[base] {
 		return true
 	}
 	trimmed := strings.TrimRight(base, "0123456789.-")
-	return trimmed != base && interpreters[trimmed]
+	return trimmed != base && execCapable[trimmed]
+}
+
+// execFlags are flags that turn an ordinary command into a way of running
+// another program named in the arguments. The command itself stays grantable —
+// "git status" and "go test ./..." are the reason the shortcut exists — but a
+// grant covers the command doing its normal job, never one of these. They are
+// checked when the grant is matched, not only when it is offered, because the
+// point of a blanket grant is that later commands are not read by anyone.
+//
+// git -c alias.x='!cmd' x was verified to run with output on a pipe; git's
+// pager needs a terminal and cannot be reached this way.
+var execFlags = map[string][]string{
+	"git": {"-c", "--config-env", "--exec-path", "--upload-pack", "--receive-pack",
+		// Verified to run a program with output on a pipe: `git rebase -x`,
+		// `git difftool -y -x` / `--extcmd`, and filter-branch's filters.
+		"-x", "--exec", "--extcmd", "--to-command", "--smtp-server",
+		"--tree-filter", "--index-filter", "--parent-filter", "--msg-filter",
+		"--commit-filter", "--tag-name-filter", "--env-filter"},
+	"find": {"-exec", "-execdir", "-ok", "-okdir"},
+	// -toolexec runs its argument around every compiler invocation, which
+	// `go build` alone reaches; run and generate are not the only two.
+	"go":     {"run", "generate", "-toolexec", "-exec", "-vettool"},
+	"cargo":  {"run"},
+	"npm":    {"exec"},
+	"yarn":   {"exec"},
+	"pnpm":   {"exec"},
+	"make":   {"-f", "--file", "--makefile", "--eval"},
+	"cmake":  {"-P", "-E"},
+	"tar":    {"-I", "--use-compress-program", "--to-command"},
+	"rsync":  {"-e", "--rsh", "--rsync-path"},
+	"zip":    {"-TT", "--unzip-command"},
+	"gcc":    {"-wrapper", "-fplugin"},
+	"clang":  {"-fplugin"},
+	"ffmpeg": {"-f"},
+}
+
+// execSubcommands are subcommands whose whole job is to run a program the
+// caller names, so no flag has to be spotted for the grant to be worthless:
+// `git bisect run <cmd>`, `git submodule foreach <cmd>`, and difftool and
+// mergetool, which take theirs from config the repository may have written.
+//
+// This list and execFlags above are both lists, and a blanket grant on git is
+// weaker than either can make it look: `git commit` runs .git/hooks/pre-commit,
+// which in an extracted tarball is a file the archive chose. What they buy is
+// that the command a user pressed [p] on cannot be turned into an arbitrary one
+// by adding a flag to it — not that git in a hostile tree is safe.
+//
+// `config` is there for what it writes rather than what it runs: `git config
+// --global alias.st '!touch x'` followed by `git st` is arbitrary execution
+// out of one grant on git, and the same write reaches core.fsmonitor,
+// core.hooksPath, core.sshCommand and credential.helper — all of which run a
+// program the next time git is used, in any repository, after this session has
+// ended. `git -c` was already refused for exactly this; leaving the persistent
+// spelling open made that refusal a formality. It costs a prompt on `git config
+// --get`, which is a read, and that is the cheaper mistake.
+var execSubcommands = map[string][]string{
+	"git": {"bisect", "filter-branch", "difftool", "mergetool", "submodule",
+		"send-email", "p4", "svn", "daemon", "instaweb", "web--browse", "help",
+		"config"},
+}
+
+// valueOptions take the next word as their value, so that word is not the
+// subcommand. -c and --exec-path are absent on purpose: they are exec flags, so
+// the segment is already refused before the subcommand matters.
+var valueOptions = map[string]bool{
+	"-C": true, "--git-dir": true, "--work-tree": true,
+	"--namespace": true, "--super-prefix": true,
+}
+
+// firstSubcommand returns a segment's first non-option word — its subcommand —
+// and the index just past it. Only the first is looked at: matching the name
+// anywhere would refuse `git commit -m "fix submodule"`.
+func firstSubcommand(words []string) (string, int) {
+	for i := 0; i < len(words); i++ {
+		w := unquoteWord(words[i])
+		if strings.HasPrefix(w, "-") || (i > 0 && valueOptions[unquoteWord(words[i-1])]) {
+			continue
+		}
+		return w, i + 1
+	}
+	return "", 0
+}
+
+// runsExecSubcommand reports whether a segment reaches for a way of running a
+// program that belongs to its subcommand rather than to a flag.
+func runsExecSubcommand(name string, words []string) bool {
+	sub, rest := firstSubcommand(words)
+	if sub == "" {
+		return false
+	}
+	// `go env -w GOFLAGS=-toolexec=…` writes that flag into the user's own go
+	// env file, so every later go command on the machine runs the named
+	// program — in any directory, long after the session that was granted.
+	// Only with -w: `go env GOPATH` is a read, and -w on its own is far too
+	// common a flag to refuse, since `go build -ldflags "-w -s"` carries one.
+	if name == "go" && sub == "env" {
+		for _, w := range words[rest:] {
+			if w := unquoteWord(w); w == "-w" || w == "--w" {
+				return true
+			}
+		}
+	}
+	for _, s := range execSubcommands[name] {
+		if sub == s {
+			return true
+		}
+	}
+	return false
+}
+
+// expandsWord reports whether the shell will rewrite a word before the command
+// sees it: a substitution, a glob, a brace list, a leading tilde, or bash's
+// ANSI-C and locale quoting. Quoting is tracked, so a star inside single
+// quotes is a literal star.
+//
+// Reading such a word is not possible, and unquoting it is not enough. Both
+// `git $"-c" alias.p='!touch /tmp/pwned' p` and — in a directory holding a file
+// the repository named "-c" — `git -? alias.p='!touch /tmp/pwned' p` reach git
+// as `git -c`, while spelling themselves as something the scan below does not
+// recognise. A blanket grant on git covered them.
+func expandsWord(w string) bool {
+	inSingle, inDouble := false, false
+	for i := 0; i < len(w); i++ {
+		switch c := w[i]; c {
+		case '\\':
+			if !inSingle {
+				i++ // the next byte is literal, whatever it is
+			}
+		case '\'':
+			if !inDouble {
+				inSingle = !inSingle
+			}
+		case '"':
+			if !inSingle {
+				inDouble = !inDouble
+			}
+		case '$', '`':
+			if !inSingle {
+				return true // double quotes do not stop substitution
+			}
+		case '*', '?', '[', '{':
+			if !inSingle && !inDouble {
+				return true
+			}
+		case '~':
+			if i == 0 && !inSingle && !inDouble {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// tildeHead strips a leading ~ expansion — ~, ~user, ~+, ~- — up to and
+// including the first '/'.
+//
+// A tilde is an expansion, but a uniquely readable one: it replaces the part
+// of the word before that first '/' with a directory path, so the last
+// component of the word is untouched and the result can never begin with a
+// '-'. Both callers of expandsWord are asking "can I tell what this word
+// becomes", and for a tilde the answer is yes. Treating it like $ and * was
+// what made `~/go/bin/golangci-lint run` an unreadable command — so a deny
+// rule about rm refused it — and what made `go build -o ~/bin/app ./...` look
+// like it was reaching for an exec flag, so no [p] grant on go covered it.
+//
+// A ~ with no '/' after it is a home directory rather than a path into one:
+// its last component is not the word's, so it is left alone.
+func tildeHead(w string) string {
+	if !strings.HasPrefix(w, "~") {
+		return w
+	}
+	if i := strings.IndexByte(w, '/'); i > 0 {
+		return w[i+1:]
+	}
+	return w
+}
+
+// usesExecFlag reports whether a segment reaches for one of its command's
+// exec flags. Words are unquoted first, since git '-c' is git -c, and a word
+// the shell would expand counts as reaching for one: what it becomes is not
+// knowable here, and the answer has to be the safe one.
+func usesExecFlag(segment string) bool {
+	f := strings.Fields(segment)
+	if len(f) == 0 {
+		return false
+	}
+	name := strings.ToLower(filepath.Base(unquoteWord(f[0])))
+	if runsExecSubcommand(name, f[1:]) {
+		return true
+	}
+	flags, ok := execFlags[name]
+	if !ok {
+		return false
+	}
+	for _, w := range f[1:] {
+		if expandsWord(tildeHead(w)) {
+			return true
+		}
+		w = unquoteWord(w)
+		for _, fl := range flags {
+			// A flag written with two dashes is the same flag: Go's flag
+			// package, which every `go` subcommand uses, accepts --toolexec for
+			// -toolexec, and `go build --toolexec=x ./...` was verified to run
+			// x. Matching the spelling in the list only made it a list of
+			// spellings rather than of flags.
+			if matchesFlag(w, fl) || (strings.HasPrefix(w, "--") && matchesFlag(w[1:], fl)) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// matchesFlag reports whether a word is a flag, either bare or carrying its
+// value after an '='.
+func matchesFlag(w, flag string) bool {
+	return w == flag || strings.HasPrefix(w, flag+"=")
+}
+
+// grantableWord reports whether w is a literal command name. A blanket grant
+// is stored as one word and matched by exact equality, so anything a shell
+// would have to interpret before it becomes a command name cannot be granted:
+// "FOO=1 bash -c x" offered a grant on "FOO=1", which then cleared every
+// command written with that assignment in front, and quoting the name at all
+// ("'b'ash") walked past the exec-capable check while still running the shell.
+func grantableWord(w string) bool {
+	if w == "" || w == "." || w == ".." {
+		return false
+	}
+	for i := 0; i < len(w); i++ {
+		c := w[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		case c == '_' || c == '-' || c == '.' || c == '+' || c == '/':
+		default:
+			return false
+		}
+	}
+	return w[0] != '-'
 }
 
 // PrefixSuggestion returns the word an always-allow-prefix grant would use,
-// or "" when a blanket grant for it would be meaningless or unsafe.
+// or "" when a blanket grant for it would be meaningless or unsafe. It is used
+// for matching as well as for offering, so a command that cannot be reduced to
+// a literal name never matches a grant.
 func PrefixSuggestion(command string) string {
 	f := strings.Fields(command)
-	if len(f) == 0 {
+	if len(f) == 0 || !grantableWord(f[0]) {
 		return ""
 	}
 	return f[0]
@@ -333,7 +607,7 @@ func PrefixSuggestion(command string) string {
 // PrefixGrantable reports whether [p] should be offered for a segment.
 func PrefixGrantable(segment string) bool {
 	w := PrefixSuggestion(segment)
-	return w != "" && !isInterpreter(w) && !escapes(segment)
+	return w != "" && !runsOtherPrograms(w) && !usesExecFlag(segment) && !escapes(segment)
 }
 
 // SetCheckpoint registers a hook run before every mutating tool call.
@@ -568,8 +842,39 @@ func (e *Executor) Call(ctx context.Context, name string, raw json.RawMessage, a
 	return res.Text, res.IsErr, err
 }
 
-// CallDetailed is Call plus whatever the UI needs to render the call.
-func (e *Executor) CallDetailed(ctx context.Context, name string, raw json.RawMessage, ask AskFunc) (Result, error) {
+// ApproveExternal decides a call for a tool Tapioca does not implement: an MCP
+// server's, or one an external ACP agent is about to run in its own process.
+// There is no path or command to match on, so the rules see the raw arguments,
+// and the key carries where the tool came from — a grant for one server's
+// delete must not cover another's.
+func (e *Executor) ApproveExternal(key, args string, ask AskFunc) (denial string, allowed bool) {
+	act := e.ruleFor(key, args)
+	if act == RuleDeny {
+		out, _, _ := deniedByRule(key)
+		return out, false
+	}
+	// A rule that says ask outranks an earlier "always allow".
+	if act != RuleAsk && e.ExternalAllowed(key) {
+		return "", true
+	}
+	d := ask(key, args)
+	if !d.Allow {
+		return deniedByUser, false
+	}
+	if d.Always && act != RuleAsk {
+		e.GrantExternal(key)
+	}
+	return "", true
+}
+
+// Approve decides whether a call may happen, without running it: the rules, the
+// mode, the session grants and every prompt they imply. Split out of the call
+// it normally precedes because the decision is worth having on its own to a
+// caller that does not do the work here — an external agent over ACP asks
+// before it acts in its own process, and it has to answer to this gate rather
+// than to a second one written to be lenient. It reports the refusal to hand
+// back to the model.
+func (e *Executor) Approve(name string, raw json.RawMessage, ask AskFunc) (denial string, allowed bool) {
 	// A configured rule outranks everything, including bypass: "run whatever
 	// you like except this" is the point of writing one down. bash is the
 	// exception, judged segment by segment further down.
@@ -577,22 +882,22 @@ func (e *Executor) CallDetailed(ctx context.Context, name string, raw json.RawMe
 	if name != "bash" {
 		act = e.ruleFor(name, subjectOf(name, raw))
 		if act == RuleDeny {
-			out, isErr, _ := deniedByRule(name)
-			return Result{Text: out, IsErr: isErr}, nil
+			out, _, _ := deniedByRule(name)
+			return out, false
 		}
 	}
 	// Read-only tools skip the mutation gate, but two of them compose into
 	// exfiltration (read a secret, POST it to a URL), and prompt injection
 	// from fetched pages or repo files can drive exactly that. So they get
 	// their own narrow checks below.
-	if out, isErr, handled := e.gateReadOnly(name, raw, ask); handled {
-		return Result{Text: out, IsErr: isErr}, nil
+	if out, _, handled := e.gateReadOnly(name, raw, ask); handled {
+		return out, false
 	}
 	if act == RuleAsk && !mutates(name) {
 		// Nothing else would have prompted for these, so the rule is the only
 		// thing standing between the model and the call.
 		if d := ask(name, e.summary(name, raw)); !d.Allow {
-			return Result{Text: "the user denied permission for this call", IsErr: true}, nil
+			return deniedByUser, false
 		}
 	}
 	if mutates(name) { // mutating tools go through the permission gate
@@ -606,7 +911,7 @@ func (e *Executor) CallDetailed(ctx context.Context, name string, raw json.RawMe
 		switch mode {
 		case ModePlan:
 			if fileEdit {
-				return Result{Text: "denied: plan mode is active — do not modify files; present a plan instead", IsErr: true}, nil
+				return "denied: plan mode is active — do not modify files; present a plan instead", false
 			}
 			needAsk = true // bash still allowed for read-only inspection, but asks
 		case ModeManual:
@@ -656,8 +961,8 @@ func (e *Executor) CallDetailed(ctx context.Context, name string, raw json.RawMe
 				for i, seg := range segs {
 					acts[i] = e.ruleFor(name, seg)
 					if acts[i] == RuleDeny {
-						out, isErr, _ := deniedByRule(name)
-						return Result{Text: out + ": " + seg, IsErr: isErr}, nil
+						out, _, _ := deniedByRule(name)
+						return out + ": " + seg, false
 					}
 				}
 				for i, seg := range segs {
@@ -679,7 +984,7 @@ func (e *Executor) CallDetailed(ctx context.Context, name string, raw json.RawMe
 					}
 					d := ask(name, seg)
 					if !d.Allow {
-						return Result{Text: "the user denied permission for: " + seg, IsErr: true}, nil
+						return "the user denied permission for: " + seg, false
 					}
 					if d.Prefix != "" {
 						e.mu.Lock()
@@ -703,7 +1008,7 @@ func (e *Executor) CallDetailed(ctx context.Context, name string, raw json.RawMe
 			}
 			d := ask(label, e.summary(name, raw))
 			if !d.Allow {
-				return Result{Text: "the user denied permission for this call", IsErr: true}, nil
+				return deniedByUser, false
 			}
 			if d.Always {
 				e.mu.Lock()
@@ -724,9 +1029,33 @@ func (e *Executor) CallDetailed(ctx context.Context, name string, raw json.RawMe
 			cp(name + ": " + truncateLabel(stripControls(e.summary(name, raw))))
 		}
 	}
+	return "", true
+}
 
-	ctx, cancel := context.WithTimeout(ctx, e.callTimeout(name, raw))
+// CallDetailed is Call plus whatever the UI needs to render the call.
+func (e *Executor) CallDetailed(ctx context.Context, name string, raw json.RawMessage, ask AskFunc) (Result, error) {
+	if denial, ok := e.Approve(name, raw, ask); !ok {
+		return Result{Text: denial, IsErr: true}, nil
+	}
+	// Everything above has decided that this call may happen. A pre_tool hook
+	// is the user's own last word on it, and it only ever narrows that
+	// decision: a call a rule denied returned long before this point.
+	if reason, blocked := e.RunPreToolHooks(ctx, name, raw); blocked {
+		return Result{Text: reason, IsErr: true}, nil
+	}
+	callCtx, cancel := context.WithTimeout(ctx, e.callTimeout(name, raw))
 	defer cancel()
+	res, err := e.dispatch(callCtx, name, raw)
+	// The call's own deadline is spent by now, so the hook gets the turn's
+	// context instead — a formatter must not inherit whatever is left of it.
+	if note := e.RunPostToolHooks(ctx, name, raw, err != nil || res.IsErr); note != "" {
+		res.Text = strings.TrimRight(res.Text, "\n") + "\n" + note
+	}
+	return res, err
+}
+
+// dispatch runs a tool that has already been approved.
+func (e *Executor) dispatch(ctx context.Context, name string, raw json.RawMessage) (Result, error) {
 	switch name {
 	case "bash":
 		return plain(e.runBash(ctx, raw))
@@ -766,6 +1095,89 @@ var sensitiveDirs = []string{
 	".ssh", ".aws", ".gnupg", ".config/gh", ".config/gcloud", ".kube",
 	".docker", ".mozilla", ".config/google-chrome", ".password-store",
 	".local/share/keyrings", ".config/rclone", ".config/containers", ".m2",
+	// Tapioca's own two, at the locations config.Dir() and config.DataDir()
+	// use when nothing overrides them. They are added again below at wherever
+	// the environment currently points, and that was the only way they were
+	// ever added — so `export XDG_CONFIG_HOME=$PWD/.cfg` in an extracted tree's
+	// .envrc did not hide the real ~/.config/tapioca, it took it off the list,
+	// and read_file handed back every provider key in config.toml with no
+	// prompt in any mode. A root named by a variable the tree can set has to be
+	// an addition to the default, never a replacement for it.
+	".config/tapioca", ".local/share/tapioca",
+}
+
+// sensitiveRoots is every directory whose contents are worth stealing, in both
+// the form it is written in and the form it resolves to.
+//
+// Tapioca's own config holds provider keys and MCP bearer tokens, and its data
+// dir holds every conversation ever had. Reading either is precisely the
+// exfiltration this gate exists to catch.
+//
+// The resolved form is the half that was missing. The path being judged always
+// is resolved — sensitivePath puts it through resolve(), which is realPath —
+// and a resolved path compared against an unresolved root cannot match once any
+// component of the root is a link. That is not an exotic state: `~/.config`
+// stowed out of a dotfiles repository, XDG_CONFIG_HOME pointed at a versioned
+// directory, a home directory a corporate image links elsewhere. Every one of
+// those took config.toml, ~/.ssh and ~/.config/gh out of the gate, and read_file
+// needs no approval in any other way — so the provider keys came back with no
+// prompt in any mode. inWorkArea a few lines down resolves its roots for
+// exactly this reason.
+//
+// Both forms are kept rather than only the resolved one: the written form still
+// answers for a link that sits inside the root and points out of it.
+//
+// Every home this machine has, not just $HOME. $HOME is an environment
+// variable, and the environment is reachable from an extracted tree through an
+// .envrc: `export HOME=$PWD/.home` joined the whole list above onto a directory
+// the tree ships, and the real ~/.ssh, ~/.aws and ~/.config/gh were no longer
+// roots at all. userHomes asks the account database as well, which is what
+// sandbox.go and config.usersHome already do about the same variable.
+//
+// The result is cached because grep's walk asks this question once per file,
+// and resolving eighteen roots per file would turn a search into a syscall
+// storm. The key is every unresolved input, so a home, config or data directory
+// moved (a test does this) recomputes; a link retargeted mid-session does not,
+// which is a trade the walk pays for.
+var (
+	rootsMu    sync.Mutex
+	rootsKey   string
+	rootsVal   []string
+	rootsValid bool
+)
+
+func sensitiveRoots() []string {
+	homes := userHomes()
+	cfgDir, dataDir := config.Dir(), config.DataDir()
+	key := strings.Join(homes, "\x00") + "\x00\x00" + cfgDir + "\x00" + dataDir
+	rootsMu.Lock()
+	defer rootsMu.Unlock()
+	if rootsValid && key == rootsKey {
+		return rootsVal
+	}
+	var out []string
+	add := func(p string) {
+		if p == "" {
+			return
+		}
+		if abs, err := filepath.Abs(p); err == nil {
+			p = abs
+		}
+		p = filepath.Clean(p)
+		out = append(out, p)
+		if real := realPath(p); real != p && real != unresolvable {
+			out = append(out, real)
+		}
+	}
+	for _, home := range homes {
+		for _, d := range sensitiveDirs {
+			add(filepath.Join(home, d))
+		}
+	}
+	add(cfgDir)
+	add(dataDir)
+	rootsKey, rootsVal, rootsValid = key, out, true
+	return out
 }
 
 // sensitivePath reports whether reading path deserves a prompt even though
@@ -778,18 +1190,7 @@ func (e *Executor) sensitivePath(path string) bool {
 			return true
 		}
 	}
-	home, err := os.UserHomeDir()
-	if err == nil {
-		for _, d := range sensitiveDirs {
-			if under(clean, filepath.Join(home, d)) {
-				return true
-			}
-		}
-	}
-	// Tapioca's own config holds provider keys and MCP bearer tokens, and its
-	// data dir holds every conversation ever had. Reading either is precisely
-	// the exfiltration this gate exists to catch, and neither looked sensitive.
-	for _, d := range []string{config.Dir(), config.DataDir()} {
+	for _, d := range sensitiveRoots() {
 		if under(clean, d) {
 			return true
 		}
@@ -805,15 +1206,41 @@ func (e *Executor) sensitivePath(path string) bool {
 // rather than trust a stat.
 const maxReadBytes = 16 << 20
 
+// regularFile refuses a path that is not an ordinary file, before anything
+// opens it.
+//
+// The cap above bounds what a read costs; it does nothing about a read that
+// never starts. Opening a FIFO for reading blocks until something writes to it,
+// and tar stores FIFOs and extracts them without being asked to — so a file in
+// an extracted tarball need not be a file. read_file, edit_file and write_file
+// each hung on the open, forever, holding the turn: no deadline reaches
+// os.Open, and the call's own context is not consulted by it. A device is
+// refused for the same reason (/dev/tty blocks on the read instead) and
+// because nothing a coding agent legitimately does reads one. Anything under
+// /proc and /sys is a regular file and still readable.
+//
+// A path that does not exist is not this function's business: the open reports
+// that better, so it is let through.
+func regularFile(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%s is not a regular file", path)
+	}
+	return nil
+}
+
 func readCapped(path string) ([]byte, error) {
+	if err := regularFile(path); err != nil {
+		return nil, err
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
-	if info, err := f.Stat(); err == nil && info.IsDir() {
-		return nil, fmt.Errorf("%s is a directory", path)
-	}
 	data, err := io.ReadAll(io.LimitReader(f, maxReadBytes+1))
 	if err != nil {
 		return nil, err
@@ -850,12 +1277,31 @@ func under(clean, dir string) bool {
 
 // inWorkArea reports whether an absolute path lies in the working directory
 // or one of the directories announced with --add-dir.
+// The roots are resolved, not merely made absolute, because the path being
+// judged always is: resolve() puts every path through realPath. Comparing a
+// resolved path against an unresolved root is a comparison that cannot match
+// whenever the working directory is reached through a symlink — /tmp on macOS,
+// ~/src -> /data/src, a home directory a corporate image links elsewhere. Every
+// file in the project then read as outside it, so auto mode prompted for each
+// ordinary edit with "outside the working directory" and grep asked before
+// searching the tree it was pointed at.
+// realPath says an unresolvable path "never lies inside a work area", and
+// nothing here made that true: a root that is itself unresolvable — an
+// --add-dir naming a link chain long enough to exhaust the budget, or a path
+// with more missing components than that — resolves to the same sentinel, and
+// under(unresolvable, unresolvable) is an exact match. The one value the
+// resolver hands back to mean "I could not tell" would then have meant "inside
+// the working directory", and in auto mode that is a write with no prompt. A
+// sentinel is only fail-closed where it is checked for.
 func (e *Executor) inWorkArea(clean string) bool {
-	if under(clean, e.Cwd()) {
+	if clean == unresolvable {
+		return false
+	}
+	if under(clean, realPath(filepath.Clean(e.Cwd()))) {
 		return true
 	}
 	for _, d := range e.ExtraDirs() {
-		if abs, err := filepath.Abs(d); err == nil && under(clean, abs) {
+		if abs, err := filepath.Abs(d); err == nil && under(clean, realPath(abs)) {
 			return true
 		}
 	}
@@ -924,7 +1370,7 @@ func (e *Executor) gateReadOnly(name string, raw json.RawMessage, ask AskFunc) (
 		if json.Unmarshal(raw, &a) != nil || strings.TrimSpace(a.URL) == "" {
 			return "", false, false
 		}
-		host := hostOf(a.URL)
+		host := FetchHost(a.URL)
 		key := "fetch:" + host
 		if host == "" || e.granted(key) {
 			return "", false, false
@@ -938,17 +1384,6 @@ func (e *Executor) gateReadOnly(name string, raw json.RawMessage, ask AskFunc) (
 		}
 	}
 	return "", false, false
-}
-
-func hostOf(raw string) string {
-	if !strings.Contains(raw, "://") {
-		raw = "https://" + raw
-	}
-	u, err := url.Parse(raw)
-	if err != nil {
-		return ""
-	}
-	return strings.ToLower(u.Hostname())
 }
 
 func (e *Executor) granted(key string) bool {
@@ -982,6 +1417,8 @@ func (e *Executor) summary(name string, raw json.RawMessage) string {
 			return a.Pattern + "  in " + a.Path
 		}
 		return a.Pattern
+	case "write_file", "edit_file":
+		return e.describePath(argPath(raw))
 	default:
 		var a struct {
 			Path string `json:"path"`
@@ -989,6 +1426,47 @@ func (e *Executor) summary(name string, raw json.RawMessage) string {
 		_ = json.Unmarshal(raw, &a)
 		return a.Path
 	}
+}
+
+// describePath names the file a write will actually land on.
+//
+// gateReadOnly prompts with e.resolve(a.Path) — read_file and grep name the
+// file they will really open, so a link is named by its target. The mutating
+// gate asks the same question and used to answer it differently: `outside` is
+// decided on the resolved path and writeFile writes to the resolved path, while
+// the prompt was handed a.Path exactly as the model wrote it. git stores
+// symlinks and tar carries them, so a clone shipping
+// notes.md -> ~/.ssh/authorized_keys produced a box whose only line about
+// *what* was being written named a file in the project.
+//
+// The path as written stays, because that is what the user recognises and what
+// they will see again in the transcript; the destination is added when a link
+// sends the write somewhere else. The comparison is against where the path
+// would land if nothing on the way were a link, measured from the resolved
+// working directory, so a machine whose /tmp or home is itself a link does not
+// make every ordinary edit look redirected.
+func (e *Executor) describePath(path string) string {
+	if strings.TrimSpace(path) == "" {
+		return path
+	}
+	real := e.resolve(path)
+	if real == unresolvable || real == e.lexicalPath(path) {
+		return path
+	}
+	return path + " -> " + real
+}
+
+// lexicalPath is resolve() with the symlink following left out.
+func (e *Executor) lexicalPath(path string) string {
+	if strings.HasPrefix(path, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			path = filepath.Join(home, path[2:])
+		}
+	}
+	if filepath.IsAbs(path) {
+		return filepath.Clean(path)
+	}
+	return filepath.Join(realPath(filepath.Clean(e.Cwd())), path)
 }
 
 func truncateLabel(s string) string {
@@ -1114,6 +1592,9 @@ func (e *Executor) writeFile(raw json.RawMessage) (Result, error) {
 		return Result{Text: "invalid arguments: need {\"path\", \"content\"}", IsErr: true}, nil
 	}
 	path := e.resolve(a.Path)
+	if err := regularFile(path); err != nil {
+		return Result{Text: err.Error(), IsErr: true}, nil
+	}
 	if e.changedExternally(path) {
 		return Result{Text: staleFileMsg(a.Path), IsErr: true}, nil
 	}
@@ -1133,10 +1614,13 @@ func (e *Executor) writeFile(raw json.RawMessage) (Result, error) {
 }
 
 // readText returns a file's contents for diffing, and whether it existed.
-// Binary files diff to nothing useful, so they report as absent.
+// Binary files diff to nothing useful, so they report as absent — and so does
+// anything past maxReadBytes, for the reason stated there: this read served a
+// display-only diff and had no cap, so overwriting a file the repository sized
+// asked the allocator for all of it before a byte was written.
 func readText(path string) (string, bool) {
-	data, err := os.ReadFile(path)
-	if err != nil {
+	data, err := readCapped(path)
+	if err != nil || len(data) >= maxReadBytes {
 		return "", false
 	}
 	text, isText := textenc.Decode(data)
@@ -1146,12 +1630,27 @@ func readText(path string) (string, bool) {
 	return text, true
 }
 
+// maxKeptOps caps the ops a FileChange carries. diff produces one Op per line
+// on both sides, and a FileChange is held in the transcript for the rest of the
+// session while FormatChange shows forty lines of it. Overwriting a 15 MiB file
+// — under read_file's cap, so nothing above refuses it — built 358,502 Ops and
+// held 20 MB of them per call, for a display that is forty lines long. The
+// counts are taken before the cut, so the "+N -M" header stays exact.
+const maxKeptOps = 2000
+
 // change builds the display-only diff for an edit.
 func (e *Executor) change(path, before, after string, created bool) *FileChange {
 	ops := diff.Lines(before, after)
 	added, removed := diff.Stats(ops)
 	if added == 0 && removed == 0 {
 		return nil
+	}
+	if len(ops) > maxKeptOps {
+		// Copied rather than resliced: a reslice keeps the whole backing array
+		// alive, which is the memory this cap exists to give back.
+		kept := make([]diff.Op, maxKeptOps)
+		copy(kept, ops)
+		ops = kept
 	}
 	return &FileChange{
 		Path:    e.relative(path),
@@ -1173,12 +1672,23 @@ func (e *Executor) editFile(raw json.RawMessage) (Result, error) {
 		return Result{Text: "invalid arguments: need {\"path\", \"old_string\", \"new_string\"}", IsErr: true}, nil
 	}
 	path := e.resolve(a.Path)
+	if err := regularFile(path); err != nil {
+		return Result{Text: err.Error(), IsErr: true}, nil
+	}
 	if e.changedExternally(path) {
 		return Result{Text: staleFileMsg(a.Path), IsErr: true}, nil
 	}
-	data, err := os.ReadFile(path)
+	// readCapped, not os.ReadFile: read_file stops at maxReadBytes because a
+	// file the process cannot hold kills the TUI, and edit_file opened the same
+	// repository-chosen path with no cap at all. A file past the cap is refused
+	// rather than truncated — read_file could not have shown old_string past
+	// the cap either, and writing back a prefix would delete the rest.
+	data, err := readCapped(path)
 	if err != nil {
 		return Result{Text: err.Error(), IsErr: true}, nil
+	}
+	if len(data) >= maxReadBytes {
+		return Result{Text: fmt.Sprintf("%s is larger than %d bytes; too big to edit in one piece", a.Path, maxReadBytes), IsErr: true}, nil
 	}
 	// Match against the same decoded text read_file shows, or UTF-16 files
 	// are uneditable and Latin-1 files get UTF-8 spliced into them.

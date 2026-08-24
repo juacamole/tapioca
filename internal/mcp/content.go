@@ -179,18 +179,24 @@ func (c *Client) ReadResource(ctx context.Context, uri string) (string, error) {
 	}
 	var b strings.Builder
 	for _, item := range out.Contents {
-		if item.Text == "" {
-			if item.Blob != "" {
-				fmt.Fprintf(&b, "[%s: binary content omitted]\n", item.URI)
+		part := item.Text
+		if part == "" {
+			if item.Blob == "" {
+				continue
 			}
-			continue
+			// The placeholder answers to the budget the text does. It carries a
+			// URI the server chose and the check sat after the `continue`, so a
+			// response made of nothing but tiny blob entries put every one of
+			// those URIs into the conversation with no cap at all — the one
+			// branch of two that the limit did not reach.
+			part = fmt.Sprintf("[%s: binary content omitted]", item.URI)
 		}
-		if b.Len()+len(item.Text) > maxResourceBytes {
-			b.WriteString(item.Text[:max(0, maxResourceBytes-b.Len())])
+		if b.Len()+len(part) > maxResourceBytes {
+			b.WriteString(part[:max(0, maxResourceBytes-b.Len())])
 			b.WriteString("\n[truncated]")
 			break
 		}
-		b.WriteString(item.Text)
+		b.WriteString(part)
 		b.WriteString("\n")
 	}
 	text := strings.TrimRight(b.String(), "\n")

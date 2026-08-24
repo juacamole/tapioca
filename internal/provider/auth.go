@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"tapioca/internal/config"
 )
 
 // Every provider Tapioca ships knows where its own credential goes. A custom
@@ -119,10 +121,43 @@ func CheckBaseURL(raw string) error {
 	}
 }
 
-func isLoopback(host string) bool {
-	switch host {
-	case "localhost", "127.0.0.1", "::1", "[::1]":
-		return true
+// CheckRegion rejects a region that is not a plain cloud region name.
+//
+// base_url is checked because it decides where the conversation and the
+// credential go — but it is not the only key that does. Bedrock and Vertex
+// build their host out of the region when no base_url is set, and the region
+// went into that string unexamined, so `region = "attacker.example.com/"` made
+// the endpoint https://attacker.example.com/-aiplatform.googleapis.com/… and
+// sent every prompt, with a live Google access token in the Authorization
+// header, to a host the config named. A committed config.toml is refused its
+// base_url by config.RestrictIfInsideTree and had this instead.
+//
+// Checking the shape rather than adding a key to that list is deliberate: the
+// value has one legitimate form — us-east-1, europe-west4, us-east5 — and a
+// region that cannot appear in a hostname cannot choose one, wherever the
+// config came from.
+func CheckRegion(region string) error {
+	if region == "" {
+		return nil // not configured; the caller falls back or reports its own error
 	}
-	return strings.HasPrefix(host, "127.")
+	for i := 0; i < len(region); i++ {
+		c := region[i]
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' {
+			continue
+		}
+		return fmt.Errorf("region %q is not a region name (letters, digits and dashes only)", region)
+	}
+	return nil
 }
+
+// isLoopback reports whether a host is this machine. It has to be an address
+// literal or the name reserved for one. A prefix test does not do it:
+// "127.example.com" starts with "127." and resolves to wherever its owner
+// points it, so a base_url anyone could suggest passed the https requirement
+// and still sent every prompt, and the API key, across the network in the
+// clear — which is the entire thing that requirement is for.
+//
+// The test itself lives in the config package, which asks the same question of
+// a base_url a repository wrote. Two copies of a predicate this load-bearing
+// would eventually answer differently.
+func isLoopback(host string) bool { return config.IsLoopbackHost(host) }

@@ -5,11 +5,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -33,10 +35,12 @@ type OpenAI struct {
 const (
 	flavorAzure  = "azure"
 	flavorGemini = "gemini"
+	flavorLlama  = "llamacpp"
 
 	geminiBase       = "https://generativelanguage.googleapis.com/v1beta/openai"
 	azureAPIVersion  = "2024-10-21"
 	openAIDefaultURL = "https://api.openai.com"
+	llamaDefaultURL  = "http://localhost:8080"
 )
 
 // NewOpenAI builds the provider. The API key is optional (local servers).
@@ -64,6 +68,13 @@ func NewGemini(name string, cfg config.ProviderConfig) *OpenAI {
 	return newOpenAILike(name, cfg, flavorGemini, geminiBase, "GEMINI_API_KEY")
 }
 
+// NewLlamaCpp targets llama.cpp's llama-server, which speaks the OpenAI wire
+// format on port 8080 with no credentials — the key matters only when the
+// server was started with --api-key.
+func NewLlamaCpp(name string, cfg config.ProviderConfig) *OpenAI {
+	return newOpenAILike(name, cfg, flavorLlama, llamaDefaultURL, "LLAMA_API_KEY")
+}
+
 func newOpenAILike(name string, cfg config.ProviderConfig, flavor, defaultBase, defaultEnv string) *OpenAI {
 	key := cfg.APIKey
 	if key == "" {
@@ -77,7 +88,7 @@ func newOpenAILike(name string, cfg config.ProviderConfig, flavor, defaultBase, 
 	if base == "" {
 		base = defaultBase
 	}
-	if flavor == "" {
+	if flavor == "" || flavor == flavorLlama {
 		base = trimVersionSuffix(base)
 	}
 	return &OpenAI{name: name, baseURL: base, apiKey: key, flavor: flavor, client: httpClient}
@@ -312,12 +323,18 @@ func (o *OpenAI) Stream(ctx context.Context, req Request, out chan<- Event) (Mes
 	}
 	resp, err := o.client.Do(httpReq)
 	if err != nil {
-		return Message{}, fmt.Errorf("%s: %w", o.name, err)
+		return Message{}, fmt.Errorf("%s: %w", o.name, o.hideKey(err))
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return Message{}, newAPIError(o.name, resp, data)
+		apiErr := newAPIError(o.name, resp, data)
+		// Tool definitions go out on every request, and a llama-server started
+		// without --jinja refuses them all — the raw 500 does not say what to do.
+		if o.flavor == flavorLlama && bytes.Contains(bytes.ToLower(data), []byte("jinja")) {
+			return Message{}, fmt.Errorf("%w (tool calls need the chat template: restart as `llama-server --jinja -m <model>`)", apiErr)
+		}
+		return Message{}, apiErr
 	}
 
 	msg := Message{Role: "assistant", Model: req.Model, Time: time.Now()}
@@ -423,7 +440,11 @@ func (o *OpenAI) Stream(ctx context.Context, req Request, out chan<- Event) (Mes
 					}
 					b.name = tc.Function.Name
 				}
-				streamed += len(tc.Function.Arguments) + len(tc.Function.Name)
+				// The id is retained like the arguments and the name, and was
+				// the one field missing from the sum: four thousand tool calls
+				// each carrying an eight-megabyte id stayed under a cap that
+				// never saw them.
+				streamed += len(tc.Function.Arguments) + len(tc.Function.Name) + len(tc.ID)
 				if overLimit(streamed) {
 					return finish(), fmt.Errorf("response exceeded %d bytes; stopping", maxResponseBytes)
 				}
@@ -448,6 +469,88 @@ func (o *OpenAI) Stream(ctx context.Context, req Request, out chan<- Event) (Mes
 	return finish(), nil
 }
 
+// llamaProps is llama-server's own description of itself, at /props.
+//
+// Not all of it is filled in in every mode, which is the point of reading more
+// than one field. A server started on a model reports the context it allocated
+// per slot in n_ctx. A router — one llama-server fronting several models and
+// loading them on demand — reports role "router" and n_ctx 0, because at the
+// moment you ask, nothing is loaded to have a context yet.
+type llamaProps struct {
+	BuildInfo string `json:"build_info"`
+	Role      string `json:"role"`
+	Settings  struct {
+		NCtx int `json:"n_ctx"`
+	} `json:"default_generation_settings"`
+}
+
+// props reads that description. Only the llama.cpp flavour has the endpoint.
+func (o *OpenAI) props(ctx context.Context) (llamaProps, error) {
+	var body llamaProps
+	if o.flavor != flavorLlama {
+		return body, fmt.Errorf("%s: no context probe for this provider", o.name)
+	}
+	req, err := http.NewRequestWithContext(ctx, "GET", o.baseURL+"/props", nil)
+	if err != nil {
+		return body, err
+	}
+	if err := o.setAuth(req); err != nil {
+		return body, err
+	}
+	resp, err := o.client.Do(req)
+	if err != nil {
+		return body, o.hideKey(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return body, fmt.Errorf("%s: HTTP %d", o.name, resp.StatusCode)
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&body); err != nil {
+		return body, err
+	}
+	return body, nil
+}
+
+// ContextLength implements the context probe for the gauge. n_ctx is the
+// context actually allocated per slot, which is what generation runs against —
+// the model's trained window says nothing about what this server was started
+// with. A router has not allocated one yet, so it has nothing to report and
+// says so; the gauge falls back rather than showing a made-up number.
+func (o *OpenAI) ContextLength(ctx context.Context, _ string) (int, error) {
+	p, err := o.props(ctx)
+	if err != nil {
+		return 0, err
+	}
+	if p.Settings.NCtx <= 0 {
+		return 0, fmt.Errorf("%s: no n_ctx in /props", o.name)
+	}
+	return p.Settings.NCtx, nil
+}
+
+// Identify implements Identifier. /props is llama-server's own endpoint, and
+// what it answers with is not something another program serves by accident.
+//
+// The model list cannot answer this question. 8080 is the most contested port
+// there is — Spring Boot, Tomcat, Jenkins, any dev server picks it — and
+// {"data":[{"id":…}]} is an ordinary REST shape, so a directory of users read
+// as a directory of models and the address was offered as a model server.
+//
+// What it must not do is answer it too narrowly. Requiring an allocated n_ctx
+// turned a real llama-server in router mode into "no n_ctx in /props" — a
+// working server, with models on it, reported as the wrong address — because a
+// router allocates nothing until a model is loaded. Identity and context size
+// are two questions, and only one of them a router can answer.
+func (o *OpenAI) Identify(ctx context.Context) error {
+	p, err := o.props(ctx)
+	if err != nil {
+		return err
+	}
+	if p.BuildInfo == "" && p.Role == "" && p.Settings.NCtx <= 0 {
+		return fmt.Errorf("%s: %s/props answered, but nothing in it is llama.cpp's", o.name, o.baseURL)
+	}
+	return nil
+}
+
 // ListModels implements Provider.
 func (o *OpenAI) ListModels(ctx context.Context) ([]string, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", o.modelsURL(), nil)
@@ -459,7 +562,7 @@ func (o *OpenAI) ListModels(ctx context.Context) ([]string, error) {
 	}
 	resp, err := o.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", o.name, err)
+		return nil, fmt.Errorf("%s: %w", o.name, o.hideKey(err))
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -476,7 +579,33 @@ func (o *OpenAI) ListModels(ctx context.Context) ([]string, error) {
 	}
 	models := make([]string, 0, len(body.Data))
 	for _, m := range body.Data {
+		// A single-model llama-server reports the GGUF's full path as the id
+		// and ignores the model field on requests, so the path only clutters
+		// the picker. A router's model names and --alias have no slash and
+		// pass through untouched.
+		if o.flavor == flavorLlama && strings.ContainsRune(m.ID, os.PathSeparator) {
+			m.ID = strings.TrimSuffix(filepath.Base(m.ID), ".gguf")
+		}
 		models = append(models, m.ID)
 	}
 	return models, nil
+}
+
+// hideKey removes the credential from an error before anyone reads it. With
+// auth_style = "query" the key is a query parameter, and net/http puts the URL
+// it failed on into *url.Error as written — stripPassword there only touches
+// userinfo. That error reaches the status line and gets pasted into bug
+// reports, so the key travelled with it.
+func (o *OpenAI) hideKey(err error) error {
+	if err == nil || o.apiKey == "" {
+		return err
+	}
+	msg := err.Error()
+	for _, form := range []string{o.apiKey, url.QueryEscape(o.apiKey)} {
+		msg = strings.ReplaceAll(msg, form, "REDACTED")
+	}
+	if msg == err.Error() {
+		return err
+	}
+	return errors.New(msg)
 }

@@ -11,8 +11,18 @@ import (
 // SpawnReq asks the UI to run a task in a fresh agent. Exactly one result
 // must be sent on Reply, or the delegating agent waits forever.
 type SpawnReq struct {
-	Task  string
-	Name  string
+	Task string
+	Name string
+	// Async delegates without waiting. The parent keeps working and the
+	// answer is delivered when it lands, rather than the turn stopping until
+	// the child is done.
+	Async bool
+	// ParentID is who gets the answer of an Async spawn. Unused otherwise:
+	// a waiting parent is identified by the channel it is blocked on.
+	ParentID int
+	// Model is an optional "[provider:]model" for the child. Empty inherits
+	// the parent's, which is what delegation did before it could be chosen.
+	Model string
 	Reply chan SpawnResult
 }
 
@@ -30,8 +40,9 @@ var SpawnTool = provider.ToolDef{
 	Description: "Delegate a self-contained task to a background agent with its own context window, " +
 		"and get back only its final answer. Use it for work whose intermediate output you do not need " +
 		"— wide searches, surveying many files, independent investigations. The subagent starts with no " +
-		"knowledge of this conversation, so put everything it needs in the task, and tell it what to report back.",
-	InputSchema: json.RawMessage(`{"type":"object","properties":{"task":{"type":"string","description":"self-contained instructions, including what to report back"},"name":{"type":"string","description":"short label for the agent tab"}},"required":["task"]}`),
+		"knowledge of this conversation, so put everything it needs in the task, and tell it what to report back. " +
+		"Pass model to run it somewhere cheaper than this conversation when the task does not need this model.",
+	InputSchema: json.RawMessage(`{"type":"object","properties":{"task":{"type":"string","description":"self-contained instructions, including what to report back"},"name":{"type":"string","description":"short label for the agent tab"},"model":{"type":"string","description":"optional [provider:]model for this subagent, e.g. \"ollama:qwen3-coder\"; omit to use the same model as this conversation"},"wait":{"type":"boolean","description":"true (default) blocks until the subagent answers; false returns immediately and delivers its answer when it finishes, so you can keep working"}},"required":["task"]}`),
 }
 
 // spawnAgent blocks until the subagent finishes and returns its answer as the
@@ -57,8 +68,10 @@ func cleanAgentName(s string) string {
 // tool result. The parent's context cancels the wait, so ctrl+c still works.
 func (a *Agent) spawnAgent(ctx context.Context, raw json.RawMessage) (string, bool) {
 	var in struct {
-		Task string `json:"task"`
-		Name string `json:"name"`
+		Task  string `json:"task"`
+		Name  string `json:"name"`
+		Model string `json:"model"`
+		Wait  *bool  `json:"wait"` // a pointer, so "absent" and "false" differ
 	}
 	if err := json.Unmarshal(raw, &in); err != nil || strings.TrimSpace(in.Task) == "" {
 		return "invalid arguments: need {\"task\": \"...\"}", true
@@ -68,11 +81,27 @@ func (a *Agent) spawnAgent(ctx context.Context, raw json.RawMessage) (string, bo
 	}
 
 	req := &SpawnReq{
-		Task:  strings.TrimSpace(in.Task),
-		Name:  cleanAgentName(in.Name),
-		Reply: make(chan SpawnResult, 1),
+		Task:     strings.TrimSpace(in.Task),
+		Name:     cleanAgentName(in.Name),
+		Model:    strings.TrimSpace(in.Model),
+		Async:    in.Wait != nil && !*in.Wait,
+		ParentID: a.ID,
+		Reply:    make(chan SpawnResult, 1),
 	}
 	a.emit(Event{Kind: EvSpawn, Spawn: req})
+	if req.Async {
+		// The frontend answers immediately with the outcome of *starting* the
+		// child. Waiting on Reply here is the whole thing being avoided.
+		select {
+		case res := <-req.Reply:
+			if res.Err != nil {
+				return "could not start the subagent: " + res.Err.Error(), true
+			}
+			return res.Text, false
+		case <-ctx.Done():
+			return "the delegated task was cancelled", true
+		}
+	}
 	select {
 	case res := <-req.Reply:
 		if res.Err != nil {

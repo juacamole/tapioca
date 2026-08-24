@@ -90,8 +90,67 @@ type Client struct {
 	pending   map[int64]chan *rpcMsg
 	nextID    int64
 
+	replyOnce sync.Once
+	replies   chan rpcMsg
+
 	closeOnce sync.Once
 	closed    chan struct{}
+}
+
+// replyQueue bounds what a server can make this client do simply by asking.
+// Every server-initiated request is answered off the read loop — answering it
+// inline re-entered Send from inside Send — but there was one fresh goroutine
+// and one outbound POST per request, with no ceiling on either. A response body
+// may be a JSON array, and dispatch hands each element to handle separately, so
+// one 16 MiB reply is half a million {"id":n,"method":"x"} requests: half a
+// million goroutines, each holding a ten-second context, and half a million
+// POSTs back at the server. Over SSE it never even has to stop. Replies go
+// through one worker now, and a full queue means the server is flooding rather
+// than talking, so the reply is dropped.
+const replyQueue = 64
+
+// queueReply hands a reply to the single reply worker, starting it on first
+// use — a Client is also built directly in tests and by Start, so there is no
+// one constructor to start it from.
+func (c *Client) queueReply(msg rpcMsg) {
+	c.replyOnce.Do(func() {
+		c.replies = make(chan rpcMsg, replyQueue)
+		go c.replyLoop()
+	})
+	select {
+	case c.replies <- msg:
+	default:
+	}
+}
+
+func (c *Client) replyLoop() {
+	for {
+		select {
+		case <-c.closed:
+			return
+		case msg := <-c.replies:
+			c.sendReply(msg)
+		}
+	}
+}
+
+// sendReply answers one server-initiated request and gives up if the connection
+// closes while it is in flight. The deadline used to hang off
+// context.Background() alone, so a server that stopped reading could keep this
+// process posting to it for ten seconds after Close had returned.
+func (c *Client) sendReply(msg rpcMsg) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-c.closed:
+			cancel()
+		case <-done:
+		}
+	}()
+	_ = c.send(ctx, msg)
 }
 
 // Start connects to a server — an HTTP endpoint when url is set, otherwise a
@@ -206,6 +265,20 @@ func (c *Client) Tools() []Tool {
 	return append([]Tool(nil), c.tools...)
 }
 
+// hasTool reports whether the server currently lists a tool by this name. Used
+// to resolve a namespaced name to the server it came from rather than to the
+// one whose name happens to sit before the first "__".
+func (c *Client) hasTool(name string) bool {
+	c.toolsMu.Lock()
+	defer c.toolsMu.Unlock()
+	for _, t := range c.tools {
+		if t.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
 // Version returns the protocol revision the handshake settled on.
 func (c *Client) Version() string {
 	c.toolsMu.Lock()
@@ -305,20 +378,17 @@ func (c *Client) handle(line []byte) {
 	switch {
 	case msg.Method != "" && msg.ID != nil:
 		// Server-initiated request: answer ping, reject the rest. The reply
-		// goes out on its own goroutine on purpose. Sending it inline meant
+		// goes out off the read loop on purpose. Sending it inline meant
 		// the HTTP transport re-entered Send from inside Send — a server that
 		// answered every POST with a request recursed to a stack overflow —
 		// and on stdio it blocked the read loop on a pipe the server had
-		// stopped draining.
+		// stopped draining. It goes through the bounded worker rather than a
+		// goroutine of its own; see replyQueue.
 		reply := rpcMsg{JSONRPC: "2.0", ID: msg.ID, Error: &rpcError{Code: -32601, Message: "method not supported"}}
 		if msg.Method == "ping" {
 			reply = rpcMsg{JSONRPC: "2.0", ID: msg.ID, Result: json.RawMessage("{}")}
 		}
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			_ = c.send(ctx, reply)
-		}()
+		c.queueReply(reply)
 	case msg.Method != "":
 		// A server whose tools change mid-session (a gateway that connects to
 		// another backend, say) would otherwise keep offering the old list

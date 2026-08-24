@@ -44,11 +44,51 @@ func sanitizeText(s string) string {
 	s = csiRe.ReplaceAllString(s, "")
 	s = oscRe.ReplaceAllString(s, "")
 	s = ctrlRe.ReplaceAllString(s, "")
+	s = strings.Map(func(r rune) rune {
+		if hiddenRune(r) {
+			return -1
+		}
+		return r
+	}, s)
 	return s
 }
 
 func unsafeRune(r rune) bool {
-	return (r < 0x20 && r != '\n') || r == 0x7f || (r >= 0x80 && r <= 0x9f)
+	return (r < 0x20 && r != '\n') || r == 0x7f || (r >= 0x80 && r <= 0x9f) || hiddenRune(r)
+}
+
+// hiddenRune reports a character that decides what the reader sees without
+// being seen itself.
+//
+// These are not control codes and no terminal executes them, so the classes
+// above never covered them — but the permission prompt's whole job is that the
+// summary and the command are the same text, and these break exactly that.
+// U+202E reverses the run after it, so `echo hi #` followed by a reversed
+// `sh|lru/hs teg` renders as an innocent line on any terminal that implements
+// bidi: Konsole and VTE do, and the user is being asked to approve what they
+// read. The zero-width ones are the same idea without the reordering — two
+// paths, two tool names or two hostnames that are not equal and cannot be told
+// apart on screen — and a repository picks its own file names.
+//
+// ZWJ and ZWNJ (U+200C, U+200D) are deliberately left in: they hold emoji
+// sequences, Indic conjuncts and Arabic forms together, and dropping them
+// corrupts ordinary output that no one is attacking anyone with.
+func hiddenRune(r rune) bool {
+	switch {
+	case r == 0x061C, r == 0x200E, r == 0x200F: // Arabic letter mark, LRM, RLM
+		return true
+	case r >= 0x202A && r <= 0x202E: // embeddings and overrides
+		return true
+	case r >= 0x2066 && r <= 0x2069: // isolates
+		return true
+	case r == 0x200B, r == 0x2060, r == 0xFEFF: // zero-width space, word joiner, BOM
+		return true
+	case r >= 0x2061 && r <= 0x2064: // invisible function application and friends
+		return true
+	case r >= 0xFFF9 && r <= 0xFFFB: // interlinear annotation
+		return true
+	}
+	return false
 }
 
 // sanitizeLabel is sanitizeText for a one-line label: newlines would let a
@@ -373,7 +413,7 @@ func renderText(text string, w int) string {
 	}
 	// A dangling open fence still renders as code.
 	flush()
-	return strings.Join(out, "\n")
+	return linkify(strings.Join(out, "\n"))
 }
 
 // wrapPlain wraps text without styling.

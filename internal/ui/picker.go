@@ -21,6 +21,7 @@ const (
 	pickWordmark
 	pickEffort
 	pickConnect
+	pickQueue
 )
 
 type pickerItem struct {
@@ -169,8 +170,11 @@ func (p *picker) view(w, h int, checked func(string) bool) string {
 	}
 	if !zenMode {
 		hint := "up/down move" + gl.sep + "enter select" + gl.sep + "esc close"
-		if p.kind == pickPanels {
+		switch p.kind {
+		case pickPanels:
 			hint = "enter toggle" + gl.sep + "left/right reorder" + gl.sep + "esc close"
+		case pickConnect:
+			hint = "enter connect" + gl.sep + "ctrl+d disconnect" + gl.sep + "esc close"
 		}
 		b.WriteString("\n" + styDim.Render(hint))
 	}

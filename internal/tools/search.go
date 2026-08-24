@@ -2,9 +2,11 @@ package tools
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -58,9 +60,17 @@ func trackedSet(root string) map[string]bool {
 }
 
 // searchRoot resolves the directory a search starts from, defaulting to cwd.
+//
+// The default is resolved too, and that is not cosmetic: filepath.WalkDir
+// lstats its root, so a root that is itself a symlink is one non-directory
+// entry and the walk descends into nothing. Working in a linked directory —
+// /tmp on macOS, a stowed checkout, a relocated home — made the fallback
+// answer "no matches" for the whole project. It went unseen because ripgrep
+// follows the root it is given, so the bug only appears on a machine without
+// it, which is also the machine that cannot afford a silently empty search.
 func (e *Executor) searchRoot(path string) string {
 	if strings.TrimSpace(path) == "" {
-		return e.Cwd()
+		return realPath(filepath.Clean(e.Cwd()))
 	}
 	return e.resolve(path)
 }
@@ -113,9 +123,28 @@ func (e *Executor) grepRipgrep(ctx context.Context, pattern, root, glob string, 
 		return nil, false, err
 	}
 	args := []string{"--line-number", "--no-heading", "--color", "never",
-		"--max-columns", strconv.Itoa(maxLineWidth), "--max-count", strconv.Itoa(limit)}
+		// The path is followed by a NUL instead of a colon. Filenames may
+		// contain colons and, in an extracted tarball, the attacker picks them:
+		// cutting the line at the first colon put the cut left of the filename
+		// for anything under a directory called "a:b", so sensitivePath judged
+		// "<root>/a" and waved through <root>/a:b/id_rsa. A NUL cannot occur in
+		// a path, so this cut is the same one the walk makes.
+		"--null",
+		// Without a preview rg replaces an over-long line with a marker and no
+		// content at all, where the walk clips it and returns the first
+		// maxLineWidth characters — a match in a minified bundle or a one-line
+		// JSON fixture came back empty on one backend and useful on the other.
+		"--max-columns", strconv.Itoa(maxLineWidth), "--max-columns-preview",
+		"--max-count", strconv.Itoa(limit)}
+	// Dotfiles are ordinary project files — .github/workflows, .golangci.yml,
+	// .tapioca/commands — and the walk searches them. rg skips them unless it
+	// is told not to, so grep answered differently depending on whether rg
+	// happened to be installed, and the machine that has it is the common one.
+	args = append(args, "--hidden")
 	// rg skips these only when .gitignore says so; the fallback always does,
-	// and the two backends must not return different result sets.
+	// and the two backends must not return different result sets. With
+	// --hidden above, the .git entry is also what keeps rg out of the object
+	// store and the reflog.
 	for dir := range skipDirs {
 		args = append(args, "--glob", "!"+dir+"/")
 	}
@@ -128,7 +157,7 @@ func (e *Executor) grepRipgrep(ctx context.Context, pattern, root, glob string, 
 	args = append(args, "--regexp", pattern, "--", root)
 
 	cmd := exec.CommandContext(ctx, bin, args...)
-	cmd.Env = secretenv.Scrubbed()
+	cmd.Env = rgEnv()
 	out, err := cmd.Output()
 	// Exit 1 is "no matches"; anything above that is a real failure (bad
 	// regex, unreadable root) and should fall through to the Go walk.
@@ -142,7 +171,7 @@ func (e *Executor) grepRipgrep(ctx context.Context, pattern, root, glob string, 
 	sc := bufio.NewScanner(strings.NewReader(string(out)))
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for sc.Scan() {
-		file, rest, ok := strings.Cut(sc.Text(), ":")
+		file, rest, ok := strings.Cut(sc.Text(), "\x00")
 		if !ok || e.sensitivePath(file) {
 			continue
 		}
@@ -153,6 +182,107 @@ func (e *Executor) grepRipgrep(ctx context.Context, pattern, root, glob string, 
 		matches = append(matches, e.relative(file)+":"+rest)
 	}
 	return matches, truncated, nil
+}
+
+// rgEnv is the scrubbed environment with ripgrep's own configuration channel
+// taken out of it.
+//
+// rg reads a file of command-line arguments from $RIPGREP_CONFIG_PATH, and one
+// of the arguments it accepts there is `--pre=COMMAND`: rg then runs COMMAND
+// on every file it searches and greps the output. So two lines an extracted
+// tarball ships — an .envrc exporting RIPGREP_CONFIG_PATH into the tree, and
+// the file it names holding `--pre=./x.sh` — turn grep into arbitrary
+// execution. grep is the wrong tool for that to be true of: it is
+// non-mutating, so it never reaches the permission gate and never prompts, and
+// it is available in plan mode, which means the tree runs code before the user
+// has approved anything at all.
+//
+// Removing the variable rather than passing --no-config, because the flag is a
+// version question: an rg old enough to reject it fails the whole search and
+// silently drops grep onto the Go walk, and the environment is where the
+// setting actually lives. Nothing legitimate points it at a repository either
+// — a user's own rg config sits in their home directory and is theirs, not the
+// tree's, but there is no way to tell those two apart from here, and losing a
+// personal --smart-case is worth rather less than this.
+func rgEnv() []string {
+	src := secretenv.Scrubbed()
+	out := make([]string, 0, len(src))
+	for _, kv := range src {
+		if name, _, ok := strings.Cut(kv, "="); ok && name == "RIPGREP_CONFIG_PATH" {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
+}
+
+// grepLines feeds path's lines to fn, numbered from 1, and stops when fn says
+// to. It exists because the walk used to slurp every file it visited.
+//
+// read_file caps its read at 16 MiB and writes down why: a file the process
+// cannot hold kills the TUI, and everything since the last save goes with it.
+// grep had no cap at all, and it is the search tool that needs no approval in
+// any mode — including plan mode, where nothing else can touch the disk. One
+// grep over a tree holding a single 64 MiB file asked the allocator for 160 MB,
+// and the file's size is the repository's to choose: a tarball ships that as a
+// sparse member, and git stores 64 MiB of one repeated line as a few kilobytes.
+//
+// Files within the cap are decoded whole, exactly as before, so UTF-16 and
+// Latin-1 trees still search the way they did. Past it the file is streamed a
+// line at a time — which is what ripgrep does, and the reason no machine with
+// rg installed ever saw this.
+func grepLines(path string, fn func(n int, line string) bool) {
+	f, err := os.Open(path)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return
+	}
+	if info.Size() <= maxReadBytes {
+		data, err := io.ReadAll(io.LimitReader(f, maxReadBytes+1))
+		if err != nil {
+			return
+		}
+		content, isText := textenc.Decode(data)
+		if !isText {
+			return
+		}
+		for n, line := range strings.Split(content, "\n") {
+			if !fn(n+1, line) {
+				return
+			}
+		}
+		return
+	}
+	head := make([]byte, 8<<10)
+	n, _ := io.ReadFull(f, head)
+	// A NUL anywhere in the head takes the file out: either Decode calls it
+	// binary, or it calls it UTF-16, and a UTF-16 file cannot be scanned as
+	// bytes — the pattern would never match and every "line" would be one NUL
+	// away from the last. Under the cap that case is still decoded properly;
+	// over it, "no matches" beats matches that mean nothing.
+	if bytes.IndexByte(head[:n], 0) >= 0 {
+		return
+	}
+	if _, isText := textenc.Decode(head[:n]); !isText {
+		return
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return
+	}
+	sc := bufio.NewScanner(f)
+	// A line longer than this ends the scan rather than growing a buffer to
+	// hold it: a file with no newline in it is one line, and its length is the
+	// whole point of the file for whoever wrote it.
+	sc.Buffer(make([]byte, 0, 64<<10), 1<<20)
+	for i := 1; sc.Scan(); i++ {
+		if !fn(i, sc.Text()) {
+			return
+		}
+	}
 }
 
 func (e *Executor) grepWalk(ctx context.Context, pattern, root, glob string, insensitive bool, limit int) ([]string, bool, error) {
@@ -188,23 +318,20 @@ func (e *Executor) grepWalk(ctx context.Context, pattern, root, glob string, ins
 		if glob != "" && !globMatch(glob, filepath.Base(path)) && !globMatch(glob, e.relative(path)) {
 			return nil
 		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return nil
-		}
-		content, isText := textenc.Decode(data)
-		if !isText {
-			return nil
-		}
-		for n, line := range strings.Split(content, "\n") {
+		stop := false
+		grepLines(path, func(n int, line string) bool {
 			if !re.MatchString(line) {
-				continue
+				return true
 			}
 			if len(matches) >= limit {
-				truncated = true
-				return filepath.SkipAll
+				truncated, stop = true, true
+				return false
 			}
-			matches = append(matches, fmt.Sprintf("%s:%d:%s", e.relative(path), n+1, clipLine(line)))
+			matches = append(matches, fmt.Sprintf("%s:%d:%s", e.relative(path), n, clipLine(line)))
+			return true
+		})
+		if stop {
+			return filepath.SkipAll
 		}
 		return nil
 	})
@@ -330,12 +457,25 @@ func matchSegments(pat, seg []string) bool {
 
 // relative shortens paths inside the working directory so output stays
 // readable and pasteable back into other tools.
+//
+// Both spellings of the working directory are tried. searchRoot resolves the
+// path argument but not the default, so a grep given a path walks resolved
+// paths while this compares against the working directory as written — and
+// under a working directory reached through a link (`cd ~/src` where ~/src is
+// one, /tmp on macOS) nothing was ever inside it. Every result then printed as
+// an absolute path, and grep's own glob filter, which matches against this,
+// stopped matching a pattern with a directory in it.
 func (e *Executor) relative(path string) string {
-	rel, err := filepath.Rel(e.Cwd(), path)
-	if err != nil || strings.HasPrefix(rel, "..") {
-		return path
+	cwd := e.Cwd()
+	if rel, err := filepath.Rel(cwd, path); err == nil && !strings.HasPrefix(rel, "..") {
+		return rel
 	}
-	return rel
+	if real := realPath(filepath.Clean(cwd)); real != cwd && real != unresolvable {
+		if rel, err := filepath.Rel(real, path); err == nil && !strings.HasPrefix(rel, "..") {
+			return rel
+		}
+	}
+	return path
 }
 
 func clipLine(s string) string {

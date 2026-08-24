@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"tapioca/internal/agent"
 	"tapioca/internal/config"
@@ -19,11 +20,38 @@ import (
 	"tapioca/internal/version"
 )
 
+// Launch is what the command line decided, as opposed to what the config file
+// says. These never live in the config: the file is the user's standing
+// preference and a flag is this run's, and writing a flag back would make a
+// one-off into a setting.
+//
+// They have to be carried here explicitly because the sessions are built in
+// this package. The TUI keeps the same values in its Executor, which ACP has
+// none of at startup — every session builds its own — so a flag folded into a
+// local variable in Main reached the TUI and nothing else. `tapioca --acp
+// --permission-mode plan`, which is how an editor is told to run a read-only
+// agent, ran every session in whatever mode the config file named.
+type Launch struct {
+	PermissionMode string   // --permission-mode, --dangerously-skip-permissions
+	ExtraDirs      []string // --add-dir
+	BashTimeout    time.Duration
+	// The rest of what the command line decides about an agent. These were
+	// applied at the bottom of Main, onto a manager built after the branch that
+	// starts this server returns — the very thing the paragraph above says goes
+	// wrong. `tapioca --acp --model anthropic:claude-opus-5` ran whatever
+	// default_model said, and with no default_model at all every session was
+	// refused with "no model configured" while the flag naming one went unread.
+	Model        string // --model
+	SystemPrompt string // --system-prompt
+	AppendSystem string // --append-system-prompt
+}
+
 // Server serves one ACP connection. Each session/new gets its own agent,
 // executor and working directory, so an editor can drive several projects.
 type Server struct {
-	cfg  *config.Config
-	conn *conn
+	cfg    *config.Config
+	launch Launch
+	conn   *conn
 
 	mu       sync.Mutex
 	sessions map[string]*acpSession
@@ -40,8 +68,8 @@ type acpSession struct {
 }
 
 // Serve runs the protocol loop until the input closes.
-func Serve(cfg *config.Config, in io.Reader, out io.Writer) error {
-	s := &Server{cfg: cfg, conn: newConn(out), sessions: map[string]*acpSession{}}
+func Serve(cfg *config.Config, launch Launch, in io.Reader, out io.Writer) error {
+	s := &Server{cfg: cfg, launch: launch, conn: newConn(out), sessions: map[string]*acpSession{}}
 	sc := bufio.NewScanner(in)
 	sc.Buffer(make([]byte, 0, 64*1024), 32*1024*1024)
 	var wg sync.WaitGroup
@@ -81,6 +109,7 @@ func (s *Server) closeAll() {
 			sess.reg.CloseAll()
 		}
 		if sess.exec != nil {
+			warn(sess.exec.RunSessionHooks(tools.HookSessionEnd))
 			sess.exec.StopJobs()
 		}
 	}
@@ -140,14 +169,33 @@ func (s *Server) handleNewSession(msg *rpcMsg) {
 		return
 	}
 
-	exec := tools.NewExecutor(cwd, s.cfg.PermissionMode)
-	exec.SetBashPrefixes(s.cfg.BashAllow)
-	exec.SetRules(s.cfg.Permissions.Allow, s.cfg.Permissions.Ask, s.cfg.Permissions.Deny)
-	exec.SetSandbox(s.cfg.Sandbox)
-	exec.SetSandboxNetwork(s.cfg.SandboxNetwork)
+	// The editor picks the directory, so what the config may be trusted for is
+	// decided per session rather than once at startup — on a copy, because two
+	// sessions can be open on different trees. Hooks were already decided here;
+	// the other keys that start a program or hand out a standing approval
+	// answer to the same rule and were still being read from the startup
+	// decision. Warnings go to stderr because stdout is the protocol channel.
+	cfg := *s.cfg
+	warn(cfg.RestrictIfInsideTree(cwd))
+
+	// The flag outranks the file, and outranks the restriction above with it:
+	// what that withdraws is what a repository could have written, and a flag
+	// is typed by the user rather than committed by anyone.
+	mode := cfg.PermissionMode
+	if s.launch.PermissionMode != "" {
+		mode = s.launch.PermissionMode
+	}
+	exec := tools.NewExecutor(cwd, mode)
+	exec.SetExtraDirs(s.launch.ExtraDirs)
+	exec.SetBashPrefixes(cfg.BashAllow)
+	exec.SetRules(cfg.Permissions.Allow, cfg.Permissions.Ask, cfg.Permissions.Deny)
+	exec.SetSandbox(cfg.Sandbox)
+	exec.SetSandboxNetwork(cfg.SandboxNetwork)
+	exec.SetTimeout(s.launch.BashTimeout)
+	warn(tools.ApplyHooks(exec, &cfg, cwd))
 
 	reg := mcp.NewRegistry()
-	servers := s.cfg.MCP
+	servers := cfg.MCP
 	if len(p.MCPServers) > 0 {
 		// The editor's list replaces ours: it knows what this project needs.
 		servers = p.MCPServers
@@ -161,8 +209,24 @@ func (s *Server) handleNewSession(msg *rpcMsg) {
 		reg.Add(client)
 	}
 
-	mgr := agent.NewManager(s.cfg, reg, exec)
+	mgr := agent.NewManager(&cfg, reg, exec)
 	a := mgr.NewAgent()
+	// The flags outrank the file here as they do everywhere else, and they are
+	// read through the manager's own helper rather than a second reading of
+	// "[provider:]model" written out again in this package.
+	if s.launch.Model != "" {
+		if err := mgr.UseModel(a, s.launch.Model, cfg.DefaultProvider); err != nil {
+			reg.CloseAll()
+			s.conn.fail(msg.ID, -32603, err.Error())
+			return
+		}
+	}
+	if s.launch.SystemPrompt != "" {
+		a.SystemPrompt = s.launch.SystemPrompt
+	}
+	if s.launch.AppendSystem != "" {
+		a.SystemPrompt += "\n\n" + s.launch.AppendSystem
+	}
 	if a.ProviderErr != "" {
 		reg.CloseAll()
 		s.conn.fail(msg.ID, -32603, a.ProviderErr)
@@ -178,7 +242,16 @@ func (s *Server) handleNewSession(msg *rpcMsg) {
 	s.mu.Lock()
 	s.sessions[sess.id] = sess
 	s.mu.Unlock()
+	warn(exec.RunSessionHooks(tools.HookSessionStart))
 	s.conn.respond(msg.ID, map[string]any{"sessionId": sess.id})
+}
+
+// warn reports what a hook had to say. Nothing here is fatal: a refused or
+// failed hook must not be the reason an editor cannot open a session.
+func warn(notes []string) {
+	for _, n := range notes {
+		fmt.Fprintln(os.Stderr, "warning:", n)
+	}
 }
 
 func (s *Server) session(id string) *acpSession {

@@ -13,9 +13,17 @@ import (
 // mark text; on release the marked region is copied to the clipboard.
 // While a region is marked its lines render as plain reversed text.
 
-var ansiRe = regexp.MustCompile("\x1b\\[[0-9;?]*[ -/]*[@-~]")
+var (
+	ansiRe = regexp.MustCompile("\x1b\\[[0-9;?]*[ -/]*[@-~]")
+	// OSC, terminated by BEL or ST. Hyperlinks are written as OSC 8, and the
+	// plain projection feeds mouse selection and the clipboard — leaving them
+	// in would mean copying a line put escape sequences on the clipboard.
+	oscStripRe = regexp.MustCompile("\x1b\\][^\x07\x1b]*(?:\x07|\x1b\\\\)")
+)
 
-func stripAnsi(s string) string { return ansiRe.ReplaceAllString(s, "") }
+func stripAnsi(s string) string {
+	return ansiRe.ReplaceAllString(oscStripRe.ReplaceAllString(s, ""), "")
+}
 
 type selPoint struct{ line, col int }
 

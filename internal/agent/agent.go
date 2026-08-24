@@ -15,6 +15,7 @@ import (
 	"tapioca/internal/mcp"
 	"tapioca/internal/project"
 	"tapioca/internal/provider"
+	"tapioca/internal/skills"
 	"tapioca/internal/stats"
 	"tapioca/internal/textenc"
 	"tapioca/internal/tools"
@@ -69,6 +70,7 @@ const (
 	EvPermission // a built-in tool wants permission; answer via Perm.Reply
 	EvSpawn      // the agent delegated a task; answer via Spawn.Reply
 	EvRetry      // transient provider failure; retrying after Delay
+	EvFallback   // this model is out; continuing on the next one configured
 	EvNotice     // non-fatal warning for the user
 	EvError
 	EvDone // turn finished (after any tool rounds)
@@ -136,6 +138,9 @@ type Agent struct {
 	Thinking       bool
 	ThinkingBudget int
 	ToolsEnabled   bool
+	// Fallbacks are tried in order when this model cannot answer. Resolved by
+	// the frontend, which is the only part that can build a provider.
+	Fallbacks []fallbackTarget
 
 	Messages      []provider.Message
 	Queue         []provider.Message // prompts queued while the agent is busy
@@ -170,6 +175,9 @@ type Agent struct {
 	Events chan Event
 	MCP    *mcp.Registry
 	Exec   *tools.Executor
+	// Remote answers this agent's turns instead of a provider, when it is an
+	// external agent Tapioca drives rather than one it runs.
+	Remote Remote
 	cancel context.CancelFunc
 }
 
@@ -190,11 +198,21 @@ func (a *Agent) TotalTokens() int {
 // settings panel, /settings reload); reading them from run would race, and a
 // reload can even nil the provider. Snapshotting at Send makes each turn see
 // one consistent configuration.
+// fallbackTarget is somewhere to try when the current model cannot answer.
+// Resolved before the run starts, because the run loop has no way to build a
+// provider from config on its own.
+type fallbackTarget struct {
+	prov         provider.Provider
+	providerName string
+	model        string
+}
+
 type runSettings struct {
 	prov           provider.Provider
 	providerName   string
 	providerErr    string
 	model          string
+	fallbacks      []fallbackTarget
 	systemBase     string
 	goal           string
 	maxTokens      int
@@ -212,11 +230,26 @@ func (a *Agent) snapshot() runSettings {
 	}
 	return runSettings{
 		prov: a.Provider, providerName: a.ProviderName, providerErr: a.ProviderErr,
-		model: a.Model, systemBase: a.SystemPrompt, goal: a.Goal,
+		model: a.Model, fallbacks: a.Fallbacks, systemBase: a.SystemPrompt, goal: a.Goal,
 		maxTokens: a.MaxTokens, temperature: a.Temperature,
 		thinking: a.Thinking, thinkingBudget: a.ThinkingBudget,
 		toolsEnabled: a.ToolsEnabled, rounds: rounds,
 	}
+}
+
+// nextFallback moves the run settings to the next configured model and
+// reports whether there was one. It mutates rs because everything downstream —
+// the request, the usage attribution, the status line — reads the model from
+// there, and leaving them disagreeing about which model answered is worse than
+// the failure being recovered from.
+func nextFallback(rs *runSettings, at *int) (fallbackTarget, bool) {
+	if *at+1 >= len(rs.fallbacks) {
+		return fallbackTarget{}, false
+	}
+	*at++
+	t := rs.fallbacks[*at]
+	rs.prov, rs.providerName, rs.model = t.prov, t.providerName, t.model
+	return t, true
 }
 
 // System composes the effective system prompt (base + goal + cwd + mode).
@@ -239,6 +272,12 @@ func composeSystem(base, goal string, exec *tools.Executor) string {
 		if mem := project.Memory(cwd); mem != "" {
 			sys += "\n\nProject memory (remembered facts):\n" + mem
 		}
+		// One line per skill and no more: the bodies are what would make this
+		// expensive, and load_skill fetches those only when one is relevant.
+		if list, _ := skills.Load(cwd); len(list) > 0 {
+			sys += "\n\nSkills installed here. Only these descriptions are loaded; " +
+				"call load_skill with a name to get the instructions behind it:\n" + skills.Catalog(list)
+		}
 		// Tool guidance belongs here rather than in the default system prompt:
 		// that one is user-editable and already saved in existing configs.
 		sys += "\n\nTool notes: use grep and glob to search, not bash grep/find/ls — " +
@@ -254,14 +293,53 @@ func composeSystem(base, goal string, exec *tools.Executor) string {
 	return sys
 }
 
+// Remote answers an agent's turns somewhere other than a provider: another
+// agent, in its own process, driven over ACP. Declared here rather than in
+// internal/acp because that package speaks to this one, not the other way
+// round.
+type Remote interface {
+	// Prompt runs one turn and returns when it has ended, reporting what
+	// happened on the way through the agent's own events. A cancelled ctx asks
+	// the other side to stop.
+	Prompt(ctx context.Context, text string) error
+	// Close disconnects and stops the process behind it.
+	Close()
+}
+
 // Send starts a turn using history (which must already include the new user
 // message). It returns immediately; progress arrives on a.Events.
 func (a *Agent) Send(history []provider.Message) {
-	history = RepairHistory(history)
-	rs := a.snapshot()
 	ctx, cancel := context.WithCancel(context.Background())
 	a.cancel = cancel
+	if a.Remote != nil {
+		// The agent on the other end keeps the conversation; only the new
+		// prompt crosses the connection, so history is not replayed to it.
+		go a.runRemote(ctx, lastText(history))
+		return
+	}
+	history = RepairHistory(history)
+	rs := a.snapshot()
 	go a.run(ctx, rs, history)
+}
+
+// runRemote drives one turn on an external agent. Whatever goes wrong out
+// there is this tab's error and nothing more: a process Tapioca did not write,
+// crashing, must not take the session with it.
+func (a *Agent) runRemote(ctx context.Context, text string) {
+	defer a.emit(Event{Kind: EvDone})
+	a.emit(Event{Kind: EvStatus, Status: StatusWaiting, Text: "sending prompt"})
+	if err := a.Remote.Prompt(ctx, text); err != nil {
+		a.emit(Event{Kind: EvError, Err: err})
+	}
+}
+
+func lastText(history []provider.Message) string {
+	for i := len(history) - 1; i >= 0; i-- {
+		if history[i].Role == "user" {
+			return history[i].Text()
+		}
+	}
+	return ""
 }
 
 // Todos is written by writeTodos on the run goroutine and read by the
@@ -292,6 +370,25 @@ func (a *Agent) emit(ev Event) {
 	a.Events <- ev
 }
 
+// Emit publishes an event as if this agent's run loop had produced it. An
+// agent driven over ACP runs its turn in another process, and the frontend
+// should not learn a second vocabulary to display one.
+func (a *Agent) Emit(ev Event) { a.emit(ev) }
+
+// Ask puts a permission request in front of the user and blocks for the
+// answer. A cancelled turn counts as a refusal: nothing is allowed by the
+// absence of an answer.
+func (a *Agent) Ask(ctx context.Context, tool, summary string) tools.Decision {
+	req := &PermissionReq{Tool: tool, Summary: summary, Reply: make(chan tools.Decision, 1)}
+	a.emit(Event{Kind: EvPermission, Perm: req})
+	select {
+	case d := <-req.Reply:
+		return d
+	case <-ctx.Done():
+		return tools.Decision{}
+	}
+}
+
 func (a *Agent) run(ctx context.Context, rs runSettings, history []provider.Message) {
 	defer a.emit(Event{Kind: EvDone})
 
@@ -304,16 +401,7 @@ func (a *Agent) run(ctx context.Context, rs runSettings, history []provider.Mess
 		return
 	}
 
-	ask := func(tool, summary string) tools.Decision {
-		req := &PermissionReq{Tool: tool, Summary: summary, Reply: make(chan tools.Decision, 1)}
-		a.emit(Event{Kind: EvPermission, Perm: req})
-		select {
-		case d := <-req.Reply:
-			return d
-		case <-ctx.Done():
-			return tools.Decision{}
-		}
-	}
+	ask := func(tool, summary string) tools.Decision { return a.Ask(ctx, tool, summary) }
 
 	doomKey, doomCount, doomOff := "", 0, false
 	for round := 0; round < rs.rounds; round++ {
@@ -340,11 +428,17 @@ func (a *Agent) run(ctx context.Context, rs runSettings, history []provider.Mess
 			if a.Depth == 0 && a.CanSpawn {
 				req.Tools = append(req.Tools, SpawnTool)
 			}
+			if a.Exec != nil {
+				if list, _ := skills.Load(a.Exec.Cwd()); len(list) > 0 {
+					req.Tools = append(req.Tools, SkillTool)
+				}
+			}
 			if a.MCP != nil {
 				req.Tools = append(req.Tools, a.MCP.AllTools()...)
 			}
 		}
 
+		fallbackAt := -1
 		var msg provider.Message
 		var streamErr error
 		var stopReason string
@@ -386,12 +480,30 @@ func (a *Agent) run(ctx context.Context, rs runSettings, history []provider.Mess
 			if streamErr == nil || ctx.Err() != nil || errors.Is(streamErr, context.Canceled) {
 				break
 			}
-			if attempt >= provider.RetryMaxAttempts || !provider.Retryable(streamErr) {
+			if !provider.Retryable(streamErr) {
 				break
 			}
 			delay, ok := provider.RetryDelay(attempt, streamErr)
-			if !ok {
-				break
+			if attempt >= provider.RetryMaxAttempts || !ok {
+				// Retrying this model is finished. The failure classes that
+				// get here — rate limits, exhausted quota, a provider having
+				// trouble — are rarely about the model, so somewhere else may
+				// well answer. A refusal or a bad request never reaches this
+				// point: those are answers, and asking a second model would
+				// only spend money to be told the same thing twice.
+				next, ok := nextFallback(&rs, &fallbackAt)
+				if !ok {
+					break
+				}
+				req.Model = rs.model
+				a.emit(Event{Kind: EvFallback, Err: streamErr,
+					Provider: next.providerName, Model: next.model})
+				// The loop's ++ runs before the next pass, and the loop's first
+				// attempt is 1 — so this is 0, not -1. At -1 the fallback's
+				// first pass was attempt 0, and RetryDelay shifts by
+				// attempt-1, which is a panic rather than a delay.
+				attempt = 0
+				continue
 			}
 			if msg.Usage != nil {
 				lost.InputTokens += msg.Usage.InputTokens
@@ -417,7 +529,10 @@ func (a *Agent) run(ctx context.Context, rs runSettings, history []provider.Mess
 			total.CacheWriteTokens += msg.Usage.CacheWriteTokens
 		}
 		if total != (provider.Usage{}) {
-			u := total
+			// The counts stop being something a server said and start being
+			// something the dashboard divides by, so this is where they are
+			// made believable. See provider.Usage.Clamp.
+			u := total.Clamp()
 			a.emit(Event{Kind: EvUsage, Usage: &u, Provider: rs.providerName, Model: rs.model, Dur: dur})
 		}
 
@@ -509,6 +624,8 @@ func (a *Agent) run(ctx context.Context, rs runSettings, history []provider.Mess
 				text, isErr = a.writeTodos(tu.Input)
 			case tu.Name == SpawnTool.Name:
 				text, isErr = a.spawnAgent(ctx, tu.Input)
+			case tu.Name == SkillTool.Name:
+				text, isErr = a.loadSkill(tu.Input)
 			case a.Exec != nil && a.Exec.Has(tu.Name):
 				// No deadline here: the executor times the execution itself,
 				// after any permission prompt has been answered.
@@ -520,30 +637,32 @@ func (a *Agent) run(ctx context.Context, rs runSettings, history []provider.Mess
 				// including the configured rules; theirs match on the tool
 				// name and the call's arguments.
 				key := "mcp:" + tu.Name
-				act := ""
+				denial := ""
+				allowed := true
 				if a.Exec != nil {
-					act = a.Exec.RuleFor(key, string(tu.Input))
+					denial, allowed = a.Exec.ApproveExternal(key, argsPreview, ask)
 				}
-				if act == tools.RuleDeny {
-					text, isErr = "denied: a permission rule in the config forbids "+tu.Name, true
+				if !allowed {
+					text, isErr = denial, true
 					break
 				}
-				// A rule that says ask outranks an earlier "always allow".
-				allowed := act != tools.RuleAsk && (a.Exec == nil || a.Exec.ExternalAllowed(key))
-				if !allowed {
-					d := ask(key, argsPreview)
-					allowed = d.Allow
-					if d.Always && a.Exec != nil && act != tools.RuleAsk {
-						a.Exec.GrantExternal(key)
+				// Hooks run here for the same reason the rules do: a policy
+				// that covered the built-ins and skipped every tool an MCP
+				// server offers would be a policy with a hole in it.
+				if a.Exec != nil {
+					if reason, blocked := a.Exec.RunPreToolHooks(ctx, key, tu.Input); blocked {
+						text, isErr = reason, true
+						break
 					}
 				}
-				if !allowed {
-					text, isErr = "the user denied permission for this call", true
-				} else {
-					toolStart = time.Now()
-					callCtx, cancelCall := context.WithTimeout(ctx, toolCallTimeout)
-					text, isErr, callErr = a.MCP.Call(callCtx, tu.Name, tu.Input)
-					cancelCall()
+				toolStart = time.Now()
+				callCtx, cancelCall := context.WithTimeout(ctx, toolCallTimeout)
+				text, isErr, callErr = a.MCP.Call(callCtx, tu.Name, tu.Input)
+				cancelCall()
+				if a.Exec != nil {
+					if note := a.Exec.RunPostToolHooks(ctx, key, tu.Input, isErr || callErr != nil); note != "" {
+						text = strings.TrimRight(text, "\n") + "\n" + note
+					}
 				}
 			default:
 				callErr = fmt.Errorf("no handler for tool %q", tu.Name)

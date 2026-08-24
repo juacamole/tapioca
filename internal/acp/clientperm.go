@@ -1,0 +1,293 @@
+package acp
+
+import (
+	"context"
+	"encoding/json"
+	"strings"
+
+	"tapioca/internal/agent"
+	"tapioca/internal/tools"
+)
+
+// A permission request arriving over ACP is the case the deny rules exist for.
+// The call is about to run in a process Tapioca did not write and cannot
+// inspect, on the working tree it shares — so it goes through the same gate a
+// local call does: the configured rules first (a deny holds under bypass), then
+// the mode, then the session's grants, then the user. Nothing here can approve
+// what tools.Approve would have refused; all this code does is work out which
+// of Tapioca's tools the request is asking to be judged as.
+
+// builtinFor maps ACP's tool kinds onto the tool names permission rules are
+// written against, so deny = ["bash(rm *)"] catches an external agent's shell
+// command exactly as it catches Tapioca's own. A delete and a move answer to
+// write_file: they are mutations of a path, and that is the rule a user writes
+// to protect one. Kinds with no counterpart here get an acp: key of their own
+// instead, so they are still addressable — and, having no counterpart, are
+// treated as mutating and asked about.
+var builtinFor = map[string]string{
+	"execute": "bash",
+	"read":    "read_file",
+	"edit":    "edit_file",
+	"delete":  "write_file",
+	"move":    "write_file",
+	"search":  "grep",
+	"fetch":   "web_fetch",
+}
+
+// toolNameFor names a call for the transcript and the tool panel. External
+// work shows up under the same names as local work, because it answers to the
+// same rules.
+func toolNameFor(kind string) string {
+	if name, ok := builtinFor[kind]; ok {
+		return name
+	}
+	if strings.TrimSpace(kind) == "" {
+		kind = "other"
+	}
+	return "acp:" + kind
+}
+
+// subjectKeys are where agents put the thing a rule matches on, per tool kind.
+// ACP does not specify rawInput, so the field names are the ones agents
+// actually use; the title is the last resort, and it is usually the command or
+// the path spelled out for a human anyway.
+//
+// A search is keyed on where it looks, never on what it looks for. Both things
+// that read a grep's subject read "path" — subjectOf for the rules, and
+// gateReadOnly for the prompt that a search outside the working tree gets —
+// so a subject taken from "pattern" and handed back under that name was one
+// neither could ever see. deny = ["grep(~/.ssh/**)"] matched nothing, and an
+// external agent searching $HOME for BEGIN OPENSSH PRIVATE KEY was approved in
+// silence where Tapioca's own grep of the same directory asks first.
+var subjectKeys = map[string][]string{
+	"bash":       {"command", "cmd", "script"},
+	"read_file":  {"path", "file_path", "abs_path", "filePath", "absPath"},
+	"edit_file":  {"path", "file_path", "abs_path", "filePath", "absPath"},
+	"write_file": {"path", "file_path", "abs_path", "filePath", "absPath"},
+	"grep":       {"path", "dir", "directory", "root"},
+	"web_fetch":  {"url", "uri"},
+}
+
+// searchTerms are where an agent puts the thing it is looking for. The gate
+// never matches on one — see subjectKeys — but a call carrying one has said
+// what it is, so it is not prose standing in for arguments nobody reported.
+var searchTerms = []string{"pattern", "query", "regex", "text"}
+
+// locationSubject names the tools a declared location can speak for: the ones
+// whose subject is a path in the first place.
+var locationSubject = map[string]bool{
+	"read_file": true, "edit_file": true, "write_file": true, "grep": true,
+}
+
+// deniedUnreported is the refusal an agent gets back when the user turns down
+// a call it described only in prose. It says which part was missing, because
+// an agent that resends the same call with its arguments filled in is judged
+// on those instead.
+const deniedUnreported = "the user denied permission for this call: its arguments were not reported"
+
+// permissionRequest is what the agent sends to ask.
+type permissionRequest struct {
+	SessionID string         `json:"sessionId"`
+	ToolCall  toolCallUpdate `json:"toolCall"`
+	Options   []struct {
+		ID   string `json:"optionId"`
+		Name string `json:"name"`
+		Kind string `json:"kind"`
+	} `json:"options"`
+}
+
+// handlePermission answers one session/request_permission. It runs off the
+// read loop, because it blocks on a person and the connection must keep
+// reading while it does.
+func (c *Client) handlePermission(ctx context.Context, id, params json.RawMessage) {
+	var req permissionRequest
+	if json.Unmarshal(params, &req) != nil {
+		c.conn.fail(id, -32602, "malformed permission request")
+		return
+	}
+	denial, allowed := c.decide(ctx, req)
+	if allowed {
+		// Allow once, even when the user answered "always". That memory is
+		// kept here, in the executor, where a deny rule still outranks it;
+		// telling the agent to stop asking would move it into a process the
+		// rules cannot reach. Only an agent offering no allow-once at all
+		// gets the standing answer.
+		if opt, ok := req.option("allow_once", "allow_always"); ok {
+			c.conn.respond(id, map[string]any{"outcome": map[string]any{
+				"outcome": "selected", "optionId": opt,
+			}})
+			return
+		}
+		c.conn.fail(id, -32602, "no allow option was offered")
+		return
+	}
+	if opt, ok := req.option("reject_once", "reject_always"); ok {
+		c.conn.respond(id, map[string]any{"outcome": map[string]any{
+			"outcome": "selected", "optionId": opt,
+		}})
+	} else {
+		// An agent that offered no way to say no is told the request is off
+		// the table, which is the protocol's other way of not doing it.
+		c.conn.respond(id, map[string]any{"outcome": map[string]any{"outcome": "cancelled"}})
+	}
+	c.emit(agent.Event{Kind: agent.EvNotice, Text: c.Name + ": " + denial})
+}
+
+// decide runs the request through Tapioca's gate.
+func (c *Client) decide(ctx context.Context, req permissionRequest) (denial string, allowed bool) {
+	if c.gate == nil {
+		// No executor means no rules, no mode and no record of what was
+		// granted. There is nothing to judge the request with, so it is
+		// refused rather than waved through.
+		return "no permission gate is configured", false
+	}
+	name, subject, reported := requestSubject(req.ToolCall)
+	external := strings.HasPrefix(name, "acp:")
+	// What the gate and the hooks are handed: the arguments a built-in of this
+	// name would have been called with, or the agent's own for a tool with no
+	// counterpart here.
+	raw := subjectJSON(name, subject)
+	if external && len(req.ToolCall.Raw) > 0 {
+		raw = req.ToolCall.Raw
+	}
+	asked := false
+	ask := c.asker(ctx, &asked)
+	if external {
+		denial, allowed = c.gate.ApproveExternal(name, subject, ask)
+	} else {
+		denial, allowed = c.gate.Approve(name, raw, ask)
+	}
+	if !allowed {
+		return denial, false
+	}
+	// The rules were matched against a title written for a human, because the
+	// agent did not report the command or the path anywhere this can read it.
+	// A rule that matches one anyway still refuses above — but a rule that
+	// does not match has decided nothing, and passing that off as permission
+	// is how deny = ["bash(rm *)"] comes to allow an rm titled "Tidy up".
+	// So the one thing that can still judge the call is asked to: the user.
+	// Under bypass too, which asks for nothing else — bypass waives the
+	// prompt for calls the rules have cleared, and these are calls the rules
+	// could not read.
+	if !reported && !asked {
+		// Not remembered, however the user answers. A standing grant for a
+		// call whose arguments could not be read is a standing grant for
+		// anything the next one turns out to be.
+		if d := ask(name, subject+" — the agent did not report what this call runs"); !d.Allow {
+			return deniedUnreported, false
+		}
+	}
+	// A pre_tool hook is the user's own last word on a call, and leaving it
+	// out for the one agent Tapioca did not write would be the hole it exists
+	// to close. There is no post_tool counterpart: this call runs somewhere
+	// else, and a note for the tool result has nowhere to go.
+	if reason, blocked := c.gate.RunPreToolHooks(ctx, name, raw); blocked {
+		return reason, false
+	}
+	return "", true
+}
+
+// asker puts the prompt in front of the user through the tab. The tool name
+// goes through untouched: the prompt already names the tab it came from, and
+// the affordances behind it — always-allow this path, this host, this bash
+// prefix — key off the plain name. An external agent's request is meant to be
+// the same prompt as a local one, not one that looks like it.
+//
+// The context bounds the wait: a cancelled turn, or an agent that died
+// mid-question, releases the prompt as a refusal.
+func (c *Client) asker(ctx context.Context, asked *bool) tools.AskFunc {
+	a := c.tab()
+	return func(tool, summary string) tools.Decision {
+		*asked = true
+		if a == nil {
+			return tools.Decision{}
+		}
+		return a.Ask(ctx, tool, summary)
+	}
+}
+
+// requestSubject works out which tool the request should be judged as, and
+// what the rules should match against. It also reports whether that subject is
+// the call's own — an argument or a declared location — or the title standing
+// in for one, which is prose and matches a rule only by luck.
+func requestSubject(call toolCallUpdate) (name, subject string, reported bool) {
+	name = toolNameFor(call.Kind)
+	if strings.HasPrefix(name, "acp:") {
+		// Nothing of Tapioca's does this, so the rules see the arguments
+		// whole, as they do for an MCP tool. These ask on every call that has
+		// no standing grant, so the distinction changes nothing here.
+		if len(call.Raw) > 0 {
+			return name, string(call.Raw), true
+		}
+		return name, call.Title, true
+	}
+	if s := firstField(call.Raw, subjectKeys[name]...); s != "" {
+		return name, s, true
+	}
+	// A file tool's locations say what it is about when its arguments do not.
+	// Only a file tool's: a shell command is not a location and neither is a
+	// URL. Letting one stand in for either handed the gate
+	// {"command":"/tmp/notes.txt"} — a string no deny rule for a shell command
+	// matches, shown to the user in place of what actually runs, and counted as
+	// the call having reported itself, so the last-resort prompt behind it was
+	// skipped too. Under bypass that is an unnamed shell command running with
+	// nothing asked and nothing shown.
+	if locationSubject[name] && len(call.Locations) > 0 && call.Locations[0].Path != "" {
+		return name, call.Locations[0].Path, true
+	}
+	// A search that names no directory covers the working tree, which is what
+	// the built-in grep does with no path argument and what needs no prompt.
+	// It is still fully reported: an empty path is the whole of what the gate
+	// reads for a search, so this must not fall through to the title and start
+	// asking about every ordinary search.
+	if name == "grep" && firstField(call.Raw, searchTerms...) != "" {
+		return name, "", true
+	}
+	return name, strings.TrimSpace(call.Title), false
+}
+
+// subjectJSON rebuilds the arguments the built-in gate reads, so a mapped call
+// is matched, prompted and checkpointed as the tool it stands in for.
+func subjectJSON(name, subject string) json.RawMessage {
+	// grep is not in here: its subject is a path like a file tool's, and
+	// naming it "pattern" put it under a key subjectOf and gateReadOnly do not
+	// read.
+	key := "path"
+	switch name {
+	case "bash":
+		key = "command"
+	case "web_fetch":
+		key = "url"
+	}
+	return json.RawMessage(`{"` + key + `":` + quoteJSON(subject) + `}`)
+}
+
+// firstField returns the first named string field carrying anything.
+func firstField(raw json.RawMessage, keys ...string) string {
+	if len(raw) == 0 || len(keys) == 0 {
+		return ""
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) != nil {
+		return ""
+	}
+	for _, k := range keys {
+		var s string
+		if v, ok := fields[k]; ok && json.Unmarshal(v, &s) == nil && strings.TrimSpace(s) != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+// option finds an option of one of the given kinds, preferring the first named.
+func (r permissionRequest) option(kinds ...string) (string, bool) {
+	for _, want := range kinds {
+		for _, o := range r.Options {
+			if o.Kind == want && o.ID != "" {
+				return o.ID, true
+			}
+		}
+	}
+	return "", false
+}

@@ -46,6 +46,11 @@ func NewVertex(name string, cfg config.ProviderConfig) (*Vertex, error) {
 		return nil, fmt.Errorf("provider %q: vertex needs a project (set project or GOOGLE_CLOUD_PROJECT)", name)
 	}
 	region := firstNonEmpty(cfg.Region, osGetenv("GOOGLE_CLOUD_REGION"), "us-east5")
+	// The region becomes part of the hostname in endpoint() when no base_url
+	// is set, so it has to be a region name and nothing else.
+	if err := CheckRegion(region); err != nil {
+		return nil, fmt.Errorf("provider %q: %w", name, err)
+	}
 	return &Vertex{
 		name: name, project: project, region: region,
 		anth:         &Anthropic{name: name, client: httpClient},
@@ -175,6 +180,15 @@ func serviceAccountToken(ctx context.Context, path string, client *http.Client) 
 	}
 	if sa.TokenURI == "" {
 		sa.TokenURI = "https://oauth2.googleapis.com/token"
+	}
+	// token_uri decides where the grant is POSTed, which is the same decision
+	// base_url makes and was not checked at all: a key file naming
+	// http://169.254.169.254/ or a port on this machine got the request made
+	// for it, with the response folded into an error the user is shown. The
+	// file is chosen by credentials_file, so a config could choose it — and a
+	// key file is copied around like any other file besides.
+	if err := CheckBaseURL(sa.TokenURI); err != nil {
+		return "", time.Time{}, fmt.Errorf("token_uri in %s: %w", path, err)
 	}
 
 	key, err := parsePrivateKey(sa.PrivateKey)

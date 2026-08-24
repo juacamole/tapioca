@@ -314,6 +314,35 @@ func (o *Ollama) post(ctx context.Context, body olReq) (*http.Response, error) {
 }
 
 // ContextLength probes /api/show for the model's trained context window.
+// Identify implements Identifier. /api/version is Ollama's own, and 11434 is
+// not a port other programs reach for the way 8080 is — but the check is the
+// same either way, so that "a local server was found" always means the server
+// said what it was.
+func (o *Ollama) Identify(ctx context.Context) error {
+	req, err := http.NewRequestWithContext(ctx, "GET", o.baseURL+"/api/version", nil)
+	if err != nil {
+		return err
+	}
+	resp, err := o.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("ollama: HTTP %d", resp.StatusCode)
+	}
+	var body struct {
+		Version string `json:"version"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<16)).Decode(&body); err != nil {
+		return err
+	}
+	if body.Version == "" {
+		return fmt.Errorf("ollama: no version in /api/version")
+	}
+	return nil
+}
+
 func (o *Ollama) ContextLength(ctx context.Context, model string) (int, error) {
 	payload, _ := json.Marshal(map[string]string{"model": model})
 	req, err := http.NewRequestWithContext(ctx, "POST", o.baseURL+"/api/show", bytes.NewReader(payload))

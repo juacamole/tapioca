@@ -96,7 +96,7 @@ func renderMarkdown(text string, w int) string {
 	if err != nil {
 		return renderText(text, w)
 	}
-	out = strings.Trim(out, "\n")
+	out = linkify(strings.Trim(out, "\n"))
 	if len(mdCache) >= mdCacheMax {
 		mdCache = map[string]string{}
 	}

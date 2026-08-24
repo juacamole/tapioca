@@ -78,13 +78,18 @@ func buildSlashCmds() []slashCmd {
 			}
 			return openEditorCmd(m.cfg.Editor, editTargetSystem, sys)
 		}},
+		{"skills", "[name]", "list capability packs (name loads one now)", cmdSkills},
 		{"model", "[provider:]name", "switch model (no arg: picker)", cmdModel},
-		{"connect", "", "connect a provider or account", cmdConnect},
+		{"connect", "[agent]", "connect a provider or external agent (ctrl+d disconnects)", cmdConnect},
+		{"mcp", "[server]", "log in to an MCP server that needs OAuth", cmdMCPLogin},
 		{"log", "", "show recent messages and errors", cmdLog},
 		{"effort", "[level]", "set thinking effort (no arg: picker)", cmdEffort},
 		{"goal", "text | clear", "set a session goal for the agent", cmdGoal},
 		{"remember", "fact | clear", "persist a project fact for the model", cmdRemember},
 		{"btw", "note", "add context without asking for a reply", cmdBtw},
+		{"ask", "question", "answer from context, kept out of the conversation", cmdAsk},
+		{"queue", "", "edit or drop prompts waiting to send", cmdQueue},
+		{"steer", "text", "stop this turn and send yours next, keeping its work", cmdSteer},
 		{"cd", "dir", "change the working directory", cmdCd},
 		{"diff", "", "show git diff of the working directory", cmdDiff},
 		{"permissions", "", "show what runs without approval", cmdPermissions},
@@ -227,7 +232,12 @@ func (m *App) runSlash(text string) tea.Cmd {
 		m.setFlash("unknown command /"+name+" — /help lists commands", true)
 		return m.flashCmd()
 	}
-	m.noteSlash(text)
+	// /ask is the one command that leaves no note. Everything else should be
+	// visible in the transcript afterwards, so a session reads as what
+	// happened; /ask exists precisely so a passing question does not.
+	if c.name != "ask" {
+		m.noteSlash(text)
+	}
 	cmd := c.run(m, arg)
 	m.refreshChat(true)
 	return cmd
@@ -257,6 +267,21 @@ func (m *App) busyGuard(a *agent.Agent) bool {
 	return false
 }
 
+// splitModelRef reads a "[provider:]model" reference, falling back to the
+// given provider when there is no prefix. A prefix that names no configured
+// provider is treated as part of the model name rather than as a provider:
+// gateway ids look like "anthropic/claude-opus-5", and "openai:gpt-4o" and
+// "anthropic/claude" must not be read the same way.
+func (m *App) splitModelRef(arg, fallbackProvider string) (provName, model string) {
+	provName, model = fallbackProvider, arg
+	if p, rest, ok := strings.Cut(arg, ":"); ok {
+		if _, exists := m.cfg.Providers[p]; exists && rest != "" {
+			provName, model = p, rest
+		}
+	}
+	return provName, model
+}
+
 func cmdModel(m *App, arg string) tea.Cmd {
 	if arg == "" {
 		m.setFlash("loading models…", false)
@@ -266,12 +291,7 @@ func cmdModel(m *App, arg string) tea.Cmd {
 	if a == nil {
 		return nil
 	}
-	provName, model := a.ProviderName, arg
-	if p, rest, ok := strings.Cut(arg, ":"); ok {
-		if _, exists := m.cfg.Providers[p]; exists && rest != "" {
-			provName, model = p, rest
-		}
-	}
+	provName, model := m.splitModelRef(arg, a.ProviderName)
 	p, err := m.mgr.ProviderFor(provName)
 	if err != nil {
 		m.setFlash(err.Error(), true)
@@ -494,7 +514,30 @@ func cmdCd(m *App, arg string) tea.Cmd {
 		m.setFlash(err.Error(), true)
 		return m.flashCmd()
 	}
-	m.reloadUserCmds() // .tapioca/commands is per project
+	// Whether the config may be honoured is a question about this tree, and
+	// [[hooks]] is not the only key that answers to it: editor, permission_mode,
+	// bash_allow, permissions.allow, mcp, lsp, agents.external and an
+	// off-machine base_url are all withdrawn for a config that sits inside the
+	// working tree. Only hooks were asked again here, so /cd into the checkout
+	// that holds the config file — the dotfiles repository, which is exactly
+	// the case the restriction was written for — left every one of the others
+	// in force. A full reload asks all of them, and it is the same
+	// implementation the watcher and /reload use, so the three cannot drift
+	// into meaning different things.
+	//
+	// It has to re-read the file rather than restrict what is loaded: the
+	// restriction is one-way, and a config already stripped for one tree could
+	// never get its keys back on the way out again.
+	reloaded := m.applyReload()
+	hookNotes := m.hookNotes
+	if !reloaded {
+		// The file no longer parses. Nothing can be re-read, so the config in
+		// memory is restricted where it stands — one-way, but the alternative
+		// is honouring an in-tree config because of a syntax error.
+		hookNotes = append(m.cfg.RestrictIfInsideTree(e.Cwd()), tools.ApplyHooks(e, m.cfg, e.Cwd())...)
+		m.reloadUserCmds() // .tapioca/commands is per project
+		m.reloadSkills()   // and so is .tapioca/skills
+	}
 	note := "cwd: " + e.Cwd()
 	if project.Instructions(e.Cwd()) != "" {
 		note += "" + gl.sep + "loaded project instructions"
@@ -502,7 +545,13 @@ func cmdCd(m *App, arg string) tea.Cmd {
 	if n := len(m.userCmds); n > 0 {
 		note += fmt.Sprintf("%s%d commands", gl.sep, n)
 	}
-	m.setFlash(note, false)
+	if n := len(m.skills); n > 0 {
+		note += fmt.Sprintf("%s%d skills", gl.sep, n)
+	}
+	if len(hookNotes) > 0 {
+		note += gl.sep + hookNotes[0]
+	}
+	m.setFlash(note, len(hookNotes) > 0)
 	return tea.Batch(m.flashCmd(), fetchGitCmd(e.Cwd()))
 }
 
@@ -572,6 +621,9 @@ func cmdPermissions(m *App, _ string) tea.Cmd {
 	b.WriteString(styPanelTitle.Render("never prompts") + "\n")
 	b.WriteString("  read_file, grep, glob, web_search, web_fetch " + styDim.Render("(read-only builtins)") + "\n")
 	b.WriteString("  todo_write " + styDim.Render("(writes the plan panel, not the disk)") + "\n")
+	if len(m.skills) > 0 {
+		b.WriteString("  load_skill " + styDim.Render("(reads a skill's own SKILL.md, nothing else)") + "\n")
+	}
 	if n := len(m.mgr.MCP.AllTools()); n > 0 {
 		b.WriteString(fmt.Sprintf("  %d MCP tools prompt like builtins %s\n", n, styDim.Render("(grants show as mcp:name)")))
 	}
@@ -629,6 +681,21 @@ func cmdPermissions(m *App, _ string) tea.Cmd {
 		}
 		for _, r := range p.Allow {
 			b.WriteString("  " + styOK.Render("allow ") + r + "\n")
+		}
+	}
+	// The executor is asked rather than the config, so a hook refused for
+	// living inside the worktree is absent here — this page is what is in
+	// force, not what was written down.
+	if m.mgr.Exec != nil {
+		if hooks := m.mgr.Exec.Hooks(); len(hooks) > 0 {
+			b.WriteString("\n" + styPanelTitle.Render("hooks") + styDim.Render("  ([[hooks]] in config; pre_tool can refuse a call)") + "\n")
+			for _, h := range hooks {
+				match := h.Match
+				if match == "" {
+					match = "*"
+				}
+				b.WriteString(fmt.Sprintf("  %-14s %-12s %s\n", h.Event, match, sanitizeLabel(h.Command)))
+			}
 		}
 	}
 	b.WriteString("\n" + styDim.Render("revoke: /settings edits bash_allow and [permissions]; session grants clear on restart"))

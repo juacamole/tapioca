@@ -35,15 +35,55 @@ const maxImportDepth = 3
 // sparse 200MB AGENTS.md is 4KB in a clone and allocated gigabytes here.
 const maxInstructionFile = 1 << 20
 
+// maxImportBytes bounds every file one Instructions() call reads, added
+// together. The two caps above bound the ends and nothing bounded the middle:
+// each expanded body is held in place until the join, so the peak is the sum
+// of all of them and only 80 KB of it survives.
+//
+// One symlink is enough to make that sum unbounded. `d -> .` is a link git
+// stores and tar carries, so d/big.md, d/d/big.md, d/d/d/big.md … name one
+// megabyte through as many distinct paths as there is room to write down —
+// distinct after Clean, which cannot fold a component that is a link, so the
+// `seen` map (keyed on the path, not on the file) never fires, and each one
+// really does resolve inside the project and really does end .md. A 600 KB
+// checkout allocated 281 MB; the ceiling is the megabyte AGENTS.md itself is
+// capped at, which is tens of thousands of lines. Instructions() runs while the
+// system prompt is built, before the user has typed anything, with no deadline
+// and nothing to cancel.
+//
+// Fifty times what can survive the join, so nothing anyone composes on purpose
+// meets it.
+const maxImportBytes = 4 << 20
+
+// importState is what one Instructions() call carries down the expansion: the
+// paths already read, so a cycle ends, and the bytes left to spend, so a
+// fan-out does.
+type importState struct {
+	seen   map[string]bool
+	budget int
+}
+
+// readCapped reads at most limit bytes of a regular file.
+//
+// The kind of file is decided before it is opened, not after. Opening a FIFO
+// for reading blocks until something writes to it, and nothing ever will: tar
+// stores FIFOs and extracts them without being asked to, so an archive naming
+// one AGENTS.md wedged the system prompt on the first turn — before the user
+// had typed anything, with no deadline on the read and nothing to cancel.
+// Stat answers without opening, and rules out a directory in the same breath.
 func readCapped(path string, limit int64) ([]byte, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s is not a regular file", path)
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
-	if info, err := f.Stat(); err == nil && info.IsDir() {
-		return nil, fmt.Errorf("%s is a directory", path)
-	}
 	return io.ReadAll(io.LimitReader(f, limit))
 }
 
@@ -53,23 +93,32 @@ func readCapped(path string, limit int64) ([]byte, error) {
 // nearest directory wins by coming last.
 func Instructions(cwd string) string {
 	var parts []string
-	seen := map[string]bool{}
+	st := &importState{seen: map[string]bool{}, budget: maxImportBytes}
 	dirs := ancestry(cwd)
-	roots := importRoots{GlobalDir(), projectRoot(cwd)}
+	// One root per instruction file, not the union of both. A union let a file
+	// in the project read out of the config directory, which is where the
+	// provider keys and the MCP bearer tokens live: a clone that ships
+	// AGENTS.md as a symlink to config.toml — or a `keys.md` symlink it
+	// @imports — landed inside a root the union allowed, and the whole file
+	// went to the provider on every turn. Personal instruction files compose
+	// out of the config directory, project ones out of the project, and
+	// neither has any reason to reach into the other.
+	personal := importRoots{GlobalDir()}
+	local := importRoots{projectRoot(cwd)}
 
-	add := func(path string) {
+	add := func(path string, roots importRoots) {
 		abs, err := filepath.Abs(path)
-		if err != nil || seen[abs] {
+		if err != nil || st.seen[abs] {
 			return
 		}
-		seen[abs] = true
+		st.seen[abs] = true
 		// The file itself gets the check its imports get. Confining @import
 		// while reading AGENTS.md unresolved left the shorter version of the
 		// same exploit open: make AGENTS.md a symlink and skip the import.
-		if !roots.allows(abs) {
+		if !roots.mayRead(abs) {
 			return
 		}
-		text, ok := readInstruction(abs, seen, 0, roots)
+		text, ok := readInstruction(abs, st, 0, roots)
 		if !ok {
 			return
 		}
@@ -77,11 +126,11 @@ func Instructions(cwd string) string {
 	}
 
 	for _, name := range instructionFiles {
-		add(filepath.Join(GlobalDir(), name))
+		add(filepath.Join(GlobalDir(), name), personal)
 	}
 	for _, dir := range dirs {
 		for _, name := range instructionFiles {
-			add(filepath.Join(dir, name))
+			add(filepath.Join(dir, name), local)
 		}
 	}
 
@@ -176,6 +225,71 @@ func (r importRoots) allows(abs string) bool {
 	return false
 }
 
+// mayRead is the whole test an instruction file has to pass: it resolves
+// inside the root the instructions belong to, and it is still markdown once
+// resolved.
+//
+// Both halves ask about the resolved path, because that is the file the open
+// follows. Asking importable() about the path as written was a check on a
+// different file from the one being read — git stores symlinks, so a clone
+// ships keys.md pointing at config.toml, the extension check sees markdown,
+// and the read sees the provider keys.
+func (r importRoots) mayRead(abs string) bool {
+	real := resolveReal(abs)
+	return r.allows(real) && importable(real) && !aliasesTheConfigDir(real)
+}
+
+// aliasesTheConfigDir reports whether a file inside the project is the same
+// file as something in the config directory, reached by a second name rather
+// than by a link.
+//
+// "Inside the root" is a statement about the path, and the read is about the
+// inode. A symlink makes the two disagree and resolveReal settles it; a hard
+// link makes them disagree with nothing to resolve — `ln
+// ~/.config/tapioca/config.toml keys.md` puts the provider keys under a name
+// that is genuinely inside the project and genuinely ends in ".md", and
+// @keys.md then sent api_key and every MCP token to the provider on every
+// turn, in every mode, with no tool call to decline. The path test cannot see
+// it because there is nothing wrong with the path.
+//
+// The link count is the gate, and it is what makes this free: an instruction
+// file has one name, so the walk below never happens. It is also a necessary
+// condition — a second name is a second link — so nothing is missed by it.
+//
+// The config directory is what is walked because it is what is at stake: it
+// holds the provider keys and the MCP bearer tokens, and it is small. A hard
+// link to something else outside the project is not covered, and cannot be
+// without a way of asking "what else is this inode called", which the
+// filesystem does not offer. Nothing but code execution can create either, and
+// git cannot carry one: tar refuses a hard link that leaves the extraction
+// directory.
+func aliasesTheConfigDir(real string) bool {
+	info, err := os.Lstat(real)
+	if err != nil || !info.Mode().IsRegular() || links(info) < 2 {
+		return false
+	}
+	const maxWalk = 5000
+	seen := 0
+	found := false
+	_ = filepath.WalkDir(GlobalDir(), func(p string, d os.DirEntry, err error) error {
+		if err != nil || found {
+			return nil
+		}
+		if seen++; seen > maxWalk {
+			return filepath.SkipAll
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if other, err := os.Lstat(p); err == nil && os.SameFile(info, other) {
+			found = true
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	return found
+}
+
 // importable restricts imports to markdown. The feature exists to split a long
 // instruction file up, and without this the config directory being an import
 // root — which it must be, so personal instruction files can compose — put
@@ -200,7 +314,14 @@ func resolveReal(p string) string {
 }
 
 // readInstruction reads one file and resolves its @imports.
-func readInstruction(path string, seen map[string]bool, depth int, roots importRoots) (string, bool) {
+//
+// The budget is charged here rather than at either call site, because every
+// byte this call gathers goes through it exactly once — the ancestry's own
+// files and everything they import alike.
+func readInstruction(path string, st *importState, depth int, roots importRoots) (string, bool) {
+	if st.budget <= 0 {
+		return "", false
+	}
 	data, err := readCapped(path, maxInstructionFile)
 	if err != nil {
 		return "", false
@@ -209,13 +330,15 @@ func readInstruction(path string, seen map[string]bool, depth int, roots importR
 	if !ok || strings.TrimSpace(text) == "" {
 		return "", false
 	}
-	return strings.TrimSpace(expandImports(text, filepath.Dir(path), seen, depth, roots)), true
+	st.budget -= len(text)
+	return strings.TrimSpace(expandImports(text, filepath.Dir(path), st, depth, roots)), true
 }
 
 // expandImports replaces a line that is exactly "@path" with that file's
 // contents, so a long instruction file can be split up. Cycles and runaway
-// nesting are bounded by seen and depth; roots bound where it may read.
-func expandImports(text, dir string, seen map[string]bool, depth int, roots importRoots) string {
+// nesting are bounded by seen and depth, breadth by the budget; roots bound
+// where it may read.
+func expandImports(text, dir string, st *importState, depth int, roots importRoots) string {
 	if depth >= maxImportDepth || !strings.Contains(text, "@") {
 		return text
 	}
@@ -225,24 +348,30 @@ func expandImports(text, dir string, seen map[string]bool, depth int, roots impo
 		if !strings.HasPrefix(trimmed, "@") || len(trimmed) < 2 || strings.ContainsAny(trimmed, " \t") {
 			continue
 		}
+		if st.budget <= 0 {
+			// Said out loud, like the refusal below: a file that quietly stops
+			// being included looks exactly like one nobody wrote down.
+			lines[i] = "[imports truncated: too much text]"
+			continue
+		}
 		target := expandHome(strings.TrimPrefix(trimmed, "@"))
 		if !filepath.IsAbs(target) {
 			target = filepath.Join(dir, target)
 		}
 		abs, err := filepath.Abs(target)
-		if err != nil || seen[abs] {
+		if err != nil || st.seen[abs] {
 			lines[i] = ""
 			continue
 		}
-		seen[abs] = true
-		if !importable(abs) || !roots.allows(abs) {
+		st.seen[abs] = true
+		if !roots.mayRead(abs) {
 			// Named rather than dropped: a silent refusal looks identical to a
 			// typo, and this one is worth noticing. The path is left out on
 			// purpose — it is attacker-chosen text.
 			lines[i] = "[import refused: outside the project]"
 			continue
 		}
-		if body, ok := readInstruction(abs, seen, depth+1, roots); ok {
+		if body, ok := readInstruction(abs, st, depth+1, roots); ok {
 			lines[i] = body
 		} else {
 			lines[i] = ""

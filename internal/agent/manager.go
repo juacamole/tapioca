@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"tapioca/internal/config"
@@ -49,6 +50,65 @@ func (m *Manager) ProviderFor(name string) (provider.Provider, error) {
 	return p, nil
 }
 
+// ResolveFallbacks turns the configured "[provider:]model" chain for an agent
+// into providers it can actually use. Resolution happens here, once, because
+// the run loop has no access to config and no way to build a provider — and
+// because a chain that names something unbuildable should be reported when it
+// is set up, not in the middle of recovering from a failure.
+//
+// Entries that cannot be resolved are dropped rather than failing the agent: a
+// fallback list is a best effort by definition, and refusing to run because
+// the third choice is misconfigured would be worse than the outage it exists
+// to survive.
+func (m *Manager) ResolveFallbacks(a *Agent) []string {
+	a.Fallbacks = nil
+	var problems []string
+	for _, fb := range m.cfg.Fallbacks {
+		wantProv, wantModel := m.splitRef(fb.When, a.ProviderName)
+		if wantProv != a.ProviderName || wantModel != a.Model {
+			continue
+		}
+		for _, ref := range fb.Then {
+			provName, model := m.splitRef(ref, a.ProviderName)
+			p, err := m.ProviderFor(provName)
+			if err != nil {
+				problems = append(problems, ref+": "+err.Error())
+				continue
+			}
+			a.Fallbacks = append(a.Fallbacks, fallbackTarget{prov: p, providerName: provName, model: model})
+		}
+	}
+	return problems
+}
+
+// UseModel points an agent at a "[provider:]model" reference, resolving the
+// provider it names. It lives here so that every caller of --model reads the
+// reference the same way: the TUI, a headless run and an ACP session are three
+// places asking one question, and three answers to it is how one of them ends
+// up on a different model from the one the user typed.
+func (m *Manager) UseModel(a *Agent, ref, fallbackProvider string) error {
+	provName, model := m.splitRef(ref, fallbackProvider)
+	p, err := m.ProviderFor(provName)
+	if err != nil {
+		return err
+	}
+	a.Provider, a.ProviderName, a.ProviderErr, a.Model = p, provName, "", model
+	return nil
+}
+
+// splitRef reads "[provider:]model", falling back to the given provider. A
+// prefix naming no configured provider belongs to the model name: gateway ids
+// look like "anthropic/claude-opus-5".
+func (m *Manager) splitRef(ref, fallbackProvider string) (provName, model string) {
+	provName, model = fallbackProvider, ref
+	if p, rest, ok := strings.Cut(ref, ":"); ok && rest != "" {
+		if _, exists := m.cfg.Providers[p]; exists {
+			provName, model = p, rest
+		}
+	}
+	return provName, model
+}
+
 // ReloadProviders drops the provider cache (after a config edit) and
 // re-resolves every agent's provider from the new config.
 func (m *Manager) ReloadProviders() {
@@ -89,6 +149,33 @@ func (m *Manager) NewAgent() *Agent {
 		a.ProviderErr = err.Error()
 	} else {
 		a.Provider = p
+	}
+	m.Agents = append(m.Agents, a)
+	return a
+}
+
+// NewExternal creates a tab for an agent Tapioca drives over ACP. It has no
+// provider and no settings of its own: the process on the other end owns the
+// model, the prompt and the history, and this is the frontend for it. The
+// executor comes along all the same — the permission rules are Tapioca's, and
+// they apply to whatever that process asks to do.
+func (m *Manager) NewExternal(name string, remote Remote) *Agent {
+	m.nextID++
+	if name == "" {
+		name = fmt.Sprintf("external-%d", m.nextID)
+	}
+	a := &Agent{
+		ID:   m.nextID,
+		Name: name,
+		// The dashboard's model column answers "what is replying here", and
+		// for this tab that is the external agent rather than any model of
+		// ours — naming it is closer to the truth than leaving it blank.
+		ProviderName: "acp",
+		Model:        name,
+		ToolsEnabled: true,
+		Remote:       remote,
+		Events:       make(chan Event, 512),
+		Exec:         m.Exec,
 	}
 	m.Agents = append(m.Agents, a)
 	return a
@@ -154,6 +241,16 @@ func (m *Manager) Spawn(parent *Agent, name string) *Agent {
 	return a
 }
 
+// CloseRemotes disconnects every external agent. Their processes are children
+// of this one, and nothing keeps running after the app exits.
+func (m *Manager) CloseRemotes() {
+	for _, a := range m.Agents {
+		if a.Remote != nil {
+			a.Remote.Close()
+		}
+	}
+}
+
 // ActiveAgent returns the currently selected agent, or nil.
 func (m *Manager) ActiveAgent() *Agent {
 	if len(m.Agents) == 0 {
@@ -197,6 +294,9 @@ func (m *Manager) Close(i int) {
 	}
 	a := m.Agents[i]
 	a.Cancel()
+	if a.Remote != nil {
+		a.Remote.Close()
+	}
 	// Drain remaining events so the run goroutine can exit.
 	go func() {
 		for {
@@ -219,8 +319,17 @@ func (m *Manager) ToSession(id, name string, createdAt time.Time) *session.Sessi
 	if m.Exec != nil {
 		cwd = m.Exec.Cwd()
 	}
-	s := &session.Session{ID: id, Name: name, Cwd: cwd, CreatedAt: createdAt, Active: m.Active}
-	for _, a := range m.Agents {
+	s := &session.Session{ID: id, Name: name, Cwd: cwd, CreatedAt: createdAt}
+	for i, a := range m.Agents {
+		if a.Remote != nil {
+			// A connection to another process is not state a file can hold,
+			// and restoring the tab without it would produce an agent that
+			// looks connected and answers nothing.
+			continue
+		}
+		if i == m.Active {
+			s.Active = len(s.Agents)
+		}
 		msgs := a.Messages
 		if len(a.PendingNotes) > 0 {
 			msgs = append(append([]provider.Message{}, a.Messages...), a.PendingNotes...)
@@ -251,6 +360,9 @@ func (m *Manager) ToSession(id, name string, createdAt time.Time) *session.Sessi
 func (m *Manager) LoadSession(s *session.Session) {
 	for i := range m.Agents {
 		m.Agents[i].Cancel()
+		if r := m.Agents[i].Remote; r != nil {
+			r.Close()
+		}
 	}
 	m.Agents = nil
 	for _, st := range s.Agents {

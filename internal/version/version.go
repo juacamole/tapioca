@@ -7,4 +7,4 @@ package version
 
 // Version is the release. flake.nix carries it a second time, because Nix
 // cannot read a Go constant; the release workflow checks the two agree.
-const Version = "1.1.0"
+const Version = "1.2.0"

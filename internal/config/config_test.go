@@ -64,6 +64,34 @@ func TestPanelsRoundTripThroughSave(t *testing.T) {
 	}
 }
 
+func TestExternalAgentsRoundTrip(t *testing.T) {
+	path := writeConfig(t, "[[agents.external]]\nname = \"claude-code\"\n"+
+		"command = \"claude\"\nargs = [\"--acp\"]\n")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Agents.External) != 1 {
+		t.Fatalf("agents.external = %+v, want the one entry", cfg.Agents.External)
+	}
+	got := cfg.Agents.External[0]
+	if got.Name != "claude-code" || got.Command != "claude" || len(got.Args) != 1 || got.Args[0] != "--acp" {
+		t.Fatalf("entry = %+v", got)
+	}
+	// A save from inside the app must not drop an agent the file configured:
+	// nothing in the defaults would put it back.
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	again, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(again.Agents.External) != 1 || again.Agents.External[0].Command != "claude" {
+		t.Fatalf("save dropped the external agent: %+v", again.Agents.External)
+	}
+}
+
 func TestPermissionsRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	path := dir + "/config.toml"

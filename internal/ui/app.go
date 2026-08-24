@@ -24,6 +24,7 @@ import (
 	"tapioca/internal/mcp"
 	"tapioca/internal/provider"
 	"tapioca/internal/secretenv"
+	"tapioca/internal/skills"
 	"tapioca/internal/tools"
 )
 
@@ -43,6 +44,7 @@ const (
 	overlayHelp
 	overlayPerm
 	overlayText
+	overlayAsk
 	overlayCredential
 )
 
@@ -98,6 +100,15 @@ type App struct {
 	dashEditing  bool         // inside the settings panel, editing rows
 	dashSel      int          // selected settings row while editing
 	setEdit      *settingEdit // a numeric settings row being typed into
+	ask          *askState    // an in-flight /ask, kept out of the history
+	search       *searchState // an open transcript search
+	reloadSeen   string       // fingerprint of the watched files at the last reload
+	hookNotes    []string     // what the last reload refused about [[hooks]]
+	// fileMode and fileSandbox are what the config file itself last said about
+	// the two settings a launch flag can also decide. A reload applies the file
+	// only where the file changed — see applyReload.
+	fileMode    string
+	fileSandbox bool
 	// dashScroll is each panel's scroll offset, by panel key. Per panel rather
 	// than one shared offset, so scrolling the tool list does not also move the
 	// settings you were part way down.
@@ -105,6 +116,7 @@ type App struct {
 
 	overlay   overlayKind
 	conn      []connEntry // last provider probe, for the connect picker
+	connArmed string      // config key of the provider one more ctrl+d would disconnect
 	cred      *credForm   // in-flight credential entry, nil when closed
 	msgLog    []logEntry  // every flash, kept so none is lost to its timer
 	pick      picker
@@ -127,6 +139,8 @@ type App struct {
 	thinkOpen  map[string]bool         // explicit expand/collapse per thinking block
 	thinkAt    map[int]string          // transcript line -> thinking block key
 	userCmds   []userCmd               // commands loaded from markdown files
+	skills     []skills.Skill          // capability packs the model can load
+	skillProbs []skills.Problem        // packs that did not parse, for /skills
 
 	// Chat transcript caches for mouse selection.
 	chatStyled []string
@@ -175,7 +189,7 @@ func NewApp(cfg *config.Config, mgr *agent.Manager, sessID, sessName string, cre
 	sp := spinner.New(spinner.WithSpinner(gl.spinner))
 	sp.Style = styAccent
 
-	return &App{
+	app := &App{
 		cfg:         cfg,
 		keys:        NewKeyMap(cfg.Keys),
 		mgr:         mgr,
@@ -193,17 +207,41 @@ func NewApp(cfg *config.Config, mgr *agent.Manager, sessID, sessName string, cre
 		sessName:    sessName,
 		sessTitled:  sessName != "",
 		sessCreated: created,
+		fileMode:    cfg.PermissionMode,
+		fileSandbox: cfg.Sandbox,
 	}
+	app.reloadSkills()
+	// A pack that does not parse is skipped, and saying so once at startup is
+	// the difference between a typo in a SKILL.md and a skill that mysteriously
+	// never gets used. Error flashes are not cleared by the timer, so it stays
+	// until something replaces it.
+	if n := len(app.skillProbs); n > 0 {
+		app.setFlash(fmt.Sprintf("%d skill(s) skipped — /skills says why", n), true)
+	}
+	return app
 }
 
-// statusLabel returns the fine-grained stage label when one is active.
+// SetFileState records what the config file itself said about the two settings
+// a launch flag can also decide, before any flag was applied to it. --sandbox
+// is applied by writing into the loaded config, so by the time the app is
+// built the config no longer remembers what the file said — and a reload that
+// cannot tell the file's value from the flag's hands the flag back to the
+// file. See applyReload.
+func (m *App) SetFileState(permissionMode string, sandbox bool) {
+	m.fileMode, m.fileSandbox = permissionMode, sandbox
+}
+
+// statusLabel returns the fine-grained stage label when one is active. It is
+// the one place the chat header, the agents panel and the status bar all go
+// through, so the cleaning happens here: the retry note is built from a
+// provider's error text and the detail from a tool call, and neither is ours.
 func statusLabel(a *agent.Agent) string {
 	if a.Status.Busy() {
 		if left := time.Until(a.RetryAt); left > 0 {
-			return fmt.Sprintf("retry in %ds (%s)", int(left.Seconds())+1, a.RetryNote)
+			return fmt.Sprintf("retry in %ds (%s)", int(left.Seconds())+1, sanitizeLabel(a.RetryNote))
 		}
 		if a.StatusDetail != "" {
-			return a.StatusDetail
+			return sanitizeLabel(a.StatusDetail)
 		}
 	}
 	return a.Status.String()
@@ -222,7 +260,7 @@ func (m *App) cwd() string {
 
 // Init implements tea.Model.
 func (m *App) Init() tea.Cmd {
-	cmds := []tea.Cmd{textarea.Blink, m.spin.Tick, autosaveTick(), gitTick(), fetchGitCmd(m.cwd())}
+	cmds := []tea.Cmd{textarea.Blink, m.spin.Tick, autosaveTick(), gitTick(), reloadTick(), fetchGitCmd(m.cwd())}
 	for _, a := range m.mgr.Agents {
 		cmds = append(cmds, waitAgent(a))
 	}
@@ -284,7 +322,10 @@ func (m *App) dismissOverlay() {
 // so it is sanitized like anything else from outside the program.
 func (m *App) openTextOverlay(title, content string) {
 	content = sanitizeText(content)
-	m.textTitle = title
+	// The heading gets the same treatment as the body: /diff and /remember both
+	// build theirs out of the working directory, which an extracted tarball
+	// named.
+	m.textTitle = sanitizeLabel(title)
 	w := min(m.w-8, 140)
 	h := max(5, m.h-9)
 	m.textVP = viewport.New(viewport.WithWidth(w-4), viewport.WithHeight(h-4))
@@ -324,6 +365,12 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case mcpPromptMsg:
 		return m, m.handleMCPPrompt(msg)
 
+	case mcpAuthMsg:
+		return m, m.handleMCPAuth(msg)
+
+	case mcpAuthDoneMsg:
+		return m, m.handleMCPAuthDone(msg)
+
 	case modelsLoadedMsg:
 		if len(msg.items) == 0 {
 			// Nothing reachable. This is the moment the user most needs a way
@@ -344,6 +391,9 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case connStatusMsg:
 		m.openConnectPicker(msg.entries)
 		return m, nil
+
+	case externalConnectedMsg:
+		return m.handleExternalConnected(msg)
 
 	case titleDoneMsg:
 		if msg.name != "" && msg.sessID == m.sessID && !m.sessTitled {
@@ -431,6 +481,9 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Batch(m.flashCmd(), fetchGitCmd(m.cwd()))
 
+	case reloadTickMsg:
+		return m, tea.Batch(m.checkReload(), reloadTick())
+
 	case autosaveMsg:
 		if m.cfg.Autosave && m.dirty {
 			m.saveSession(false)
@@ -446,6 +499,9 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(fetchGitCmd(m.cwd()), gitTick())
 		}
 		return m, gitTick()
+
+	case askMsg:
+		return m, m.handleAsk(msg)
 
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
@@ -527,6 +583,16 @@ func (m *App) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 	case agent.EvNotice:
 		m.setFlash(ev.Text, true)
 		cmds = append(cmds, m.flashCmd())
+	case agent.EvFallback:
+		a.ResetStream()
+		note := ev.Provider + ":" + ev.Model
+		if ev.Err != nil {
+			note += gl.sep + truncate(sanitizeLabel(ev.Err.Error()), 40)
+		}
+		a.ProviderName, a.Model = ev.Provider, ev.Model
+		m.setFlash("falling back to "+note, true)
+		cmds = append(cmds, m.flashCmd())
+
 	case agent.EvRetry:
 		a.ResetStream()
 		a.Status = agent.StatusWaiting
@@ -626,43 +692,94 @@ func (m *App) handleEditorDone(msg editorDoneMsg) (tea.Model, tea.Cmd) {
 			m.setFlash(fmt.Sprintf("system prompt updated (%s)", humanTokens(len(a.SystemPrompt))), false)
 		}
 	case editTargetConfig:
-		newCfg, err := config.Load(m.cfg.Path())
-		if err != nil {
-			m.setFlash(err.Error()+" — fix with /settings", true)
-			return m, m.flashCmd()
-		}
-		*m.cfg = *newCfg
-		m.keys = NewKeyMap(m.cfg.Keys)
-		secretenv.SetExtra(m.cfg.SecretEnv)
-		m.cfg.Theme = SetTheme(m.cfg.Theme, m.cfg.Colors)
-		m.cfg.Glyphs = SetGlyphs(m.cfg.Glyphs)
-		m.cfg.Wordmark = SetWordmark(m.cfg.Wordmark)
-		m.spin.Spinner = gl.spinner
-		m.repaint()
-		if m.mgr.Exec != nil {
-			m.mgr.Exec.SetMode(m.cfg.PermissionMode)
-			m.mgr.Exec.SetBashPrefixes(m.cfg.BashAllow)
-			m.mgr.Exec.SetRules(m.cfg.Permissions.Allow, m.cfg.Permissions.Ask, m.cfg.Permissions.Deny)
-			m.mgr.Exec.SetSandbox(m.cfg.Sandbox)
-			m.mgr.Exec.SetSandboxNetwork(m.cfg.SandboxNetwork)
-			m.mgr.Exec.SetTimeout(time.Duration(m.cfg.BashTimeout) * time.Second)
-			m.reloadUserCmds()
-		}
-		m.mgr.ReloadProviders()
-		// Push the edited defaults onto existing agents too, so the file is
-		// the single source of truth after /settings.
-		for _, ag := range m.mgr.Agents {
-			ag.MaxTokens = m.cfg.MaxTokens
-			ag.Temperature = m.cfg.Temperature
-			ag.Thinking = m.cfg.Thinking
-			ag.ThinkingBudget = m.cfg.ThinkingBudget
-			ag.SystemPrompt = m.cfg.SystemPrompt
-		}
-		m.recalcLayout()
-		m.refreshChat(true)
-		m.setFlash("config reloaded", false)
+		m.applyReload()
 	}
 	return m, m.flashCmd()
+}
+
+// applyReload re-reads the config and applies it in place. One implementation
+// for all three ways in — leaving the editor, /reload, and the watcher — so
+// they cannot drift into meaning different things.
+//
+// A file that will not parse leaves everything as it was. Editors write
+// partial files constantly, and with a watcher that is no longer a rare case:
+// a half-saved config must not take a running session down.
+func (m *App) applyReload() bool {
+	newCfg, err := config.Load(m.cfg.Path())
+	if err != nil {
+		m.setFlash(err.Error()+" — the previous config is still running", true)
+		return false
+	}
+	// A reload is a second chance to apply a config the tree wrote, and the
+	// watcher makes it one the agent can trigger by editing the file.
+	m.hookNotes = newCfg.RestrictIfInsideTree(m.cwd())
+	// The transform that keeps a launch flag out of the file is not in the
+	// file, so a reload drops it: after one, saving wrote --sandbox, and the
+	// servers --mcp-config named, into the user's own config as settings.
+	newCfg.SetPresave(m.cfg.Presave())
+	// What the file itself said about the two settings a launch flag can also
+	// decide, before the new values overwrite them.
+	fileMode, fileSandbox := m.fileMode, m.fileSandbox
+	m.fileMode, m.fileSandbox = newCfg.PermissionMode, newCfg.Sandbox
+	*m.cfg = *newCfg
+	m.keys = NewKeyMap(m.cfg.Keys)
+	secretenv.SetExtra(m.cfg.SecretEnvNames())
+	m.cfg.Theme = SetTheme(m.cfg.Theme, m.cfg.Colors)
+	m.cfg.Glyphs = SetGlyphs(m.cfg.Glyphs)
+	m.cfg.Wordmark = SetWordmark(m.cfg.Wordmark)
+	m.spin.Spinner = gl.spinner
+	m.repaint()
+	if m.mgr.Exec != nil {
+		// --permission-mode and --sandbox are launch flags, deliberately never
+		// written to the file, and they live in the Executor rather than in the
+		// config. Re-applying the file's value for them on every reload put the
+		// file back in charge of both: `tapioca --sandbox` on a hostile repo
+		// became an unsandboxed session, and `--permission-mode plan` reverted
+		// to whatever the file's default was. The watcher makes that a reload
+		// the working tree can provoke — it stats <cwd>/.tapioca/commands, so
+		// one file written there, which auto mode approves without asking, is
+		// enough, and two seconds later the confinement is gone with no prompt
+		// and no flash. So the file is applied to these two only where the file
+		// itself changed; where it did not, whatever is live stays live.
+		if m.cfg.PermissionMode != fileMode {
+			m.mgr.Exec.SetMode(m.cfg.PermissionMode)
+		}
+		m.mgr.Exec.SetBashPrefixes(m.cfg.BashAllow)
+		m.mgr.Exec.SetRules(m.cfg.Permissions.Allow, m.cfg.Permissions.Ask, m.cfg.Permissions.Deny)
+		if m.cfg.Sandbox != fileSandbox {
+			m.mgr.Exec.SetSandbox(m.cfg.Sandbox)
+		}
+		m.mgr.Exec.SetSandboxNetwork(m.cfg.SandboxNetwork)
+		m.mgr.Exec.SetTimeout(time.Duration(m.cfg.BashTimeout) * time.Second)
+		m.hookNotes = append(m.hookNotes, tools.ApplyHooks(m.mgr.Exec, m.cfg, m.cwd())...)
+		m.reloadUserCmds()
+		m.reloadSkills()
+	}
+	m.mgr.ReloadProviders()
+	// Push the edited defaults onto existing agents too, so the file is
+	// the single source of truth after a reload.
+	for _, ag := range m.mgr.Agents {
+		ag.MaxTokens = m.cfg.MaxTokens
+		ag.Temperature = m.cfg.Temperature
+		ag.Thinking = m.cfg.Thinking
+		ag.ThinkingBudget = m.cfg.ThinkingBudget
+		ag.SystemPrompt = m.cfg.SystemPrompt
+	}
+	m.recalcLayout()
+	m.refreshChat(true)
+	m.noteReloadStamps()
+	m.flashReloaded("config reloaded")
+	return true
+}
+
+// flashReloaded announces a reload, carrying whatever it had to say about
+// [[hooks]]. Every caller goes through this: a refused hook is the one thing a
+// reload must not swallow, and each of them sets a message of its own.
+func (m *App) flashReloaded(text string) {
+	if len(m.hookNotes) > 0 {
+		text += gl.sep + m.hookNotes[0]
+	}
+	m.setFlash(text, len(m.hookNotes) > 0)
 }
 
 func (m *App) decidePerm(d tools.Decision) {
@@ -688,6 +805,21 @@ func (m *App) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if cmd, handled := m.handleCredentialKey(msg); handled {
 			return m, cmd
 		}
+	}
+
+	// Search owns the keyboard while open: every printable key is part of the
+	// query, so nothing may fall through to the global shortcuts.
+	if m.search != nil && m.overlay == overlayNone {
+		return m.handleSearchKey(msg)
+	}
+
+	// The ask overlay owns the keyboard while open: it is a transient answer
+	// and every key should either scroll it or dismiss it.
+	if m.overlay == overlayAsk {
+		if m.keys.Is(msg, "cancel") || m.keys.Is(msg, "send") || msg.String() == "q" {
+			m.closeAsk()
+		}
+		return m, nil
 	}
 
 	// Permission prompts take absolute priority.
@@ -736,6 +868,30 @@ func (m *App) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.dismissOverlay()
 			return m, nil
 		}
+		// In the queue picker, d drops the selected prompt without leaving.
+		if m.pick.kind == pickQueue && msg.String() == "d" {
+			if it := m.pick.selected(); it != nil {
+				idx := -1
+				if _, err := fmt.Sscanf(it.value, "%d", &idx); err == nil {
+					m.dropQueued(idx)
+				}
+			}
+			m.dismissOverlay()
+			m.openQueuePicker()
+			return m, nil
+		}
+		// In the connect picker, ctrl+d disconnects the selected provider.
+		if m.pick.kind == pickConnect {
+			if msg.String() == "ctrl+d" {
+				return m, m.disconnectProvider()
+			}
+			// Anything else disarms, so the second press has to be the one the
+			// message asked for. Moving the selection is the case that matters:
+			// arming names a provider, and a ctrl+d that lands on a different
+			// one than the message named would remove something the user was
+			// never asked about.
+			m.connArmed = ""
+		}
 		// In the panels picker, left/right reorders the selected panel.
 		if m.pick.kind == pickPanels {
 			if s := msg.String(); s == "left" || s == "right" {
@@ -775,6 +931,10 @@ func (m *App) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	case m.keys.Is(msg, "help"):
 		m.openHelp()
+		return m, nil
+
+	case m.keys.Is(msg, "search"):
+		m.openSearch()
 		return m, nil
 
 	case m.keys.Is(msg, "cancel"):
@@ -1463,6 +1623,9 @@ func (m *App) applyPick(it pickerItem) tea.Cmd {
 	case pickConnect:
 		return m.applyConnect(it.value)
 
+	case pickQueue:
+		return m.applyQueuePick(it.value)
+
 	case pickSession:
 		return m.loadSessionByID(it.value)
 
@@ -1585,6 +1748,11 @@ func (m *App) sendPrepared(a *agent.Agent, userMsg provider.Message) tea.Cmd {
 		}
 	}
 
+	// Resolved per turn rather than once: the config can change under a
+	// running session now that it reloads on disk change.
+	if problems := m.mgr.ResolveFallbacks(a); len(problems) > 0 {
+		m.setFlash("fallback: "+problems[0], true)
+	}
 	a.Messages = append(a.Messages, userMsg)
 	var titleCmd tea.Cmd
 	if m.sessName == "" {
@@ -1607,9 +1775,15 @@ func (m *App) sendPrepared(a *agent.Agent, userMsg provider.Message) tea.Cmd {
 	return tea.Batch(m.maybeProbeCtx(a), titleCmd)
 }
 
-// maybeProbeCtx asks Ollama for the model's true context window once per
-// model. Hosted catalog entries never preempt the probe — local model names
-// collide with hosted ids and would inherit wrong windows.
+// ctxProber is a local backend that can be asked for the model's true context
+// window — Ollama via /api/show, llama.cpp via /props.
+type ctxProber interface {
+	ContextLength(ctx context.Context, model string) (int, error)
+}
+
+// maybeProbeCtx asks a local backend for the model's true context window once
+// per model. Hosted catalog entries never preempt the probe — local model
+// names collide with hosted ids and would inherit wrong windows.
 func (m *App) maybeProbeCtx(a *agent.Agent) tea.Cmd {
 	if a.Model == "" || m.probedCtx[a.Model] {
 		return nil
@@ -1617,8 +1791,8 @@ func (m *App) maybeProbeCtx(a *agent.Agent) tea.Cmd {
 	if _, ok := catalog.LookupLocal(a.Model); ok {
 		return nil
 	}
-	ol, isOllama := a.Provider.(*provider.Ollama)
-	if !isOllama {
+	p, canProbe := a.Provider.(ctxProber)
+	if !canProbe || !m.localProvider(a.ProviderName) {
 		return nil
 	}
 	m.probedCtx[a.Model] = true
@@ -1626,7 +1800,7 @@ func (m *App) maybeProbeCtx(a *agent.Agent) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if n, err := ol.ContextLength(ctx, model); err == nil && n > 0 {
+		if n, err := p.ContextLength(ctx, model); err == nil && n > 0 {
 			catalog.Store(model, catalog.Model{Context: n})
 		}
 		return nil
@@ -1826,6 +2000,8 @@ func (m *App) render() string {
 		body = m.renderPerm(m.w, bodyH)
 	case overlayText:
 		body = m.renderTextOverlay(m.w, bodyH)
+	case overlayAsk:
+		body = lipgloss.Place(m.w, bodyH, lipgloss.Center, lipgloss.Center, m.viewAsk())
 	case overlayCredential:
 		body = lipgloss.Place(m.w, bodyH, lipgloss.Center, lipgloss.Center, m.viewCredential())
 	case overlayPicker:
@@ -1909,10 +2085,12 @@ func (m *App) renderMentionMenu(fs []string, w int) string {
 	end := min(len(fs), start+maxRows)
 	var lines []string
 	for i := start; i < end; i++ {
+		// A file name is whatever the archive was built with.
+		name := sanitizeLabel(fs[i])
 		if i == sel {
-			lines = append(lines, stySelected.Render(padRight(truncate("> @"+fs[i], w), w)))
+			lines = append(lines, stySelected.Render(padRight(truncate("> @"+name, w), w)))
 		} else {
-			lines = append(lines, "  "+styAccent.Render(truncate("@"+fs[i], w-2)))
+			lines = append(lines, "  "+styAccent.Render(truncate("@"+name, w-2)))
 		}
 	}
 	if !zenMode {
@@ -1957,14 +2135,38 @@ func (m *App) renderPerm(w, h int) string {
 	if a := m.mgr.ByID(e.agentID); a != nil {
 		name = a.Name
 	}
+	// Every line of this box has to fit the box, or the box stops fitting the
+	// screen. The summary was wrapped for that reason; the tool name was not,
+	// and it is model-chosen too — an MCP call's key is "mcp:" plus whatever
+	// name the model emitted, and an unrecognised name reaches that branch as
+	// well. `mcp:` and three thousand characters made a 100-column terminal
+	// render a 3063-column box: every line wraps thirty times, the summary and
+	// the [y]/[a]/[n] footer scroll away, and what is left on screen is the
+	// padding. That is the same failure the summary's truncation exists to
+	// prevent, arriving by the line above it.
+	labelW := max(10, min(80, w-16))
+	boxW := max(10, w-8) // what is left after the border and the padding
 	var b strings.Builder
 	b.WriteString(styPanelTitle.Render("permission required") +
 		styDim.Render("  ("+truncate(sanitizeLabel(name), 40)+")") + "\n\n")
-	b.WriteString(styTool.Render("tool: "+sanitizeLabel(e.req.Tool)) + "\n")
+	b.WriteString(styTool.Render("tool: "+truncate(sanitizeLabel(e.req.Tool), labelW)) + "\n")
 	summary := sanitizeText(e.req.Summary)
-	lines := strings.Split(wrapPlain(summary, min(80, w-16)), "\n")
-	if len(lines) > 10 {
-		lines = append(lines[:10], styDim.Render(gl.ellipsis))
+	lines := strings.Split(wrapPlain(summary, labelW), "\n")
+	// The box cannot grow past the screen, so a long enough command has a part
+	// nobody sees, and the model chooses which part that is: `printf '<1200
+	// A's>' > ~/.ssh/authorized_keys` drew ten lines of padding and a quiet
+	// ellipsis, with the redirect target nowhere on screen, while [y] ran the
+	// whole thing. Keeping both ends puts a padded tail back in view, and the
+	// gap is stated in full and in the error colour for the case that is left —
+	// a payload in the middle. Being asked to approve bytes you cannot read is
+	// something you have to be told is happening.
+	if limit := max(10, h-14); len(lines) > limit {
+		head := append([]string(nil), lines[:limit-3]...)
+		tail := lines[len(lines)-2:]
+		hidden := len(lines) - len(head) - len(tail)
+		head = append(head, styErr.Render(fmt.Sprintf("%s %d line(s) not shown, of %d characters in total %s",
+			gl.ellipsis, hidden, len(summary), gl.ellipsis)))
+		lines = append(head, tail...)
 	}
 	for _, l := range lines {
 		b.WriteString("  " + styCode.Render(" "+l+" ") + "\n")
@@ -1980,14 +2182,29 @@ func (m *App) renderPerm(w, h int) string {
 	case strings.HasPrefix(e.req.Tool, "web_fetch"):
 		always = "this host"
 	}
-	b.WriteString("\n" + styOK.Render("[y]") + " allow once   " +
-		styWarn.Render("[a]") + " always allow " + always)
+	// The choices are the point of the box, so the footer is measured and the
+	// only part of it that can grow — the tool's name — is what gives way. The
+	// clip below would otherwise take "[n] deny" off the end instead, which is
+	// the one thing on screen that must never be missing.
+	head := styOK.Render("[y]") + " allow once   " + styWarn.Render("[a]") + " always allow "
+	prefix := ""
 	if e.req.Tool == "bash" && tools.PrefixGrantable(e.req.Summary) {
-		b.WriteString("   " + styAccent.Render("[p]") + " always allow " +
-			sanitizeLabel(tools.PrefixSuggestion(e.req.Summary)) + " *")
+		prefix = "   " + styAccent.Render("[p]") + " always allow " +
+			truncate(sanitizeLabel(tools.PrefixSuggestion(e.req.Summary)), 24) + " *"
 	}
-	b.WriteString("   " + styErr.Render("[n]") + " deny")
-	box := borderStyle(true).Padding(1, 2).Render(b.String())
+	deny := "   " + styErr.Render("[n]") + " deny"
+	room := boxW - lipgloss.Width(head) - lipgloss.Width(prefix) - lipgloss.Width(deny)
+	b.WriteString("\n" + head + truncate(always, max(6, room)) + prefix + deny)
+	// Whatever the lines above turned out to be, the box has to fit the screen:
+	// Place centres an oversized box, it does not clip it, and a box wider than
+	// the terminal wraps every one of its lines and scrolls the choices away.
+	// The clip is width-aware where truncate() counts runes, so a name made of
+	// wide characters cannot pass the clamps above and still overflow here.
+	lines = strings.Split(b.String(), "\n")
+	for i, l := range lines {
+		lines[i] = clipANSI(l, boxW)
+	}
+	box := borderStyle(true).Padding(1, 2).Render(strings.Join(lines, "\n"))
 	return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, box)
 }
 
@@ -2005,9 +2222,11 @@ func (m *App) renderTitle() string {
 	if name == "" {
 		name = m.sessID
 	}
-	left := " " + styAppTitle.Render("tapioca") + styDim.Render(""+gl.sep+""+truncate(name, 32))
+	// The session name is written by a model and the working directory by
+	// whoever produced the tree; this bar is redrawn on every frame.
+	left := " " + styAppTitle.Render("tapioca") + styDim.Render(""+gl.sep+""+truncate(sanitizeLabel(name), 32))
 	if m.mgr.Exec != nil {
-		left += styDim.Render("" + gl.sep + "" + shortPath(m.mgr.Exec.Cwd()))
+		left += styDim.Render("" + gl.sep + "" + sanitizeLabel(shortPath(m.mgr.Exec.Cwd())))
 	}
 
 	a := m.mgr.ActiveAgent()
@@ -2078,7 +2297,9 @@ func (m *App) renderTabs() string {
 
 func (m *App) renderStatus() string {
 	var left string
-	if m.flash != "" {
+	if s := m.searchStatus(); s != "" {
+		left = s
+	} else if m.flash != "" {
 		if m.flashErr {
 			// A provider's error body is routinely longer than the status
 			// line. Truncating in silence is what made these unreadable, so

@@ -9,6 +9,7 @@ import (
 
 	"tapioca/internal/agent"
 	"tapioca/internal/catalog"
+	"tapioca/internal/provider"
 )
 
 // panelDef describes one dashboard panel type.
@@ -341,8 +342,7 @@ type costRates struct{ In, Out, CacheR, CacheW float64 }
 // localProvider reports whether a provider entry is a local backend, whose
 // inference is free and whose model names must not match hosted catalog ids.
 func (m *App) localProvider(name string) bool {
-	t := m.cfg.Providers[name].Type
-	return t == "ollama" || t == ""
+	return provider.IsLocal(m.cfg.Providers[name].Type)
 }
 
 // costFor resolves $/Mtok rates: explicit config overrides always win, the
@@ -541,7 +541,9 @@ func renderToolsPanel(m *App, a *agent.Agent, w, h int) []string {
 		if !tc.Running {
 			dur = fmt.Sprintf(" %.1fs", tc.Dur.Seconds())
 		}
-		head := fmt.Sprintf("%s %s%s", icon, tc.Name, styDim.Render(dur))
+		// The name comes from the model or an MCP server, like the arguments
+		// two lines down that were already being cleaned.
+		head := fmt.Sprintf("%s %s%s", icon, sanitizeLabel(tc.Name), styDim.Render(dur))
 		lines = append(lines, head)
 		if len(lines) < h && tc.Args != "" && tc.Args != "{}" {
 			lines = append(lines, styDim.Render("  "+truncate(sanitizeText(tc.Args), w-3)))
@@ -752,7 +754,13 @@ func sparkline(vals []int, w int) string {
 	}
 	var b strings.Builder
 	for _, v := range vals {
-		idx := v * (len(chars) - 1) / maxV
+		// The floor is not defensive tidiness. maxV never drops below 1, so a
+		// negative count scales to a negative index and takes the whole program
+		// down from a rune slice of eight. The counts are clamped where they
+		// enter now, but a session saved before that was true is loaded straight
+		// into Stats, and drawing a chart must not be able to be the thing that
+		// kills the app.
+		idx := max(0, v*(len(chars)-1)/maxV)
 		b.WriteRune(chars[idx])
 	}
 	return b.String()

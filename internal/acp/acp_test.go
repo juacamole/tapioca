@@ -84,7 +84,7 @@ func (c *client) await(id int) (json.RawMessage, *rpcError, []rpcMsg) {
 
 func TestInitializeAndSessionLifecycle(t *testing.T) {
 	c := newTestClient(t, func(in io.Reader, out io.Writer) {
-		_ = Serve(testConfig(t), in, out)
+		_ = Serve(testConfig(t), Launch{}, in, out)
 	})
 
 	res, rpcErr, _ := c.await(c.send("initialize", map[string]any{
@@ -153,7 +153,7 @@ func TestPromptStreamsUpdatesAndStops(t *testing.T) {
 	stub := stubProvider(t, cfg)
 
 	c := newTestClient(t, func(in io.Reader, out io.Writer) {
-		_ = Serve(cfg, in, out)
+		_ = Serve(cfg, Launch{}, in, out)
 	})
 	c.await(c.send("initialize", map[string]any{"protocolVersion": 1}))
 	res, _, _ := c.await(c.send("session/new", map[string]any{"cwd": t.TempDir()}))
@@ -226,7 +226,7 @@ func TestToolCallsBecomeUpdates(t *testing.T) {
 	stub.toolArgs = `{"pattern":"**/*.go"}`
 
 	c := newTestClient(t, func(in io.Reader, out io.Writer) {
-		_ = Serve(cfg, in, out)
+		_ = Serve(cfg, Launch{}, in, out)
 	})
 	c.await(c.send("initialize", map[string]any{"protocolVersion": 1}))
 	res, _, _ := c.await(c.send("session/new", map[string]any{"cwd": work}))
@@ -323,7 +323,7 @@ func TestSpawnRequestDoesNotHangTheTurn(t *testing.T) {
 	stub.toolArgs = `{"task":"do something else","name":"helper"}`
 
 	c := newTestClient(t, func(in io.Reader, out io.Writer) {
-		_ = Serve(cfg, in, out)
+		_ = Serve(cfg, Launch{}, in, out)
 	})
 	c.await(c.send("initialize", map[string]any{"protocolVersion": 1}))
 	res, _, _ := c.await(c.send("session/new", map[string]any{"cwd": t.TempDir()}))

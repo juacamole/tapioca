@@ -6,13 +6,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 
 	"github.com/BurntSushi/toml"
 )
 
 // ProviderConfig describes one LLM backend.
 type ProviderConfig struct {
-	Type            string            `toml:"type"`             // "ollama" | "anthropic" | "openai"
+	Type            string            `toml:"type"`             // "ollama" | "llamacpp" | "anthropic" | "openai" | …
 	BaseURL         string            `toml:"base_url"`         // optional override
 	APIKey          string            `toml:"api_key"`          // literal key (discouraged; prefer env)
 	APIKeyEnv       string            `toml:"api_key_env"`      // env var holding the key
@@ -27,6 +28,13 @@ type ProviderConfig struct {
 	Profile         string            `toml:"profile"`          // bedrock: AWS shared-credentials profile
 	Project         string            `toml:"project"`          // vertex: GCP project
 	CredentialsFile string            `toml:"credentials_file"` // vertex: service account JSON
+}
+
+// Fallback is an ordered list of models to try when one cannot answer. When
+// names the model it applies to as "[provider:]model"; Then is tried in order.
+type Fallback struct {
+	When string   `toml:"when"`
+	Then []string `toml:"then"`
 }
 
 // Cost is the price per million tokens for a model prefix.
@@ -44,6 +52,15 @@ type Permissions struct {
 	Deny  []string `toml:"deny"`
 }
 
+// HookConfig is one lifecycle hook: a command run at a defined point around a
+// tool call. Where it may come from is decided by TrustedHooks.
+type HookConfig struct {
+	Event   string `toml:"event"`   // pre_tool | post_tool | session_start | session_end
+	Match   string `toml:"match"`   // glob over the tool name; empty matches every tool
+	Command string `toml:"command"` // run with sh -c, like a bash call
+	Timeout int    `toml:"timeout"` // seconds it may run; 0 = the built-in default
+}
+
 // MCPServerConfig describes one MCP server: a child process over stdio, or an
 // HTTP endpoint when URL is set.
 type MCPServerConfig struct {
@@ -53,6 +70,31 @@ type MCPServerConfig struct {
 	Env     map[string]string `toml:"env"`
 	URL     string            `toml:"url"`     // streamable HTTP endpoint
 	Headers map[string]string `toml:"headers"` // sent on every request; ${VAR} expands
+	Auth    string            `toml:"auth"`    // "oauth": log in through the browser
+	// ClientID is only for an authorization server that refuses to register a
+	// client on the spot; with dynamic registration there is nothing to fill in.
+	ClientID string   `toml:"client_id"`
+	Scopes   []string `toml:"scopes"` // oauth: overrides what the server advertises
+}
+
+// ExternalAgent is another agent Tapioca drives over the Agent Client
+// Protocol: a subprocess speaking ACP on stdio, which gets a tab of its own.
+//
+//	[[agents.external]]
+//	name    = "claude-code"
+//	command = "claude"
+//	args    = ["--acp"]
+type ExternalAgent struct {
+	Name    string            `toml:"name"`
+	Command string            `toml:"command"`
+	Args    []string          `toml:"args"`
+	Env     map[string]string `toml:"env"`
+}
+
+// Agents groups what can be driven besides the models: an [agents] table
+// rather than a top-level list, so later kinds have somewhere to go.
+type Agents struct {
+	External []ExternalAgent `toml:"external"`
 }
 
 // LSPServerConfig describes a language server used to check edited files.
@@ -99,21 +141,35 @@ type Config struct {
 	BashAllow   []string                  `toml:"bash_allow"`  // always-allowed bash command words
 	Permissions Permissions               `toml:"permissions"` // per-tool rules, checked before the mode
 	SecretEnv   []string                  `toml:"secret_env"`  // extra env vars hidden from tools
+	Hooks       []HookConfig              `toml:"hooks"`       // commands run around tool calls
 	Providers   map[string]ProviderConfig `toml:"providers"`
 	MCP         []MCPServerConfig         `toml:"mcp"`
 	LSP         []LSPServerConfig         `toml:"lsp"`
+	Agents      Agents                    `toml:"agents"`
 	Dashboard   DashboardConfig           `toml:"dashboard"`
 	Keys        map[string]string         `toml:"keys"`
 	Colors      map[string]string         `toml:"colors"` // theme overrides: "#hex" or "#light/#dark"
 	Costs       map[string]Cost           `toml:"costs"`  // model prefix -> $/Mtok
+	Fallbacks   []Fallback                `toml:"fallback"`
 
 	path    string // where this config was loaded from
 	presave func(*Config)
+	// unrestrict puts back what RestrictIfInsideTree refused to honour, so
+	// changing a setting in the app does not delete keys from the file just
+	// because this run declined to act on them.
+	unrestrict func(*Config)
 }
 
 // SetPresave registers a transform applied to a copy of the config before
 // every Save, so runtime-only overrides (CLI flags) never persist to disk.
 func (c *Config) SetPresave(fn func(*Config)) { c.presave = fn }
+
+// Presave returns that transform, so a reload — which replaces the whole
+// config with a freshly loaded one — can carry it over. Without it the first
+// save after a reload wrote the launch flags into the user's config file as
+// settings: --sandbox as sandbox = true, and the servers --mcp-config named as
+// the user's own [[mcp]].
+func (c *Config) Presave() func(*Config) { return c.presave }
 
 // Default returns the built-in configuration.
 func Default() *Config {
@@ -142,6 +198,12 @@ func Default() *Config {
 		Theme:          "taro",
 		Glyphs:         "unicode",
 		Wordmark:       "auto",
+		// No llama.cpp entry, deliberately. Every configured provider is asked
+		// for its models each time /model opens, and llama-server's port is
+		// 8080 — the one a Spring Boot app, a Tomcat, a Jenkins or any dev
+		// server takes first. Shipping the entry would send a request to
+		// whatever that is and put its 404 on screen, for everyone who does not
+		// run llama.cpp. /connect finds a real one instead, and adds it then.
 		Providers: map[string]ProviderConfig{
 			"ollama":    {Type: "ollama", BaseURL: "http://localhost:11434"},
 			"anthropic": {Type: "anthropic", APIKeyEnv: "ANTHROPIC_API_KEY"},
@@ -195,6 +257,13 @@ func Load(path string) (*Config, error) {
 		_ = WriteDefault(path) // best effort; the app works without a file
 		return cfg, nil
 	}
+	// Decoding a table into a map merges into it rather than replacing it, so
+	// the built-in providers outlived being deleted from the file: removing
+	// [providers.ollama] left ollama configured and probed, and no edit to the
+	// file could get rid of it. Cleared first, a [providers] table in the file
+	// is the whole set — and a file that never mentions providers still falls
+	// back to the defaults below, which is what leaves first run working.
+	cfg.Providers = nil
 	md, err := toml.DecodeFile(path, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("parsing %s: %w", path, err)
@@ -220,6 +289,7 @@ func Load(path string) (*Config, error) {
 	if cfg.DefaultProvider == "" {
 		cfg.DefaultProvider = def.DefaultProvider
 	}
+	cfg.EnsureDefaultProvider()
 	if cfg.SystemPrompt == "" {
 		cfg.SystemPrompt = def.SystemPrompt
 	}
@@ -242,12 +312,62 @@ func Load(path string) (*Config, error) {
 	return cfg, nil
 }
 
+// EnsureDefaultProvider points default_provider at a provider that exists.
+//
+// Providers can be removed — from the file, or from /connect — and the default
+// names "ollama" without anyone having written that down, so deleting the
+// ollama entry and nothing else would leave every new agent pointed at a
+// provider the config no longer has. Sorted, so which one it lands on does not
+// depend on map order. A default that still resolves is never moved.
+func (c *Config) EnsureDefaultProvider() {
+	if _, ok := c.Providers[c.DefaultProvider]; ok || len(c.Providers) == 0 {
+		return
+	}
+	names := make([]string, 0, len(c.Providers))
+	for name := range c.Providers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	c.DefaultProvider = names[0]
+}
+
 // Path returns where this config lives on disk.
 func (c *Config) Path() string {
 	if c.path == "" {
 		return DefaultPath()
 	}
 	return c.path
+}
+
+// SecretEnvNames returns every environment variable this config turns into a
+// credential: the ones named outright in secret_env, the api_key_env of each
+// provider, and the ${VAR} an mcp header expands.
+//
+// A fixed table of well-known names in the secretenv package was not enough,
+// and could not be: a variable holds a key because the config says to read it,
+// not because someone thought of its name while writing that table. So
+// api_key_env = "MY_GATEWAY_KEY" and an mcp header of "Bearer ${MCP_TOKEN}"
+// went to every stdio MCP server, every language server and every bash call,
+// which is exactly the exfiltration the scrubbing exists to stop.
+func (c *Config) SecretEnvNames() []string {
+	names := append([]string(nil), c.SecretEnv...)
+	for _, p := range c.Providers {
+		if p.APIKeyEnv != "" {
+			names = append(names, p.APIKeyEnv)
+		}
+	}
+	for _, s := range c.MCP {
+		for _, v := range s.Headers {
+			// os.Expand with a collecting function, so this reads exactly the
+			// references the transport will substitute — no second parser to
+			// drift from the first.
+			os.Expand(v, func(name string) string {
+				names = append(names, name)
+				return ""
+			})
+		}
+	}
+	return names
 }
 
 // Save writes the current configuration back to the file it was loaded from.
@@ -265,6 +385,11 @@ func (c *Config) Save() error {
 	tosave := *c
 	if c.presave != nil {
 		c.presave(&tosave)
+	}
+	// After presave, not before: the flag exclusions it applies were composed
+	// from values this run had already restricted, so they must not win here.
+	if c.unrestrict != nil {
+		c.unrestrict(&tosave)
 	}
 	var buf bytes.Buffer
 	if err := toml.NewEncoder(&buf).Encode(&tosave); err != nil {
@@ -390,6 +515,24 @@ model_catalog = true            # fetch model prices/context sizes from
 # deny  = ["read_file(**/.env)", "bash(rm *)", "mcp:*__delete_*"]
 # secret_env = ["MY_TOKEN"]     # extra env vars hidden from tools and MCP servers
                                 # (provider API keys are always hidden)
+
+# Hooks run a command of yours around tool calls. event is pre_tool,
+# post_tool, session_start or session_end; match globs the tool name
+# (mcp:server__tool for MCP tools) and covers every tool when omitted.
+# The call is described in TAPIOCA_EVENT, TAPIOCA_TOOL, TAPIOCA_TOOL_PATH
+# (file tools), TAPIOCA_TOOL_COMMAND (bash), TAPIOCA_TOOL_ERROR (post_tool)
+# and TAPIOCA_CWD, with the exact arguments as JSON on stdin.
+# A pre_tool hook that exits non-zero BLOCKS the call and its stderr is shown
+# as the reason — including when it is missing or times out, so a policy that
+# cannot run refuses rather than waves things through. A hook can only refuse:
+# it never overrides a deny rule or skips a prompt. Provider keys are scrubbed
+# from its environment. See SECURITY.md.
+# [[hooks]]
+# event = "post_tool"
+# match = "edit_file"
+# command = 'gofmt -w "$TAPIOCA_TOOL_PATH"'
+# timeout = 30                  # seconds; 0 = 30
+
 editor = ""                     # prompt editor; falls back to $VISUAL, $EDITOR, nvim, vim
 # title_model = "ollama:qwen3"  # cheap model for session titles; empty = the agent's own
 
@@ -423,6 +566,15 @@ commands instead of describing what the user should do. Keep answers concise.
 type = "ollama"
 base_url = "http://localhost:11434"
 # context_window = 8192         # used for the context gauge
+
+# llama.cpp's llama-server. Uncomment to use it, or add it from /connect.
+# Older builds need --jinja or tool calls are refused; recent ones have it on
+# by default:
+#   llama-server --jinja -m model.gguf
+# [providers.llamacpp]
+# type = "llamacpp"
+# base_url = "http://localhost:8080"
+# api_key_env = "LLAMA_API_KEY" # only if the server was started with --api-key
 
 [providers.anthropic]
 type = "anthropic"
@@ -486,6 +638,13 @@ api_key_env = "ANTHROPIC_API_KEY"
 # type = "openai"
 # base_url = "http://localhost:1234"
 
+# When a model cannot answer — rate limited, out of quota, provider erroring —
+# try these instead, in order. A refusal or a bad request is an answer, not a
+# failure, and is never retried elsewhere.
+# [[fallback]]
+# when = "anthropic:claude-opus-5"
+# then = ["anthropic:claude-sonnet-5", "ollama:qwen3-coder"]
+
 # Cost table for the dashboard, $ per million tokens, matched by model prefix.
 # Sensible defaults exist for common anthropic/openai models; override here.
 # [costs."claude-sonnet"]
@@ -507,6 +666,14 @@ panels = ["agents", "tokens", "todos", "git", "tools", "settings"]
 # [mcp.headers]
 # Authorization = "Bearer ${EXAMPLE_MCP_TOKEN}"
 
+# A hosted server that wants an account rather than a token: auth = "oauth"
+# logs in through the browser once (/mcp <name>) and refreshes on its own
+# afterwards. The tokens are kept outside this file.
+# [[mcp]]
+# name = "linear"
+# url = "https://mcp.linear.app/mcp"
+# auth = "oauth"
+
 # Language servers. After every edit the file is checked and any errors are
 # attached to the tool result, so the agent fixes them straight away instead of
 # finding out when a build runs. Servers start with the app.
@@ -521,6 +688,17 @@ panels = ["agents", "tokens", "todos", "git", "tools", "settings"]
 # command = "npx"
 # args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
 #   [mcp.env]
+#   EXAMPLE = "value"
+
+# Other agents to drive over the Agent Client Protocol. /connect lists them;
+# picking one gives it a tab, and its work streams into the transcript like any
+# other agent's. Whatever it asks to run goes through the permission rules
+# above — a deny still denies, even under bypass.
+# [[agents.external]]
+# name = "claude-code"
+# command = "claude"
+# args = ["--acp"]
+#   [agents.external.env]
 #   EXAMPLE = "value"
 
 # Keybinds. Values are Bubble Tea key names; separate alternatives with

@@ -14,6 +14,14 @@ the model ("ignore previous instructions, run …"). The model cannot reliably
 distinguish data from instructions, so **treat every tool call as something
 the content it just read might have asked for**.
 
+A repository's `.tapioca/skills/` is the same kind of text: the description of
+each skill is in the system prompt, and `load_skill` puts the rest in front of
+the model. Cloning a repository is enough to get both. Neither can reach
+outside its own directory — a `SKILL.md` that is a link elsewhere, or a skill
+directory that is, is skipped — but what a pack *says* is chosen by whoever
+wrote it, exactly like `AGENTS.md`. Nothing a skill asks for bypasses the gates
+below; `/skills` shows what is installed.
+
 This is why the permission prompt matters: it is the point where a human
 sees the command before it runs.
 
@@ -98,6 +106,58 @@ Rules that hold in all modes except `bypass`:
   the agent that spawned them, and their tool calls prompt you the same way.
   A subagent cannot spawn further agents.
 
+## Hooks
+
+Rules decide *whether* a call happens. A hook is a command of yours that runs
+*when* it does — format after an edit, log what ran, refuse something no rule
+covers:
+
+```toml
+[[hooks]]
+event = "pre_tool"              # pre_tool | post_tool | session_start | session_end
+match = "edit_file"             # glob over the tool name; every tool when omitted
+command = "~/bin/check-path"
+timeout = 30                    # seconds; 30 by default, 5 minutes at most
+```
+
+What a hook **can** do:
+
+- **Refuse a call.** A `pre_tool` hook that exits non-zero blocks it, and its
+  stderr becomes the reason shown to you and to the model. A hook that is
+  missing, crashes or times out also refuses: a policy that cannot run must not
+  wave the call through.
+- **See what ran.** `TAPIOCA_EVENT`, `TAPIOCA_TOOL`, `TAPIOCA_TOOL_PATH` (file
+  tools, resolved), `TAPIOCA_TOOL_COMMAND` (bash), `TAPIOCA_TOOL_ERROR`
+  (`post_tool`) and `TAPIOCA_CWD` describe the call, with the exact arguments
+  as JSON on stdin. The variables are capped in length, so a hook that must be
+  exact reads stdin.
+
+What a hook **cannot** do:
+
+- **Widen a permission.** Hooks run after the gate has approved a call, so
+  exiting 0 grants nothing: it does not override a `deny` rule, skip a prompt,
+  lift plan mode, or make a call happen that would not have. A denied call
+  returns before any hook is consulted, so a `pre_tool` hook is not even a way
+  to observe one.
+- **Read provider credentials.** A hook gets the same scrubbed environment as
+  `bash` and every other subprocess.
+- **Hang the session.** Each hook has a deadline and is killed with its process
+  group when it expires. `post_tool` and the session hooks report failures and
+  otherwise change nothing; only `pre_tool` decides anything.
+- **Arrive from a repository.** Hooks are honoured only when the config file
+  declaring them lives *outside* the tree being worked on. A clone can ship a
+  `config.toml`, or point `XDG_CONFIG_HOME` at itself from an `.envrc`, and
+  either would otherwise mean arbitrary commands on the next tool call. Hooks
+  from such a file are ignored with a warning naming the file. This is the
+  general rule: a repository supplies prompt text (`AGENTS.md`,
+  `.tapioca/commands`) and never configuration that executes — the same reason
+  MCP servers, language servers and `bash_allow` are read from your config
+  alone.
+
+Hooks run unsandboxed even when `sandbox = true`; that setting confines the
+agent's `bash`, not commands you wrote yourself. `/permissions` lists the hooks
+actually in force.
+
 ## Read-only tools
 
 `read_file`, `grep`, `glob`, `web_search` and `web_fetch` do not prompt for
@@ -167,10 +227,15 @@ secret_env = ["MY_COMPANY_TOKEN"]
 MCP servers still receive whatever you set explicitly in their `[mcp.env]`
 block.
 
+A provider configured with a custom `api_key_env` name needs no entry here. The
+list is derived from your config, so `api_key_env = "MY_GATEWAY_KEY"` and the
+`${VAR}` an `[mcp.headers]` entry expands are both withheld from children — a
+variable holds a key because the config says to read it, not because someone
+thought of its name. `secret_env` is for variables nothing in the config points
+at.
+
 Two things this does **not** cover, both worth knowing:
 
-- A provider configured with a custom `api_key_env` name is not recognised
-  automatically. Put that variable in `secret_env` yourself.
 - Scrubbing removes the variable from the *child's* environment. It does not
   hide Tapioca's own: on Linux an approved command can read
   `/proc/<parent>/environ` and see everything you exported in the shell that
@@ -220,12 +285,32 @@ your own config or transcripts prompts like any other secret.
   the working directory. That is not an escalation (a process that can spawn
   Tapioca can already run anything as you), but do not expose an `--acp`
   process's stdin to anything you would not trust with a shell.
-- **Grants are coarse.** `[p]` grants a command word, not a subcommand:
-  allowing `git` allows `git push`. Tools that can execute code through
-  configuration (`git -c`, `make`, build scripts) inherit that power.
+- **An external agent is judged on what it reports.** `/connect` puts every
+  permission request from an agent you configured through your rules, but the
+  call itself runs in that agent's process: what Tapioca matches a rule
+  against is the command the agent said it was about to run, not the one it
+  runs. An agent that describes a call only in prose gets a prompt every time
+  and is never granted standing permission, because there is nothing specific
+  to grant — but the rules protect you from the agent's *model*, not from the
+  agent's *binary*. Connect ones you would trust with a shell, which is what
+  launching one already is.
+- **A grant is still a command word.** `[p]` grants `git`, and that allows
+  `git push`. Flags and subcommands that turn a command into a way of running
+  another program are excluded (`git -c`, `git bisect run`, `find -exec`,
+  `go run`, `make -f`, `tar --use-compress-program`, `npm exec` …), and that is
+  checked when the grant is matched rather than only when it is offered — but a
+  grant on `git` is weaker than that list makes it look, because `git commit`
+  runs `.git/hooks/pre-commit`, which in an extracted tarball is a file the
+  archive chose.
 - **`--add-dir` widens the ungated read area** to those directories.
-- **Checkpoints do not protect data outside the working tree**, and
-  `.gitignore`d files are excluded from snapshots.
+- **Checkpoints do not protect data outside the working tree.** Ignored files
+  *are* snapshotted, within a budget — a repository's own `.gitignore` would
+  otherwise decide what `/rewind` can undo, and the paths where the checkpoint
+  is the only copy are exactly the ones an ignore line removes from it. A tree
+  that ignores a directory holding more than the budget is the remaining gap.
+- **`PATH` and `LD_PRELOAD` are outside what any of this can promise.** If the
+  shell that launched Tapioca has them pointed somewhere hostile, `git`, `rg`
+  and `sh` are already whatever that says they are.
 
 ## Practical advice
 

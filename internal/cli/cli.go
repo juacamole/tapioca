@@ -186,6 +186,14 @@ func fail(err error) {
 	os.Exit(1)
 }
 
+// warn reports what a hook had to say. Nothing here is fatal: a refused or
+// failed hook must not be the reason a session cannot start.
+func warn(notes []string) {
+	for _, n := range notes {
+		fmt.Fprintln(os.Stderr, "warning:", n)
+	}
+}
+
 // Main is the whole program. It lives here rather than in package main so
 // that more than one binary name can share it: the Shopify tapioca gem also
 // installs a `tapioca`, so this ships as `tapio` too.
@@ -205,16 +213,7 @@ func Main() {
 			return
 		}
 		for _, m := range metas {
-			name := m.Name
-			if name == "" {
-				name = "(unnamed)"
-			}
-			where := m.Cwd
-			if where == "" {
-				where = "(no project recorded)"
-			}
-			fmt.Printf("%s  %-32s  %d agents  %d msgs  %s  %s\n",
-				m.ID, name, m.Agents, m.Messages, m.UpdatedAt.Format("2006-01-02 15:04"), where)
+			fmt.Println(sessionLine(m))
 		}
 		return
 	}
@@ -223,6 +222,14 @@ func Main() {
 	if err != nil {
 		fail(err)
 	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		cwd, _ = os.UserHomeDir()
+	}
+	// Before anything reads a key that starts a process or hands out a standing
+	// approval: a config file found inside the tree being worked on may have
+	// been committed there.
+	warn(cfg.RestrictIfInsideTree(cwd))
 	catalog.Load()
 	if cfg.ModelCatalog {
 		// One request to models.dev for pricing and context sizes; disable
@@ -237,25 +244,37 @@ func Main() {
 	var presaves []func(*config.Config)
 	origMCP := cfg.MCP
 	if args.mcpConfig != "" {
-		var extra struct {
-			MCP []config.MCPServerConfig `toml:"mcp"`
+		// A [[mcp]] command is a program started at launch, so this file
+		// answers to the same rule the config file does: not from inside the
+		// tree being worked on. RestrictIfInsideTree above covers the servers
+		// that came through --settings and this list arrives after it, so
+		// without the check the whole policy was a question of which flag the
+		// user was told to type.
+		if config.InsideTree(args.mcpConfig, cwd) {
+			warn([]string{fmt.Sprintf("ignoring --mcp-config %s: it is inside the working tree, "+
+				"where a repository could have committed it", args.mcpConfig)})
+		} else {
+			var extra struct {
+				MCP []config.MCPServerConfig `toml:"mcp"`
+			}
+			if _, err := toml.DecodeFile(args.mcpConfig, &extra); err != nil {
+				fail(fmt.Errorf("parsing %s: %w", args.mcpConfig, err))
+			}
+			cfg.MCP = extra.MCP
+			presaves = append(presaves, func(c *config.Config) { c.MCP = origMCP })
 		}
-		if _, err := toml.DecodeFile(args.mcpConfig, &extra); err != nil {
-			fail(fmt.Errorf("parsing %s: %w", args.mcpConfig, err))
-		}
-		cfg.MCP = extra.MCP
-		presaves = append(presaves, func(c *config.Config) { c.MCP = origMCP })
 	}
 
+	// What the file (as the tree's location has already narrowed it) says about
+	// the two settings the flags below also decide. Recorded before the flags
+	// touch either, because a reload has to be able to tell "the user edited
+	// the file" from "the file always said this and a flag overruled it".
+	fileMode, fileSandbox := cfg.PermissionMode, cfg.Sandbox
 	mode := cfg.PermissionMode
 	if args.permMode != "" {
 		mode = tools.NormalizeMode(args.permMode)
 	}
-	cwd, err := os.Getwd()
-	if err != nil {
-		cwd, _ = os.UserHomeDir()
-	}
-	secretenv.SetExtra(cfg.SecretEnv)
+	secretenv.SetExtra(cfg.SecretEnvNames())
 	exec := tools.NewExecutor(cwd, mode)
 	exec.SetExtraDirs(args.addDirs)
 	exec.SetBashPrefixes(cfg.BashAllow)
@@ -274,7 +293,20 @@ func Main() {
 	// ACP owns stdout as the protocol channel, so it runs before anything
 	// that might print there, and builds its own per-session executors.
 	if args.acp {
-		if err := acp.Serve(cfg, os.Stdin, os.Stdout); err != nil {
+		// The flags go with it. They are not in cfg — deliberately, so a Save
+		// never writes them — and ACP builds its executors in its own package,
+		// so anything left in a local here reached the TUI and nothing else.
+		launch := acp.Launch{
+			ExtraDirs:    args.addDirs,
+			BashTimeout:  time.Duration(cfg.BashTimeout) * time.Second,
+			Model:        args.model,
+			SystemPrompt: args.systemPrompt,
+			AppendSystem: args.appendSystem,
+		}
+		if args.permMode != "" {
+			launch.PermissionMode = mode
+		}
+		if err := acp.Serve(cfg, launch, os.Stdin, os.Stdout); err != nil {
 			fail(err)
 		}
 		return
@@ -282,6 +314,12 @@ func Main() {
 	exec.SetSandbox(cfg.Sandbox)
 	exec.SetSandboxNetwork(cfg.SandboxNetwork)
 	exec.SetTimeout(time.Duration(cfg.BashTimeout) * time.Second)
+	warn(tools.ApplyHooks(exec, cfg, cwd))
+	warn(exec.RunSessionHooks(tools.HookSessionStart))
+	// Called by hand on the way out rather than deferred: --print leaves through
+	// os.Exit, and a session_end hook that fires for the TUI and not for
+	// headless runs is not something you can log with.
+	endSession := func() { warn(exec.RunSessionHooks(tools.HookSessionEnd)) }
 	if cfg.Sandbox && !tools.SandboxAvailable() {
 		fmt.Fprintln(os.Stderr, "warning: sandbox is enabled but bubblewrap (bwrap) was not found — bash calls will fail until it is installed")
 	}
@@ -303,6 +341,7 @@ func Main() {
 		go lsps.Warm() // load the workspace before the first edit needs it
 	}
 	mgr := agent.NewManager(cfg, reg, exec)
+	defer mgr.CloseRemotes() // external agents are children too
 	// Only the TUI can run a subagent (it owns the tabs and their event
 	// pumps), so only it advertises the tool. Headless runs below never do.
 	mgr.AllowSpawn = args.printPrompt == ""
@@ -352,18 +391,13 @@ func Main() {
 	}
 
 	if args.model != "" {
-		provName, model := cfg.DefaultProvider, args.model
-		if p, rest, ok := strings.Cut(args.model, ":"); ok {
-			if _, exists := cfg.Providers[p]; exists && rest != "" {
-				provName, model = p, rest
-			}
-		}
-		prov, err := mgr.ProviderFor(provName)
-		if err != nil {
-			fail(err)
-		}
+		// Through the manager's helper, which is also what the ACP sessions use:
+		// two readings of "[provider:]model" is how one of the two ends up on a
+		// different model from the one the user typed.
 		for _, a := range mgr.Agents {
-			a.Provider, a.ProviderName, a.ProviderErr, a.Model = prov, provName, "", model
+			if err := mgr.UseModel(a, args.model, cfg.DefaultProvider); err != nil {
+				fail(err)
+			}
 		}
 	}
 	if args.systemPrompt != "" || args.appendSystem != "" {
@@ -388,6 +422,7 @@ func Main() {
 		})
 		// os.Exit skips deferred calls, which would leave background jobs and
 		// MCP servers running after the process is gone.
+		endSession()
 		exec.StopJobs()
 		reg.CloseAll()
 		os.Exit(code)
@@ -401,13 +436,54 @@ func Main() {
 	cfg.Wordmark = ui.SetWordmark(cfg.Wordmark)
 
 	app := ui.NewApp(cfg, mgr, sessID, sessName, created)
+	app.SetFileState(fileMode, fileSandbox)
 	if args.resumePicker {
 		app.StartWithSessionPicker()
 	}
 	// Alt screen, mouse mode and keyboard enhancements are declared on the
 	// view now, not here — see App.View.
 	p := tea.NewProgram(app)
-	if _, err := p.Run(); err != nil {
-		fail(err)
+	_, runErr := p.Run()
+	endSession()
+	if runErr != nil {
+		fail(runErr)
 	}
+}
+
+// sessionLine renders one row of --list-sessions.
+//
+// The recorded directory is the project's own path, and in the threat model
+// this audit works in that is a name an extracted archive chose: tar will
+// happily create a directory whose name is an escape sequence, and one run of
+// tapioca inside it puts that name in the session index for good. The TUI's
+// picker sanitizes every item it shows; this listing wrote straight to stdout,
+// so the same string reached a terminal untouched here and not there — one
+// question with two answers, and the unanswered one is outside the TUI where
+// nothing else is watching.
+//
+// The name gets the same treatment: it is normally model-written and cleaned on
+// the way in, but a session file predating that, or one edited by hand, is not
+// re-checked anywhere.
+//
+// Newlines and tabs go too, which plain() keeps: this is one row per session,
+// and a directory called "a\nb  0 agents" would otherwise forge a row.
+func sessionLine(m session.Meta) string {
+	label := func(s string) string {
+		return strings.Map(func(r rune) rune {
+			if r == '\n' || r == '\t' {
+				return ' '
+			}
+			return r
+		}, plain(s))
+	}
+	name := label(m.Name)
+	if strings.TrimSpace(name) == "" {
+		name = "(unnamed)"
+	}
+	where := label(m.Cwd)
+	if strings.TrimSpace(where) == "" {
+		where = "(no project recorded)"
+	}
+	return fmt.Sprintf("%s  %-32s  %d agents  %d msgs  %s  %s",
+		m.ID, name, m.Agents, m.Messages, m.UpdatedAt.Format("2006-01-02 15:04"), where)
 }

@@ -61,6 +61,7 @@ var actions = []Action{
 	{"output_down", "scroll output down (any focus)", "pgdown", "scroll"},
 	{"scroll_top", "go to top (chat focus)", "home,g", "scroll"},
 	{"scroll_bottom", "go to bottom (chat focus)", "end,G", "scroll"},
+	{"search", "search the transcript", "ctrl+f", "scroll"},
 	{"copy_last", "copy last response (chat focus)", "y", "scroll"},
 	{"copy_all", "copy whole transcript (chat focus)", "Y", "scroll"},
 }
