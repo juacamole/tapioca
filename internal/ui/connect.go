@@ -244,6 +244,70 @@ func (m *App) useProvider(name string) tea.Cmd {
 	return m.flashCmd()
 }
 
+// disconnectProvider removes a provider from the config, on ctrl+d in the
+// connect screen. Connecting one has been possible from here since this screen
+// existed; undoing it meant going back to editing config.toml by hand, which is
+// what the screen was built to stop.
+//
+// It is armed first and acts on the second press. Removing an entry can destroy
+// something: a key entered here is stored in the config file itself when no
+// environment variable holds that exact value, so for those providers the
+// config is the only copy and deleting it is not undoable by re-adding the
+// entry. The arming message says so, naming the file, rather than asking for a
+// confirmation that does not say what is at stake.
+//
+// ctrl+d rather than d because this list filters on typed text, and a provider
+// called "bedrock" cannot be reached by typing if d is a command.
+func (m *App) disconnectProvider() tea.Cmd {
+	it := m.pick.selected()
+	if it == nil {
+		return nil
+	}
+	if name, ok := strings.CutPrefix(it.value, externalPick); ok {
+		// External agents live in [[agents.external]], an ordered list rather
+		// than a map of providers, so they are not this key's business.
+		m.setFlash("ctrl+d disconnects providers; "+name+" is an external agent, configured in [[agents.external]]", true)
+		return m.flashCmd()
+	}
+	e, ok := m.connEntryFor(it.value)
+	if !ok {
+		return nil
+	}
+	if e.state == connUnset || e.name == "" {
+		m.setFlash(e.kind.Label+" is not configured, so there is nothing to disconnect", true)
+		return m.flashCmd()
+	}
+
+	if m.connArmed != e.name {
+		m.connArmed = e.name
+		warn := ""
+		if m.cfg.Providers[e.name].APIKey != "" {
+			warn = gl.sep + "its api_key is stored in " + m.cfg.Path() + " and nowhere else"
+		}
+		m.setFlash("ctrl+d again to disconnect "+e.name+warn, false)
+		return m.flashCmd()
+	}
+	m.connArmed = ""
+
+	delete(m.cfg.Providers, e.name)
+	// The default may have been the entry just removed, and a config saved
+	// naming a provider that is not there is one every new agent starts broken
+	// against.
+	m.cfg.EnsureDefaultProvider()
+	m.saveCfg()
+	// Providers are cached by name once built, so the config edit alone would
+	// leave the removed one working for the rest of the session. This drops the
+	// cache and re-resolves every agent, which is also what records the error on
+	// an agent that was using it — rather than leaving it pointed at a provider
+	// the user has just said they do not have.
+	m.mgr.ReloadProviders()
+	m.setFlash("disconnected "+e.name, false)
+	// Re-probe rather than edit the list in place: the entry does not vanish,
+	// it becomes unconfigured, and its description has to come from the same
+	// sweep as everything else on screen.
+	return tea.Batch(probeConnections(m.cfg), m.flashCmd())
+}
+
 // cmdConnect starts the probe. It reports progress first because the sweep
 // takes as long as the slowest provider, and a screen that appears to hang is
 // worse than one that says what it is doing. A named external agent skips the
