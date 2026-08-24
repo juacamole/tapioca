@@ -289,19 +289,7 @@ func Load(path string) (*Config, error) {
 	if cfg.DefaultProvider == "" {
 		cfg.DefaultProvider = def.DefaultProvider
 	}
-	// Now that providers can actually be removed, the default may name one that
-	// is gone — and it names "ollama" without anyone having written that down,
-	// so deleting the ollama entry and nothing else would leave every new agent
-	// pointed at a provider the config no longer has. Sorted, so which one it
-	// lands on does not depend on map order.
-	if _, ok := cfg.Providers[cfg.DefaultProvider]; !ok && len(cfg.Providers) > 0 {
-		names := make([]string, 0, len(cfg.Providers))
-		for name := range cfg.Providers {
-			names = append(names, name)
-		}
-		sort.Strings(names)
-		cfg.DefaultProvider = names[0]
-	}
+	cfg.EnsureDefaultProvider()
 	if cfg.SystemPrompt == "" {
 		cfg.SystemPrompt = def.SystemPrompt
 	}
@@ -322,6 +310,25 @@ func Load(path string) (*Config, error) {
 	}
 	cfg.path = path
 	return cfg, nil
+}
+
+// EnsureDefaultProvider points default_provider at a provider that exists.
+//
+// Providers can be removed — from the file, or from /connect — and the default
+// names "ollama" without anyone having written that down, so deleting the
+// ollama entry and nothing else would leave every new agent pointed at a
+// provider the config no longer has. Sorted, so which one it lands on does not
+// depend on map order. A default that still resolves is never moved.
+func (c *Config) EnsureDefaultProvider() {
+	if _, ok := c.Providers[c.DefaultProvider]; ok || len(c.Providers) == 0 {
+		return
+	}
+	names := make([]string, 0, len(c.Providers))
+	for name := range c.Providers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	c.DefaultProvider = names[0]
 }
 
 // Path returns where this config lives on disk.

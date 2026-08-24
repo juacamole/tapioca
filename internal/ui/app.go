@@ -116,6 +116,7 @@ type App struct {
 
 	overlay   overlayKind
 	conn      []connEntry // last provider probe, for the connect picker
+	connArmed string      // config key of the provider one more ctrl+d would disconnect
 	cred      *credForm   // in-flight credential entry, nil when closed
 	msgLog    []logEntry  // every flash, kept so none is lost to its timer
 	pick      picker
@@ -878,6 +879,18 @@ func (m *App) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.dismissOverlay()
 			m.openQueuePicker()
 			return m, nil
+		}
+		// In the connect picker, ctrl+d disconnects the selected provider.
+		if m.pick.kind == pickConnect {
+			if msg.String() == "ctrl+d" {
+				return m, m.disconnectProvider()
+			}
+			// Anything else disarms, so the second press has to be the one the
+			// message asked for. Moving the selection is the case that matters:
+			// arming names a provider, and a ctrl+d that lands on a different
+			// one than the message named would remove something the user was
+			// never asked about.
+			m.connArmed = ""
 		}
 		// In the panels picker, left/right reorders the selected panel.
 		if m.pick.kind == pickPanels {
