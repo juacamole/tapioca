@@ -16,7 +16,7 @@
           pname = "tapioca";
           version = "1.2.0"; # kept in step with internal/version by CI
           src = ./.;
-          vendorHash = "sha256-oeW8Am7NCkHGlTj2M0gBQqQzxKAGqxgIWLaZFIpY+Pc=";
+          vendorHash = "sha256-2Kqk4C+Ovy0wDSTVB/IHv+y3bDhCadontTP3GZ7a8/M=";
           # Both names, one program: Shopify's tapioca gem installs a
           # `tapioca` binary too, so `tapio` is there when that one wins PATH.
           subPackages = [ "." "cmd/tapio" ];
