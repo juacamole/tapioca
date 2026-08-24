@@ -469,59 +469,86 @@ func (o *OpenAI) Stream(ctx context.Context, req Request, out chan<- Event) (Mes
 	return finish(), nil
 }
 
-// props reads llama-server's own description of itself. n_ctx is the context
-// actually allocated per slot, which is what generation runs against — the
-// model's trained window says nothing about what this server was started with.
-// Only the llama.cpp flavour has the endpoint.
-func (o *OpenAI) props(ctx context.Context) (int, error) {
+// llamaProps is llama-server's own description of itself, at /props.
+//
+// Not all of it is filled in in every mode, which is the point of reading more
+// than one field. A server started on a model reports the context it allocated
+// per slot in n_ctx. A router — one llama-server fronting several models and
+// loading them on demand — reports role "router" and n_ctx 0, because at the
+// moment you ask, nothing is loaded to have a context yet.
+type llamaProps struct {
+	BuildInfo string `json:"build_info"`
+	Role      string `json:"role"`
+	Settings  struct {
+		NCtx int `json:"n_ctx"`
+	} `json:"default_generation_settings"`
+}
+
+// props reads that description. Only the llama.cpp flavour has the endpoint.
+func (o *OpenAI) props(ctx context.Context) (llamaProps, error) {
+	var body llamaProps
 	if o.flavor != flavorLlama {
-		return 0, fmt.Errorf("%s: no context probe for this provider", o.name)
+		return body, fmt.Errorf("%s: no context probe for this provider", o.name)
 	}
 	req, err := http.NewRequestWithContext(ctx, "GET", o.baseURL+"/props", nil)
 	if err != nil {
-		return 0, err
+		return body, err
 	}
 	if err := o.setAuth(req); err != nil {
-		return 0, err
+		return body, err
 	}
 	resp, err := o.client.Do(req)
 	if err != nil {
-		return 0, o.hideKey(err)
+		return body, o.hideKey(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("%s: HTTP %d", o.name, resp.StatusCode)
-	}
-	var body struct {
-		Settings struct {
-			NCtx int `json:"n_ctx"`
-		} `json:"default_generation_settings"`
+		return body, fmt.Errorf("%s: HTTP %d", o.name, resp.StatusCode)
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&body); err != nil {
-		return 0, err
+		return body, err
 	}
-	if body.Settings.NCtx <= 0 {
-		return 0, fmt.Errorf("%s: no n_ctx in /props", o.name)
-	}
-	return body.Settings.NCtx, nil
+	return body, nil
 }
 
-// ContextLength implements the context probe for the gauge.
+// ContextLength implements the context probe for the gauge. n_ctx is the
+// context actually allocated per slot, which is what generation runs against —
+// the model's trained window says nothing about what this server was started
+// with. A router has not allocated one yet, so it has nothing to report and
+// says so; the gauge falls back rather than showing a made-up number.
 func (o *OpenAI) ContextLength(ctx context.Context, _ string) (int, error) {
-	return o.props(ctx)
+	p, err := o.props(ctx)
+	if err != nil {
+		return 0, err
+	}
+	if p.Settings.NCtx <= 0 {
+		return 0, fmt.Errorf("%s: no n_ctx in /props", o.name)
+	}
+	return p.Settings.NCtx, nil
 }
 
 // Identify implements Identifier. /props is llama-server's own endpoint, and
-// reporting a context size it allocated is not something another program
-// serves by accident.
+// what it answers with is not something another program serves by accident.
 //
 // The model list cannot answer this question. 8080 is the most contested port
 // there is — Spring Boot, Tomcat, Jenkins, any dev server picks it — and
 // {"data":[{"id":…}]} is an ordinary REST shape, so a directory of users read
 // as a directory of models and the address was offered as a model server.
+//
+// What it must not do is answer it too narrowly. Requiring an allocated n_ctx
+// turned a real llama-server in router mode into "no n_ctx in /props" — a
+// working server, with models on it, reported as the wrong address — because a
+// router allocates nothing until a model is loaded. Identity and context size
+// are two questions, and only one of them a router can answer.
 func (o *OpenAI) Identify(ctx context.Context) error {
-	_, err := o.props(ctx)
-	return err
+	p, err := o.props(ctx)
+	if err != nil {
+		return err
+	}
+	if p.BuildInfo == "" && p.Role == "" && p.Settings.NCtx <= 0 {
+		return fmt.Errorf("%s: %s/props answered, but nothing in it is llama.cpp's", o.name, o.baseURL)
+	}
+	return nil
 }
 
 // ListModels implements Provider.

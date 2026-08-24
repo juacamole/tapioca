@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 
 	"github.com/BurntSushi/toml"
 )
@@ -256,6 +257,13 @@ func Load(path string) (*Config, error) {
 		_ = WriteDefault(path) // best effort; the app works without a file
 		return cfg, nil
 	}
+	// Decoding a table into a map merges into it rather than replacing it, so
+	// the built-in providers outlived being deleted from the file: removing
+	// [providers.ollama] left ollama configured and probed, and no edit to the
+	// file could get rid of it. Cleared first, a [providers] table in the file
+	// is the whole set — and a file that never mentions providers still falls
+	// back to the defaults below, which is what leaves first run working.
+	cfg.Providers = nil
 	md, err := toml.DecodeFile(path, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("parsing %s: %w", path, err)
@@ -280,6 +288,19 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.DefaultProvider == "" {
 		cfg.DefaultProvider = def.DefaultProvider
+	}
+	// Now that providers can actually be removed, the default may name one that
+	// is gone — and it names "ollama" without anyone having written that down,
+	// so deleting the ollama entry and nothing else would leave every new agent
+	// pointed at a provider the config no longer has. Sorted, so which one it
+	// lands on does not depend on map order.
+	if _, ok := cfg.Providers[cfg.DefaultProvider]; !ok && len(cfg.Providers) > 0 {
+		names := make([]string, 0, len(cfg.Providers))
+		for name := range cfg.Providers {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		cfg.DefaultProvider = names[0]
 	}
 	if cfg.SystemPrompt == "" {
 		cfg.SystemPrompt = def.SystemPrompt
