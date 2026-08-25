@@ -187,7 +187,10 @@ jobs:
           mkdir -p out
           envsubst < packaging/aur/PKGBUILD.tmpl > out/PKGBUILD
           cat out/PKGBUILD
-      - uses: KSXGitHub/github-actions-deploy-aur@v4
+      # Pinned to a tag that exists: this action publishes no floating v4, so
+      # @v4 failed to resolve before the job started and the step that would
+      # have said so never ran.
+      - uses: KSXGitHub/github-actions-deploy-aur@v4.2.0
         with:
           pkgname: tapioca-bin
           pkgbuild: out/PKGBUILD
