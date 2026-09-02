@@ -12,6 +12,8 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -514,17 +516,119 @@ func (o *OpenAI) props(ctx context.Context) (llamaProps, error) {
 // ContextLength implements the context probe for the gauge. n_ctx is the
 // context actually allocated per slot, which is what generation runs against —
 // the model's trained window says nothing about what this server was started
-// with. A router has not allocated one yet, so it has nothing to report and
-// says so; the gauge falls back rather than showing a made-up number.
-func (o *OpenAI) ContextLength(ctx context.Context, _ string) (int, error) {
+// with.
+//
+// A server started on one model answers that from /props. A router answers 0
+// there and keeps answering 0 even once a model is loaded, because the number
+// belongs to the instance behind it and not to the router — so the question has
+// to be asked per model instead. That is not a cosmetic difference: the gauge's
+// window is also the auto-compaction threshold, and a router's models fell back
+// to the 8k default for a local provider, compacting sessions at 8k that the
+// server was holding 262k of.
+func (o *OpenAI) ContextLength(ctx context.Context, model string) (int, error) {
 	p, err := o.props(ctx)
+	if err == nil && p.Settings.NCtx > 0 {
+		return p.Settings.NCtx, nil
+	}
+	if model != "" {
+		if n, mErr := o.modelContext(ctx, model); mErr == nil && n > 0 {
+			return n, nil
+		}
+	}
 	if err != nil {
 		return 0, err
 	}
-	if p.Settings.NCtx <= 0 {
-		return 0, fmt.Errorf("%s: no n_ctx in /props", o.name)
+	return 0, fmt.Errorf("%s: no context size for %q", o.name, model)
+}
+
+// modelContext reads one model's context window from the model list, for a
+// router that fronts several with different windows — 65k and 262k on the same
+// server, so nothing provider-wide can stand in for it.
+//
+// Two sources, because they are available at different times. meta.n_ctx is
+// what was actually allocated, and appears only once the model has been loaded.
+// --ctx-size in the launch arguments is what was asked for, and is there from
+// the start, which is the case that matters: the window is wanted before the
+// first message, not after. They agree when both are present.
+func (o *OpenAI) modelContext(ctx context.Context, model string) (int, error) {
+	if o.flavor != flavorLlama {
+		return 0, fmt.Errorf("%s: no per-model context probe for this provider", o.name)
 	}
-	return p.Settings.NCtx, nil
+	req, err := http.NewRequestWithContext(ctx, "GET", o.modelsURL(), nil)
+	if err != nil {
+		return 0, err
+	}
+	if err := o.setAuth(req); err != nil {
+		return 0, err
+	}
+	resp, err := o.client.Do(req)
+	if err != nil {
+		return 0, o.hideKey(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("%s: HTTP %d", o.name, resp.StatusCode)
+	}
+	var body struct {
+		Data []struct {
+			ID      string   `json:"id"`
+			Aliases []string `json:"aliases"`
+			Meta    struct {
+				NCtx int `json:"n_ctx"`
+			} `json:"meta"`
+			Status struct {
+				Args []string `json:"args"`
+			} `json:"status"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&body); err != nil {
+		return 0, err
+	}
+	for _, m := range body.Data {
+		if !sameModel(m.ID, model) && !slices.ContainsFunc(m.Aliases, func(a string) bool {
+			return sameModel(a, model)
+		}) {
+			continue
+		}
+		if m.Meta.NCtx > 0 {
+			return m.Meta.NCtx, nil
+		}
+		return ctxSizeArg(m.Status.Args), nil
+	}
+	return 0, fmt.Errorf("%s: %q is not on this server", o.name, model)
+}
+
+// sameModel compares a server's id with the one the app holds. ListModels
+// shortens a GGUF path to its basename for the picker, so the id that comes
+// back to be asked about is not always the id the server printed.
+func sameModel(serverID, want string) bool {
+	if serverID == want {
+		return true
+	}
+	if strings.ContainsRune(serverID, os.PathSeparator) {
+		return strings.TrimSuffix(filepath.Base(serverID), ".gguf") == want
+	}
+	return false
+}
+
+// ctxSizeArg reads --ctx-size out of a launch command line. Zero means "take it
+// from the model", which is not an answer, and neither is a value that does not
+// parse; both leave the caller to fall back rather than report a made-up size.
+func ctxSizeArg(args []string) int {
+	for i, a := range args {
+		if a != "--ctx-size" && a != "-c" {
+			continue
+		}
+		if i+1 >= len(args) {
+			return 0
+		}
+		n, err := strconv.Atoi(args[i+1])
+		if err != nil || n < 0 {
+			return 0
+		}
+		return n
+	}
+	return 0
 }
 
 // Identify implements Identifier. /props is llama-server's own endpoint, and
