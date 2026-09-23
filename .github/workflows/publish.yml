@@ -39,6 +39,7 @@ jobs:
       aur: ${{ steps.k.outputs.aur }}
       winget: ${{ steps.k.outputs.winget }}
       aptrepo: ${{ steps.k.outputs.aptrepo }}
+      nur: ${{ steps.k.outputs.nur }}
     steps:
       - id: v
         env:
@@ -60,6 +61,7 @@ jobs:
           AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
           WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
           GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          NUR_TOKEN: ${{ secrets.NUR_TOKEN }}
         run: |
           have() { [ -n "$1" ] && echo true || echo false; }
           {
@@ -67,11 +69,12 @@ jobs:
             echo "aur=$(have "$AUR_SSH_PRIVATE_KEY")"
             echo "winget=$(have "$WINGET_TOKEN")"
             echo "aptrepo=$(have "$GPG_PRIVATE_KEY")"
+            echo "nur=$(have "$NUR_TOKEN")"
           } >> "$GITHUB_OUTPUT"
       - name: what will run
         run: |
           echo "tag ${{ steps.v.outputs.tag }}"
-          echo "homebrew ${{ steps.k.outputs.homebrew }} | aur ${{ steps.k.outputs.aur }} | winget ${{ steps.k.outputs.winget }} | apt repo ${{ steps.k.outputs.aptrepo }}"
+          echo "homebrew ${{ steps.k.outputs.homebrew }} | aur ${{ steps.k.outputs.aur }} | winget ${{ steps.k.outputs.winget }} | apt repo ${{ steps.k.outputs.aptrepo }} | nur ${{ steps.k.outputs.nur }}"
           echo "nixpkgs is a manual PR by design — see packaging/README.md"
 
   # Every packager needs the same numbers, so they are computed once.
@@ -314,3 +317,71 @@ jobs:
           echo "src hash:"
           nix-prefetch-url --unpack "https://github.com/$GITHUB_REPOSITORY/archive/refs/tags/$TAG.tar.gz" 2>/dev/null | tail -1
           echo "see packaging/nix/ for the package expression"
+
+  # NUR is a registry of user repositories, so unlike nixpkgs it is genuinely
+  # push-to-publish: the expression lives in a repository of ours and NUR
+  # rebuilds from it. The nixpkgs submission was declined on the userbase
+  # policy (NixOS/nixpkgs#566153), which is what NUR exists for.
+  #
+  # It runs after `nix`, not beside it: that job is what proves the vendorHash
+  # in flake.nix still matches the tag, and this one copies that number.
+  nur:
+    needs: [plan, nix]
+    if: needs.plan.outputs.nur == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.tag }}
+      - uses: cachix/install-nix-action@v27
+      - id: n
+        name: the numbers the expression needs
+        env:
+          TAG: ${{ needs.plan.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # The source hash cannot be known before the tag exists, so it is
+          # taken from the tarball GitHub serves for this tag.
+          base32=$(nix-prefetch-url --unpack \
+            "https://github.com/$GITHUB_REPOSITORY/archive/refs/tags/$TAG.tar.gz" 2>/dev/null | tail -1)
+          src=$(nix hash convert --hash-algo sha256 --to sri "$base32")
+          vendor=$(grep -o 'sha256-[A-Za-z0-9+/=]*' flake.nix | head -1)
+          [ -n "$vendor" ] || { echo "::error::no vendorHash in flake.nix"; exit 1; }
+          echo "src=$src"       >> "$GITHUB_OUTPUT"
+          echo "vendor=$vendor" >> "$GITHUB_OUTPUT"
+          echo "src $src"
+          echo "vendor $vendor"
+      - name: update the expression, build it, then push
+        env:
+          GH_TOKEN: ${{ secrets.NUR_TOKEN }}
+          TAG: ${{ needs.plan.outputs.tag }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          SRC: ${{ steps.n.outputs.src }}
+          VENDOR: ${{ steps.n.outputs.vendor }}
+        run: |
+          set -euo pipefail
+          git clone "https://x-access-token:$GH_TOKEN@github.com/${{ github.repository_owner }}/nur-packages.git" nur
+          f=nur/pkgs/tapioca/default.nix
+          [ -f "$f" ] || { echo "::error::$f is missing from nur-packages"; exit 1; }
+          # Anchored on the indentation nixfmt produces, so these cannot match
+          # the other hash in the file.
+          sed -i \
+            -e "s|^  version = \".*\";|  version = \"$VERSION\";|" \
+            -e "s|^    hash = \"sha256-.*\";|    hash = \"$SRC\";|" \
+            -e "s|^  vendorHash = \"sha256-.*\";|  vendorHash = \"$VENDOR\";|" \
+            "$f"
+          grep -E '^  version|^    hash|^  vendorHash' "$f"
+          # A wrong hash here would publish an expression nobody can build, and
+          # NUR has no review to catch it. Build before pushing, not after.
+          nix-build nur -A tapioca --no-out-link \
+            -I nixpkgs=https://github.com/NixOS/nixpkgs/archive/refs/heads/nixos-unstable.tar.gz
+          cd nur
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add pkgs/tapioca/default.nix
+          git diff --quiet --cached && { echo "already at $TAG"; exit 0; }
+          git commit -m "tapioca: $VERSION"
+          git push
+          # nur-packages' own workflow pings the registry on push, so this is a
+          # belt-and-braces nudge rather than the mechanism.
+          curl -fsS -XPOST "https://nur-update.nix-community.org/update?repo=${{ github.repository_owner }}" || true

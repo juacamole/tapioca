@@ -45,10 +45,11 @@ Worth being blunt about, because the five differ enormously:
 | **AUR** | you | yes — the AUR *is* a git remote |
 | **winget** | Microsoft's bot + a reviewer | opens the PR; merge is theirs |
 | **apt** | you | builds `.deb`s, optionally hosts a signed repo |
-| **nixpkgs** | nixpkgs reviewers | no — one manual PR, then a bot |
+| **nixpkgs** | nixpkgs reviewers | no — declined; see below |
+| **NUR** | you | yes — pushes the expression on release |
 
-Only the first two publish the moment CI is green. winget lands when their
-reviewers get to it. nixpkgs cannot be pushed to at all.
+Homebrew, the AUR and NUR publish the moment CI is green. winget lands when
+their reviewers get to it. nixpkgs was declined and cannot be pushed to anyway.
 
 ---
 
@@ -183,8 +184,20 @@ here.
 
 ## nixpkgs
 
-Cannot be automated, by design: nixpkgs is a reviewed pull request against
+Submitted as [NixOS/nixpkgs#566153][nixpkgs-pr] and **declined**, not on the
+packaging but on the userbase policy: nixpkgs does not generally take projects
+without users beyond their author, and there are live discussions about
+declining sole-developer submissions outright. The reviewer suggested NUR,
+which is what the section below does.
+
+The expression in `packaging/nix/` is kept because it passed their CI — vet,
+eval and build — so if tapioca ever has a real userbase the PR can be reopened
+rather than rebuilt.
+
+It cannot be automated either way: nixpkgs is a reviewed pull request against
 `NixOS/nixpkgs`.
+
+[nixpkgs-pr]: https://github.com/NixOS/nixpkgs/pull/566153
 
 Until it lands, the flake in this repository is the supported route and needs
 nothing set up:
@@ -205,6 +218,40 @@ The `nix` job in the workflow does not publish anything — it proves the flake
 still builds from the tag and prints the numbers that PR needs.
 
 ---
+
+## NUR
+
+The [Nix User Repository][nur] is a registry of user-owned repositories, so
+unlike nixpkgs it is push-to-publish and has no review queue. The expression
+lives in [`juacamole/nur-packages`][nur-packages]; NUR rebuilds from it.
+
+```sh
+nix-shell -p 'let nur = import (builtins.fetchTarball "https://github.com/nix-community/NUR/archive/main.tar.gz") { inherit pkgs; }; in nur.repos.juacamole.tapioca'
+```
+
+**Setup**, once:
+
+1. Create a token with **Contents: read and write** on `nur-packages` — a
+   fine-grained token scoped to that one repository is enough.
+2. Add it here as the secret **`NUR_TOKEN`**
+   (*Settings → Secrets and variables → Actions*).
+
+The `nur` job then updates `version`, the source hash and `vendorHash` on every
+release, **builds the result against `nixos-unstable` before pushing**, and
+pings the registry. A wrong hash would otherwise publish an expression nobody
+can build, and there is no reviewer here to catch it.
+
+The source hash cannot exist before the tag does, so it is read from the
+tarball GitHub serves for that tag. `vendorHash` is copied from `flake.nix`,
+which is why this job runs after `nix` — that job is what proves the number
+still matches the tag.
+
+There is no `r-ryantm` here: nothing bumps this for you, which is precisely why
+it is wired into the release.
+
+[nur]: https://github.com/nix-community/NUR
+[nur-packages]: https://github.com/juacamole/nur-packages
+
 
 ## Adding a new release
 
